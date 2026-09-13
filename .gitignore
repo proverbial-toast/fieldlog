@@ -1,0 +1,29 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments & virtualenvs
+.venv/
+venv/
+ENV/
+
+# Build and distribution
+build/
+dist/
+*.egg-info/
+
+# Target data & session logs (contain local operator data)
+targets/*
+!targets/.gitkeep
+
+# Testing & caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor, OS, and local developer configs
+*:Zone.Identifier
+.claude/settings.local.json
+.DS_Store
+.thumbnail

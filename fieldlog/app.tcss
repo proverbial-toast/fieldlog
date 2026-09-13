@@ -1,0 +1,1240 @@
+/* fieldlog — palette and geometry.
+   Two columns: RECIPES over VARIANTS, then RESULTS. ARGS spans the width. */
+
+Screen {
+    background: #08090a;
+    color: #cfd8d4;
+    layout: vertical;
+    scrollbar-size: 1 1;
+    scrollbar-background: #0d1211;
+    scrollbar-color: #2a3634;
+    scrollbar-color-hover: #4e5d5a;
+    scrollbar-background-hover: #0d1211;
+    scrollbar-corner-color: #0d1211;
+}
+
+.hidden {
+    display: none;
+}
+
+/* ---- Topbar ---------------------------------------------------------- */
+#topbar {
+    height: 3;
+    background: #0b0d0e;
+    border-bottom: solid #1e2725;
+    padding: 0 1;
+}
+
+#topbar .cell {
+    width: 1fr;
+    height: 2;
+    padding: 0 1;
+    content-align-vertical: top;
+}
+
+#topbar #cell-target:hover,
+#topbar #cell-iface:hover {
+    background: #0f1413;
+}
+
+#topbar #cell-jobs {
+    width: auto;
+    min-width: 18;
+    text-align: right;
+}
+
+#topbar #cell-iface {
+    border-left: solid #1e2725;
+}
+
+#topbar #cell-layout {
+    width: auto;
+    height: 1;
+    margin: 1 2 0 2;
+    padding: 0 1;
+    color: #7f8c88;
+    background: #0f1413;
+}
+
+#topbar #cell-layout:hover {
+    color: #6fd7bd;
+}
+
+/* ---- Body ------------------------------------------------------------ */
+#body {
+    height: 1fr;
+}
+
+#left-column {
+    /* clamp(340px, 34%, 560px) ~= clamp(42, 34%, 70) cells */
+    width: 34%;
+    min-width: 42;
+    max-width: 70;
+    background: #0a0c0d;
+    border-right: solid #1e2725;
+    layout: vertical;
+}
+
+#body.-stacked #left-column {
+    width: 1fr;
+    min-width: 0;
+    max-width: 100%;
+}
+
+/* ---- RECIPES --------------------------------------------------------- */
+#recipes-pane {
+    height: auto;
+    layout: vertical;
+}
+
+#recipes-header {
+    height: 2;
+    padding: 0 1;
+    border-bottom: solid #1e2725;
+    border-left: solid #0a0c0d;
+}
+
+#recipes-pane.-focused #recipes-header {
+    border-left: thick #6fd7bd;
+}
+
+#recipes-title {
+    width: auto;
+    color: #cfd8d4;
+    text-style: bold;
+    margin-right: 1;
+}
+
+#filter-prompt {
+    width: 1;
+    color: #6fd7bd;
+}
+
+#filter-input {
+    width: 1fr;
+    min-width: 6;
+    height: 1;
+    border: none;
+    background: transparent;
+    color: #cfd8d4;
+    padding: 0 1;
+}
+
+#filter-input:focus {
+    background: #06080a;
+}
+
+#avail-toggle {
+    width: auto;
+    color: #6fd7bd;
+    margin-left: 1;
+}
+
+#avail-toggle:hover,
+#mgr-chip:hover {
+    color: #a8b4b0;
+}
+
+#mgr-chip {
+    width: auto;
+    color: #3f4c49;
+    margin-left: 1;
+}
+
+/* RECIPES takes all leftover height in both modes; VARIANTS is pinned to a
+   fixed eight-row list below it, so the cursor never moves when a tool with a
+   different variant count is selected. */
+#recipe-tree {
+    height: 1fr;
+    min-height: 4;
+    background: #0a0c0d;
+    scrollbar-size: 1 1;
+}
+
+#body.-stacked #recipe-tree {
+    min-height: 12;
+}
+
+#recipes-pane.-collapsed #recipe-tree,
+#recipes-pane.-collapsed #filter-prompt,
+#recipes-pane.-collapsed #filter-input,
+#recipes-pane.-collapsed #avail-toggle {
+    display: none;
+}
+
+.recipe-row {
+    height: 1;
+    width: 100%;
+}
+
+.recipe-row:hover {
+    background: #121717;
+}
+
+.recipe-row-header {
+    height: 1;
+    width: 100%;
+}
+
+/* ---- VARIANTS -------------------------------------------------------- */
+#variants-pane {
+    height: 1fr;
+    border-top: solid #1e2725;
+    layout: vertical;
+}
+
+#variants-header {
+    height: 2;
+    padding: 0 1;
+    background: #0b0d0e;
+    border-bottom: solid #1e2725;
+    border-left: solid #0b0d0e;
+}
+
+#variants-pane.-focused #variants-header {
+    border-left: thick #6fd7bd;
+}
+
+#variants-header:hover {
+    background: #121717;
+}
+
+#variants-title {
+    width: auto;
+    text-style: bold;
+    color: #5a6764;
+}
+
+#variants-crumb {
+    width: 1fr;
+    color: #7f8c88;
+    text-align: right;
+}
+
+#variants-pane.-collapsed {
+    height: auto;
+    min-height: 2;
+}
+
+/* Stacked: the expanded pane takes the column, the collapsed one keeps its
+   header row. Both headers stay mounted, so the accordion always has two
+   handles. */
+#body.-stacked #recipes-pane {
+    height: 1fr;
+}
+
+#body.-stacked #variants-scroll {
+    height: 1fr;
+    max-height: 100%;
+}
+
+#body.-stacked #variants-pane {
+    height: auto;
+}
+
+#body.-stacked #recipes-pane.-collapsed {
+    height: auto;
+    min-height: 2;
+}
+
+#body.-stacked #variants-pane.-collapsed {
+    height: auto;
+    min-height: 2;
+}
+
+#variants-pane.-collapsed #variants-title-row,
+#variants-pane.-collapsed #variants-scroll,
+#variants-pane.-collapsed #btn-run,
+#variants-pane.-collapsed #btn-pin {
+    display: none;
+}
+
+#variants-title-row {
+    height: 1;
+    padding: 0 1;
+}
+
+#variants-bin {
+    width: auto;
+    margin-right: 1;
+}
+
+#variants-variant {
+    width: 1fr;
+}
+
+#variants-scroll {
+    height: 1fr;
+    max-height: 10;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+}
+
+#variant-list {
+    height: auto;
+}
+
+.variant-row {
+    height: 1;
+    width: 100%;
+    border-left: solid #0a0c0d;
+    padding-left: 1;
+}
+
+.variant-row:hover {
+    background: #121717;
+}
+
+.variant-active {
+    border-left: thick #6fd7bd;
+    background: #101514;
+}
+
+#btn-run {
+    width: auto;
+    height: 1;
+    margin-left: 2;
+    padding: 0 1;
+    color: #6fd7bd;
+    background: #0f1a18;
+}
+
+#btn-run:hover {
+    color: #9fe8d6;
+}
+
+#btn-run.-disabled {
+    color: #4e5d5a;
+    background: #101514;
+}
+
+#btn-pin {
+    width: auto;
+    height: 1;
+    margin-left: 1;
+    padding: 0 1;
+    color: #7f8c88;
+    background: #0f1413;
+}
+
+#btn-pin:hover {
+    color: #a8b4b0;
+}
+
+/* ---- RESULTS --------------------------------------------------------- */
+#main {
+    width: 1fr;
+    background: #08090a;
+    layout: vertical;
+}
+
+#tab-strip {
+    height: 3;
+    background: #0b0d0e;
+    border-bottom: solid #1e2725;
+}
+
+#tabs-scroll {
+    width: 1fr;
+    height: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-size: 1 1;
+}
+
+#tabs-list {
+    width: auto;
+    height: 2;
+}
+
+.tab-item, .tab-item-active {
+    width: auto;
+    height: 2;
+    padding: 0 1;
+    border-top: solid #0b0d0e;
+    background: #0b0d0e;
+}
+
+.tab-item:hover {
+    background: #121717;
+}
+
+.tab-item-active {
+    background: #08090a;
+    border-top: solid #6fd7bd;
+}
+
+.tab-item-active .tab-label {
+    text-style: bold;
+}
+
+.tab-icon {
+    width: 2;
+    height: 1;
+}
+
+.tab-label {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+}
+
+.tab-close, .tab-locked {
+    width: 2;
+    height: 1;
+}
+
+.tab-close:hover {
+    color: #e0776a;
+}
+
+#btn-close-finished {
+    width: auto;
+    height: 1;
+    margin-top: 1;
+    padding: 0 1;
+    color: #7f8c88;
+    background: #0b0d0e;
+}
+
+#btn-close-finished:hover {
+    color: #e0776a;
+}
+
+/* Status band — one row, never two. */
+#status-band {
+    height: 3;
+    padding: 0 1;
+    background: #0a0c0d;
+    border-bottom: solid #1e2725;
+}
+
+#status-items {
+    width: auto;
+    height: 2;
+}
+
+.status-item {
+    width: auto;
+    height: 2;
+    margin-right: 3;
+}
+
+#status-spacer {
+    width: 1fr;
+}
+
+#btn-copy-log {
+    width: auto;
+    height: 1;
+    margin-top: 1;
+    padding: 0 1;
+    color: #7f8c88;
+    background: #0f1413;
+}
+
+#btn-copy-log:hover {
+    color: #6fd7bd;
+}
+
+/* Pinned command block — frozen rows above the scrolling log. */
+#pinned-block {
+    height: auto;
+    max-height: 5;
+    padding: 0 1;
+    background: #06080a;
+    border-bottom: solid #2a3634;
+}
+
+#pinned-cmd-row {
+    height: auto;
+    max-height: 3;
+}
+
+#pinned-cmd-sigil {
+    width: 2;
+    color: #6fd7bd;
+}
+
+#pinned-cmd-scroll {
+    width: 1fr;
+    height: auto;
+    max-height: 3;
+    scrollbar-size: 1 1;
+}
+
+#pinned-cmd {
+    width: 100%;
+    height: auto;
+    color: #cfd8d4;
+}
+
+#pinned-art-row {
+    height: 1;
+}
+
+#pinned-art-sigil {
+    width: 2;
+    color: #3f4c49;
+}
+
+#pinned-art {
+    width: 1fr;
+    color: #7f8c88;
+}
+
+#tab-content {
+    height: 1fr;
+}
+
+RichLog {
+    height: 100%;
+    background: #08090a;
+    padding: 0 1;
+    scrollbar-size: 1 1;
+    scrollbar-gutter: stable;
+    overflow-x: hidden;
+}
+
+/* ---- stdin bar ------------------------------------------------------- */
+#stdin-bar {
+    height: auto;
+    padding: 0 1;
+    background: #14100a;
+    border-top: solid #e0b25f;
+}
+
+#stdin-top, #stdin-entry {
+    height: 1;
+}
+
+#stdin-title {
+    width: auto;
+    color: #e0b25f;
+    text-style: bold;
+    margin-right: 1;
+}
+
+#stdin-prompt-text {
+    width: 1fr;
+    color: #cfd8d4;
+}
+
+#stdin-waiting {
+    width: auto;
+    color: #7f8c88;
+}
+
+#stdin-sigil {
+    width: 2;
+    color: #e0b25f;
+}
+
+#stdin-input {
+    width: 1fr;
+    height: 1;
+    border: none;
+    background: #06080a;
+    color: #cfd8d4;
+    padding: 0 1;
+}
+
+#stdin-chips {
+    width: auto;
+    height: 1;
+}
+
+.stdin-chip {
+    width: auto;
+    height: 1;
+    margin-left: 1;
+    padding: 0 1;
+    color: #e0b25f;
+    background: #1c1710;
+}
+
+.stdin-chip:hover {
+    color: #f0c877;
+}
+
+#stdin-hint {
+    height: 1;
+    color: #6b5b33;
+}
+
+/* ---- ARGS band ------------------------------------------------------- */
+#args-band {
+    height: auto;
+    max-height: 11;
+    background: #0a0c0d;
+    border-top: solid #1e2725;
+    padding: 0 1;
+    layout: vertical;
+}
+
+#args-header-row {
+    height: 1;
+}
+
+#args-header-title {
+    width: auto;
+    color: #cfd8d4;
+    text-style: bold;
+}
+
+#args-header-spacer {
+    width: 1fr;
+}
+
+#args-btn-reset {
+    width: auto;
+    color: #3f4c49;
+    margin-right: 2;
+}
+
+#args-btn-reset.-dirty {
+    color: #e0b25f;
+}
+
+#args-btn-mode {
+    width: auto;
+    height: 1;
+    color: #6fd7bd;
+    padding: 0 1;
+    background: #0f1413;
+}
+
+#args-btn-mode:hover {
+    color: #9fe8d6;
+}
+
+#args-body-row {
+    height: auto;
+    max-height: 8;
+}
+
+#args-bin-label {
+    width: auto;
+    min-width: 8;
+    margin-right: 1;
+}
+
+#args-tokens-scroll {
+    width: 1fr;
+    height: auto;
+    max-height: 8;
+    scrollbar-size: 1 1;
+}
+
+#args-tokens-wrap {
+    height: auto;
+}
+
+.arg-pairs-row {
+    height: 1;
+    width: 100%;
+}
+
+/* A group too wide for a shared row gets its own and wraps inside it, rather
+   than running off the right edge where the rest of the value is unreadable. */
+.arg-pairs-row-wide {
+    height: auto;
+    width: 100%;
+}
+
+/* No chip borders, no per-group background: plain text pairs, wide gaps. */
+.arg-pair {
+    width: auto;
+    height: 1;
+    margin-right: 3;
+}
+
+.arg-pair-wide {
+    width: 100%;
+    height: auto;
+}
+
+#args-raw-wrap {
+    width: 1fr;
+    height: auto;
+}
+
+#args-raw-area {
+    height: 3;
+    border: solid #6fd7bd;
+    background: #06080a;
+    color: #cfd8d4;
+}
+
+#args-raw-exit {
+    height: 1;
+}
+
+#btn-args-done {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    color: #6fd7bd;
+    background: #0f1a18;
+    margin-right: 2;
+}
+
+#args-raw-hint {
+    width: 1fr;
+    color: #3f4c49;
+}
+
+#args-foot {
+    height: 1;
+    align-horizontal: right;
+}
+
+#btn-bar-toggle {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    color: #7f8c88;
+    background: #0f1413;
+}
+
+#btn-bar-toggle:hover {
+    color: #6fd7bd;
+}
+
+/* ---- Hotkey bar (hidden until H) ------------------------------------- */
+#footer-keys {
+    height: 2;
+    background: #0b0d0e;
+    border-top: solid #1e2725;
+    padding: 0 1;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-size: 0 0;
+}
+
+.key-pill {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    background: #7f8c88;
+    color: #08090a;
+    text-style: bold;
+}
+
+.key-pill-primary {
+    background: #6fd7bd;
+}
+
+.key-label {
+    width: auto;
+    height: 1;
+    color: #7f8c88;
+    margin: 0 2 0 1;
+}
+
+/* ---- Modals ---------------------------------------------------------- */
+ModalScreen {
+    align: center middle;
+    background: rgba(4, 6, 6, 0.72);
+}
+
+#modal-box.-tall {
+    height: 84%;
+}
+
+#modal-box.-tall #modal-scroll {
+    height: 1fr;
+    max-height: 100%;
+}
+
+#modal-box {
+    width: 70;
+    max-width: 90%;
+    height: auto;
+    max-height: 80%;
+    background: #0b0d0e;
+    border: solid #6fd7bd;
+}
+
+#modal-header-row {
+    height: 2;
+    padding: 0 1;
+    border-bottom: solid #1e2725;
+}
+
+#modal-title {
+    width: 1fr;
+    color: #6fd7bd;
+    text-style: bold;
+}
+
+#modal-subhint {
+    width: auto;
+    color: #3f4c49;
+}
+
+#modal-scroll {
+    height: auto;
+    max-height: 26;
+    padding: 1 2;
+    scrollbar-size: 1 1;
+}
+
+#modal-box Label {
+    color: #7f8c88;
+    margin-top: 1;
+}
+
+#target-detected-note,
+#log-dest-preview,
+#outdir-preview {
+    color: #4e5d5a;
+    margin-top: 0;
+}
+
+#modal-box Input {
+    border: solid #2a3634;
+    background: #06080a;
+    color: #cfd8d4;
+    height: 3;
+}
+
+#modal-box Input:focus {
+    border: solid #6fd7bd;
+}
+
+#iface-list {
+    height: auto;
+    max-height: 8;
+    border: solid #2a3634;
+    background: #06080a;
+}
+
+.iface-row {
+    height: 1;
+    padding: 0 1;
+}
+
+.iface-row:hover {
+    background: #121717;
+}
+
+#modal-buttons {
+    height: 4;
+    align-horizontal: right;
+    padding: 0 1;
+    border-top: solid #1e2725;
+}
+
+#modal-buttons Button {
+    margin-left: 1;
+    height: 3;
+}
+
+#quit-hint {
+    color: #7f8c88;
+    padding: 1 2;
+}
+
+/* ---- Recipe manager -------------------------------------------------- */
+#mgr-box {
+    width: 88;
+    max-width: 96%;
+    height: auto;
+    max-height: 85%;
+    background: #0b0d0e;
+    border: solid #6fd7bd;
+}
+
+#mgr-header {
+    height: 2;
+    padding: 0 1;
+    border-bottom: solid #1e2725;
+}
+
+#mgr-title {
+    width: 1fr;
+    color: #6fd7bd;
+    text-style: bold;
+}
+
+#mgr-subhint {
+    width: auto;
+    color: #3f4c49;
+}
+
+#mgr-stats {
+    height: 2;
+    padding: 0 1;
+    border-bottom: solid #1e2725;
+}
+
+.mgr-stat {
+    width: auto;
+    height: 1;
+    margin-right: 3;
+}
+
+.mgr-stat-label {
+    width: auto;
+    color: #4e5d5a;
+    margin-right: 1;
+}
+
+.mgr-stat-value {
+    width: auto;
+}
+
+#mgr-scroll {
+    height: auto;
+    max-height: 26;
+    padding: 1 2;
+    scrollbar-size: 1 1;
+}
+
+.mgr-section-label {
+    color: #7f8c88;
+    margin-top: 1;
+}
+
+#mgr-sources, #mgr-tools {
+    height: auto;
+}
+
+.mgr-source-row {
+    height: 1;
+}
+
+.mgr-src-kind {
+    width: 9;
+}
+
+.mgr-src-path {
+    width: 1fr;
+    color: #a8b4b0;
+}
+
+.mgr-src-count {
+    width: 14;
+    text-align: right;
+}
+
+#btn-copy-catalog-path {
+    width: auto;
+    height: 1;
+    color: #7f8c88;
+    padding: 0 1;
+    margin-left: 1;
+    background: #0f1413;
+}
+
+#btn-copy-catalog-path:hover {
+    color: #6fd7bd;
+}
+
+.mgr-tool-row {
+    height: 1;
+    border-left: solid #1e2725;
+}
+
+.mgr-tool-row:hover {
+    background: #121717;
+}
+
+.mgr-tool-bin {
+    width: 14;
+    margin-left: 1;
+}
+
+.mgr-tool-cat {
+    width: 1fr;
+    color: #7f8c88;
+}
+
+.mgr-tool-variants {
+    width: 5;
+    color: #7f8c88;
+    text-align: right;
+}
+
+.mgr-tool-emits {
+    width: 6;
+    text-align: right;
+}
+
+.mgr-tool-state {
+    width: 20;
+    text-align: right;
+}
+
+.mgr-tool-badge {
+    width: 5;
+    text-align: right;
+}
+
+#mgr-footer {
+    height: 2;
+    padding: 0 1;
+    border-top: solid #1e2725;
+}
+
+#btn-mgr-reload {
+    width: auto;
+    height: 1;
+    color: #a8b4b0;
+    padding: 0 1;
+    background: #0f1413;
+    margin-right: 2;
+}
+
+#btn-mgr-reload:hover {
+    color: #6fd7bd;
+}
+
+#mgr-reload-note {
+    width: 1fr;
+    color: #3f4c49;
+}
+
+#mgr-footer-spacer {
+    width: 0;
+}
+
+#btn-mgr-scope {
+    width: auto;
+    color: #7f8c88;
+}
+
+#btn-mgr-scope:hover {
+    color: #6fd7bd;
+}
+
+/* ---- Kill / detach dialog -------------------------------------------- */
+#closing-box {
+    width: 64;
+    max-width: 92%;
+    height: auto;
+    background: #0b0d0e;
+    border: solid #e0b25f;
+}
+
+#closing-header {
+    height: 2;
+    padding: 0 1;
+    border-bottom: solid #1e2725;
+}
+
+#closing-title {
+    width: 1fr;
+    color: #e0b25f;
+    text-style: bold;
+}
+
+#closing-subhint {
+    width: auto;
+    color: #3f4c49;
+}
+
+#closing-body {
+    height: auto;
+    padding: 1 2;
+}
+
+#closing-label {
+    color: #cfd8d4;
+    margin-bottom: 1;
+}
+
+.closing-choice {
+    height: 1;
+    background: #0f1413;
+    margin-bottom: 1;
+    padding: 0 1;
+}
+
+.closing-key {
+    width: 5;
+}
+
+.closing-name {
+    width: 10;
+    color: #cfd8d4;
+}
+
+.closing-hint {
+    width: 1fr;
+    color: #7f8c88;
+}
+
+#closing-path {
+    color: #4e5d5a;
+}
+
+/* ---- Help ------------------------------------------------------------ */
+#help-box {
+    width: 104;
+    max-width: 96%;
+    height: auto;
+    max-height: 85%;
+    background: #0b0d0e;
+    border: solid #6fd7bd;
+}
+
+#help-header {
+    height: 2;
+    padding: 0 1;
+    border-bottom: solid #1e2725;
+}
+
+#help-title {
+    width: 1fr;
+    color: #6fd7bd;
+    text-style: bold;
+}
+
+#help-subhint {
+    width: auto;
+    color: #3f4c49;
+}
+
+#help-body {
+    height: auto;
+    padding: 1 2;
+}
+
+.help-col {
+    width: 1fr;
+    height: auto;
+    margin-right: 2;
+}
+
+.help-group-title {
+    color: #4e5d5a;
+    margin-top: 1;
+}
+
+.help-row {
+    height: 1;
+}
+
+.help-key {
+    width: 14;
+    color: #cfd8d4;
+    text-style: bold;
+}
+
+.help-label {
+    width: 1fr;
+    color: #a8b4b0;
+}
+
+#help-footer {
+    height: 2;
+    padding: 0 1;
+    border-top: solid #1e2725;
+}
+
+#help-catalog-path {
+    width: auto;
+    color: #7f8c88;
+    margin-right: 2;
+}
+
+#help-catalog-note {
+    width: 1fr;
+    color: #3f4c49;
+}
+
+/* ---- Palette --------------------------------------------------------- */
+#palette-box {
+    width: 78;
+    max-width: 94%;
+    height: auto;
+    max-height: 70%;
+    background: #0b0d0e;
+    border: solid #6fd7bd;
+}
+
+#palette-input-row {
+    height: 4;
+    padding: 0 1;
+    border-bottom: solid #1e2725;
+}
+
+#palette-prompt {
+    width: 2;
+    color: #6fd7bd;
+    text-style: bold;
+    content-align-vertical: middle;
+    height: 3;
+}
+
+#palette-input {
+    width: 1fr;
+    height: 3;
+    border: none;
+    background: transparent;
+    color: #cfd8d4;
+}
+
+#palette-hint {
+    width: auto;
+    height: 3;
+    color: #3f4c49;
+    content-align-vertical: middle;
+}
+
+#palette-results {
+    height: auto;
+    max-height: 22;
+    padding: 0 0 1 0;
+}
+
+.palette-group-header {
+    color: #3f4c49;
+    padding: 0 1;
+}
+
+.palette-row {
+    height: 1;
+    padding: 0 1;
+}
+
+.palette-row-cursor-ok {
+    background: #6fd7bd;
+}
+
+.palette-row-cursor-blocked {
+    background: #161c1b;
+}
+
+/* ---- Toast Notifications --------------------------------------------- */
+ToastRack {
+    align: right bottom;
+    margin-bottom: 0;
+    margin-right: 1;
+}
+
+Toast {
+    width: auto;
+    min-width: 28;
+    max-width: 38;
+    height: auto;
+    padding: 0 1;
+    background: #0b0d0e;
+    color: #cfd8d4;
+    border: none;
+    border-left: outer #e0b25f;
+}
+
+Toast.-information {
+    border-left: outer #6fd7bd;
+}
+
+Toast.-warning {
+    border-left: outer #e0b25f;
+}
+
+Toast.-error {
+    border-left: outer #e0776a;
+}

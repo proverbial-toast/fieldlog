@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fieldlog"
+dynamic = ["version"]
+description = "Run catalogued network diagnostic commands against a target and keep a per-target log of every run — a Textual TUI plus CLI."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Console",
+    "Topic :: Security",
+]
+dependencies = [
+    "textual>=8.2.0,<9",
+    "rich",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[project.urls]
+Homepage = "https://github.com/proverbial-toast/fieldlog"
+Repository = "https://github.com/proverbial-toast/fieldlog"
+Issues = "https://github.com/proverbial-toast/fieldlog/issues"
+
+[project.scripts]
+fieldlog = "fieldlog.__main__:main"
+
+[tool.setuptools]
+packages = ["fieldlog"]
+
+[tool.setuptools.dynamic]
+version = { attr = "fieldlog.__version__" }
+
+[tool.setuptools.package-data]
+fieldlog = ["*.tcss", "*.yaml"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

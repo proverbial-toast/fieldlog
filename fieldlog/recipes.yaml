@@ -1,0 +1,209 @@
+# fieldlog recipe catalog.
+# fieldlog injects these env vars before spawning:
+#   TARGET / TARGET_IP   the IP or subnet
+#   TARGET_HOST          canonical hostname (may be empty)
+#   LHOST                local host address (interface addr)
+#   IFACE                local interface name
+#   OUT_DIR / OUTDIR     per-run artifact dir ($OUTDIR in flags)
+#   RUN_ID               zero-padded run counter (e.g. 01)
+
+recipes:
+  - id: ping
+    name: "ICMP Reachability"
+    bin: ping
+    category: "Host & Reachability"
+    presets:
+      - id: quick
+        name: "quick · 4 probes"
+        flags: "-c 4 -W 1 $TARGET"
+      - id: sweep
+        name: "subnet sweep · fanout 16"
+        flags: "-c 1 -W 1 -I $IFACE $TARGET"
+      - id: flood
+        name: "flood · 500 pps"
+        flags: "-f -c 500 $TARGET"
+      - id: mtu
+        name: "mtu probe · df-bit 1472"
+        flags: "-M do -s 1472 -c 3 $TARGET"
+      - id: v6
+        name: "ipv6"
+        flags: "-6 -c 4 $TARGET"
+
+  - id: traceroute
+    name: "Path & MTU Trace"
+    bin: traceroute
+    category: "Host & Reachability"
+    presets:
+      - id: icmp
+        name: "icmp · numeric"
+        flags: "-n -I $TARGET"
+      - id: mtu
+        name: "mtu discovery"
+        flags: "-n --mtu $TARGET"
+      - id: tcp80
+        name: "tcp syn :80"
+        flags: "-T -p 80 $TARGET"
+
+  - id: mtr
+    name: "Continuous Path Monitor"
+    bin: mtr
+    category: "Host & Reachability"
+    presets:
+      - id: report
+        name: "report · 100 cycles"
+        flags: "--report --report-cycles 100 $TARGET"
+      - id: tcp
+        name: "tcp mode :443"
+        flags: "--tcp --port 443 $TARGET"
+
+  - id: arp-scan
+    name: "ARP Layer-2 Discovery"
+    bin: arp-scan
+    category: "Host & Reachability"
+    presets:
+      - id: localnet
+        name: "localnet"
+        flags: "--interface=$IFACE --localnet"
+      - id: retry
+        name: "slow · retry 3"
+        flags: "--interface=$IFACE --retry=3 $TARGET"
+
+  - id: dig
+    name: "DNS Query"
+    bin: dig
+    category: "DNS & Resolution"
+    presets:
+      - id: a
+        name: "A record"
+        flags: "+short A $HOST"
+      - id: trace
+        name: "delegation trace"
+        flags: "+trace $HOST"
+      - id: ptr
+        name: "reverse ptr"
+        flags: "-x $TARGET +short"
+      - id: dnssec
+        name: "dnssec validate"
+        flags: "+dnssec +multi $HOST"
+
+  - id: resolvectl
+    name: "Local Resolver State"
+    bin: resolvectl
+    category: "DNS & Resolution"
+    presets:
+      - id: status
+        name: "status"
+        flags: "status $IFACE"
+      - id: query
+        name: "query via stub"
+        flags: "query $HOST"
+
+  - id: curl
+    name: "HTTP Latency Profiler"
+    bin: curl
+    category: "HTTP & Endpoint Health"
+    presets:
+      - id: timing80
+        name: "timing breakdown :80"
+        flags: "-o /dev/null -s -w @fmt http://$HOST/"
+      - id: timing443
+        name: "timing breakdown :443"
+        flags: "-o /dev/null -s -w @fmt https://$HOST/"
+      - id: trace
+        name: "full trace · headers + timing"
+        flags: >-
+          -sS -o /dev/null -D - -w "dns=%{time_namelookup} tcp=%{time_connect}
+          tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total}
+          code=%{http_code}" --connect-timeout 5 --max-time 20 --retry 1
+          --retry-delay 1 -H "User-Agent: fieldlog" -H "Accept: */*"
+          -H "Cache-Control: no-cache" https://$HOST/healthz
+      - id: headers
+        name: "headers only"
+        flags: "-sSI https://$HOST/"
+      - id: loop
+        name: "loop · 20 requests"
+        flags: "-o /dev/null -s -w @fmt --retry 0 https://$HOST/"
+
+  - id: openssl
+    name: "TLS Certificate Validator"
+    bin: openssl
+    category: "HTTP & Endpoint Health"
+    presets:
+      - id: chain
+        name: "chain + expiry"
+        flags: "s_client -connect $HOST:443 -showcerts"
+      - id: ciphers
+        name: "cipher negotiation"
+        flags: "s_client -connect $HOST:443 -tls1_3"
+
+  - id: wrk
+    name: "HTTP Load Probe"
+    bin: wrk
+    category: "HTTP & Endpoint Health"
+    presets:
+      - id: smoke
+        name: "smoke · 10s / 4 conn"
+        flags: "-t2 -c4 -d10s http://$HOST/"
+
+  - id: ss
+    name: "Local Socket Table"
+    bin: ss
+    category: "Ports & Services"
+    presets:
+      - id: listen
+        name: "listening sockets"
+        flags: "-tulpn"
+      - id: estab
+        name: "established peers"
+        flags: "-tn state established"
+
+  - id: tcpdump
+    name: "Packet Capture"
+    bin: tcpdump
+    category: "Ports & Services"
+    presets:
+      - id: host
+        name: "host filter · 200 pkts"
+        flags: "-i $IFACE -c 200 -nn -w $OUTDIR/capture.pcap host $TARGET"
+      - id: icmp
+        name: "icmp only"
+        flags: "-i $IFACE -nn icmp"
+
+  - id: iperf3
+    name: "Throughput Benchmark"
+    bin: iperf3
+    category: "Infrastructure & Bandwidth"
+    presets:
+      - id: tcp4
+        name: "tcp · 10s / 4 streams"
+        flags: "-c $TARGET -t 10 -P 4 --json --logfile $OUTDIR/iperf3_tcp4.json"
+      - id: udp
+        name: "udp · 100 Mbit"
+        flags: "-c $TARGET -u -b 100M -t 10"
+      - id: reverse
+        name: "reverse (download)"
+        flags: "-c $TARGET -R -t 10"
+
+  - id: ethtool
+    name: "Link & NIC Counters"
+    bin: ethtool
+    category: "Infrastructure & Bandwidth"
+    presets:
+      - id: link
+        name: "link settings"
+        flags: "$IFACE"
+      - id: stats
+        name: "driver stats"
+        flags: "-S $IFACE"
+
+# A chain runs its recipe IDs in order against one scope, sharing one $OUTDIR.
+# It stops at the first non-zero exit unless that step says `continue: true`.
+chains:
+  - id: reach
+    name: "reachability · ping, trace, ptr"
+    category: "Chains"
+    steps:
+      - ping/quick
+      - recipe: traceroute/icmp
+        continue: true
+      - dig/ptr
