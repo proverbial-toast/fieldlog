@@ -2,6 +2,8 @@
 
 ![fieldlog](fieldlog.jpg)
 
+fieldlog - log what you did in the field.
+
 A terminal UI and CLI for running network diagnostic tools from a catalog of
 saved commands, and keeping a log of every run. You pick a tool and a target;
 fieldlog runs the command, streams the output, and files the log plus a run
