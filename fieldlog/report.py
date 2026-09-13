@@ -73,7 +73,7 @@ def record_interrupted(record: dict) -> bool:
 
 
 def format_time(stamp: object) -> str:
-    """`2026-09-12T11:00:49.734145+00:00` -> `2026-09-12 11:00:49`, as stored (UTC)."""
+    """`2026-09-12T12:00:49.734145` -> `2026-09-12 12:00:49`, as stored (localtime)."""
     text = str(stamp or "").strip()
     if not text:
         return "—"
@@ -253,7 +253,7 @@ def render_report(
     if runs:
         first = format_time(runs[0].get("start_time"))
         last = format_time(runs[-1].get("end_time") or runs[-1].get("start_time"))
-        summary += f" · {first} to {last} UTC"
+        summary += f" · {first} to {last}"
     lines += [summary, ""]
 
     if not runs:
@@ -265,7 +265,7 @@ def render_report(
         lines += [f"Scope (from the latest run): {scope}", ""]
 
     lines += [
-        "| # | Recipe | Started (UTC) | Duration | Exit | Files |",
+        "| # | Recipe | Started | Duration | Exit | Files |",
         "|---|--------|---------------|----------|------|-------|",
     ]
     for record in runs:
@@ -293,7 +293,7 @@ def render_report(
         log_path = resolve_log(target_dir, record)
         raw_log = str(record.get("artifact_log", "") or "")
         shown_log = display_path(target_dir, log_path) if log_path else raw_log
-        meta = f"Started {started} UTC · {duration}"
+        meta = f"Started {started} · {duration}"
         if shown_log:
             meta += f" · log `{shown_log}`"
         lines += [meta, ""]

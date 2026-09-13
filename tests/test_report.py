@@ -37,8 +37,8 @@ def target_dir(tmp_workspace: Path) -> Path:
             # Older runs stored this relative to the cwd they were launched from.
             "artifact_log": "targets/10.0.0.1/raw/20260912T120049_ping_quick_01.log",
             "out_dir": "targets/10.0.0.1/raw/20260912T120049",
-            "start_time": "2026-09-12T11:00:49.734145+00:00",
-            "end_time": "2026-09-12T11:00:49.745039+00:00",
+            "start_time": "2026-09-12T12:00:49.734145",
+            "end_time": "2026-09-12T12:00:49.745039",
             "duration_sec": 0.01,
             "exit_code": 0,
             "artifacts": [
@@ -56,8 +56,8 @@ def target_dir(tmp_workspace: Path) -> Path:
             },
             "artifact_log": str(raw / "20260913T133333_tcpdump_capture_02.log"),
             "out_dir": str(raw / "20260913T133333"),
-            "start_time": "2026-09-13T12:33:33.215199+00:00",
-            "end_time": "2026-09-13T12:33:40.226243+00:00",
+            "start_time": "2026-09-13T13:33:33.215199",
+            "end_time": "2026-09-13T13:33:40.226243",
             "duration_sec": 7.01,
             "exit_code": 130,
             "artifacts": [
@@ -85,10 +85,11 @@ def test_table_has_one_row_per_run(target_dir: Path, tmp_workspace: Path, capsys
     rows = [ln for ln in out.splitlines() if ln.startswith("| ") and not ln.startswith("| # ")]
     assert len(rows) == 2
     assert out.startswith("# 10.0.0.1\n")
-    assert "· 2 runs · 2026-09-12 11:00:49 to 2026-09-13 12:33:40 UTC" in out
+    assert "| # | Recipe | Started | Duration | Exit | Files |" in out
+    assert "· 2 runs · 2026-09-12 12:00:49 to 2026-09-13 13:33:40\n" in out
     assert "Scope (from the latest run): target `10.0.0.1` · dns `router1` · interface `eth0` · lhost `10.0.0.9`" in out
     # A pipe in the command must not split the summary row.
-    assert "| 01 | ping/quick | 2026-09-12 11:00:49 | 0.01s | 0 | 1 |" in out
+    assert "| 01 | ping/quick | 2026-09-12 12:00:49 | 0.01s | 0 | 1 |" in out
 
 
 def test_exit_codes_are_annotated(target_dir: Path, tmp_workspace: Path, capsys):
