@@ -2,17 +2,32 @@
 
 ![fieldlog](fieldlog.jpg)
 
-A terminal UI and CLI for running tools from a catalog of saved commands
-and keeping a log of every run. You choose the tool and the target; fieldlog runs it,
-streams the output, and files the log and a run record under `./targets/<name>/`.
+A terminal UI and CLI for running network diagnostic tools from a catalog of
+saved commands, and keeping a log of every run. You pick a tool and a target;
+fieldlog runs the command, streams the output, and files the log plus a run
+record under `targets/<name>/`. The archive is the point: a week later you can
+see exactly what was run against a host, when, with what result.
+
+```bash
+fieldlog run ping/quick 192.168.1.20
+fieldlog history 192.168.1.20
+fieldlog report 192.168.1.20 -o ping-report.md
+```
+
+```text
+targets/192.168.1.20/
+├── session.json                                  # one record per run
+└── raw/20260912T180156_ping_quick_01.log         # what ping printed
+```
 
 ## Requirements
 
-- Linux
-- Python 3.11+
-- The diagnostic tools themselves (ping, curl, dig, …). fieldlog doesn't bundle them;
-  tools missing from `$PATH` are flagged with an install hint.
-- Permission to access the network interface for some local diagnostics.
+- Linux (the runner uses a pty and `SIOCGIFADDR`)
+- Python 3.11 or newer
+- The tools themselves: ping, curl, dig, traceroute and so on. fieldlog does not
+  bundle them. A tool missing from `$PATH` is listed but marked, with an install hint.
+- Root, or the right capabilities, for tools that need it (tcpdump, arp-scan,
+  `ping -f`). fieldlog does not escalate; write `sudo` into the recipe if you want it.
 
 ## Install
 
@@ -25,125 +40,160 @@ For development:
 
 ```bash
 git clone https://github.com/proverbial-toast/fieldlog && cd fieldlog
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
+uv sync --extra dev             # or: python3 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
+uv run pytest                   # or: pytest
 ```
 
 ## Terms
 
 | Term | Meaning | Example |
 |------|---------|---------|
-| **Tool** | An entry under `recipes:` in the YAML: one binary plus its presets. Listed in the TUI's recipes pane. | `ping` |
-| **Preset** | One saved set of flags for a tool. Called a **variant** in the TUI. | `top100` |
+| **Tool** | An entry under `recipes:`: one binary plus its presets. | `ping` |
+| **Preset** | One saved set of flags for a tool. Called a **variant** in the TUI. | `quick` |
 | **Recipe ID** | `tool/preset`, how the CLI names something runnable. | `ping/quick` |
 | **Chain** | An entry under `chains:`: recipe IDs run in order against one scope. | `reach` |
+| **Scope** | The target, DNS name, interface and local address a run is aimed at. | `192.168.1.0/24` |
+| **Workspace** | The archive root, `./targets` by default. One folder per target inside it. | `~/audits` |
 
 ## TUI
 
-Run `fieldlog` (or `fieldlog tui`). Press `?` for every key.
+Run `fieldlog`, or `fieldlog tui`. Press `?` for the full key list.
 
-To start with the scope already set, pass it to `tui`. It takes the same flags as `run`:
+To start with the scope already set, pass it to `tui`. It takes the same scope
+flags as `run`:
 
 ```bash
-fieldlog tui 192.168.1.20 -i eth0              # or -t 192.168.1.20
-fieldlog tui -t 192.168.1.0/24 -H router1 -i eth0 -w ~/out
+fieldlog tui 192.168.1.20 -i eth0                        # or -t 192.168.1.20
+fieldlog tui -t 192.168.1.0/24 -H router1 -i eth0 -w ~/audits
 ```
 
-An interface you name is kept even with no IP yet; `T` still changes everything
-at runtime.
+The scope is remembered per workspace in `<workspace>/.last-scope.json`, so a
+bare `fieldlog` resumes where you left off; any flag you pass overrides the
+remembered value. With no interface given, fieldlog picks the first one that
+has an IPv4 address. An interface you name is kept even if it has no address
+yet (a VPN that comes up later), and `T` changes all of it at runtime.
 
-The scope is remembered per workspace in `<workspace>/.last-scope.json`, so a bare
-`fieldlog` resumes where you left off. Any flag you pass overrides the remembered
-value.
+### Keys
 
-| Key         | Action                                                  |
-|-------------|---------------------------------------------------------|
-| `T`         | Set target, dns name, interface and log destination     |
-| `↑ ↓` `j k` | Move                                                    |
-| `Enter`     | On a tool: jump to its variants · on a variant: run it  |
-| `Ctrl+P`    | Palette: fuzzy-find and run any recipe                  |
-| `[` `]`     | Previous / next output tab                              |
-| `Ctrl+C`    | Interrupt the active tab's job (SIGINT)                 |
-| `Shift+R`   | Reload recipes                                          |
-| `M`         | Recipe manager (sources, drop-ins, overrides)           |
-| `?`         | All keys                                                |
-| `Q Q`       | Quit (double-tap) · `Ctrl+Q` quits in one press         |
+| Key | Action |
+|-----|--------|
+| `T` | Set target, DNS name, interface and log destination |
+| `↑ ↓` `j k` | Move within the focused pane |
+| `Tab` | Switch focus between RECIPES and VARIANTS |
+| `Enter` | On a tool: jump to its variants. On a variant or chain: run it |
+| `1`–`9`, `0` | Select variant 1–10 of the current tool |
+| `,` `.` | Previous / next variant |
+| `/` | Filter recipes. `Esc` clears it |
+| `!` | Toggle runnable-only (default) / show everything |
+| `Ctrl+P` | Palette. `Enter` loads a recipe's args, `Shift+Enter` runs it. Type `>` for commands only |
+| `E` | Edit the args of the selected variant (raw template). `Esc` or `Ctrl+J` applies |
+| `R` | Reset edited args to the variant default |
+| `P` | Pin / unpin the selected variant or chain |
+| `[` `]` | Previous / next output tab |
+| `W` | Close the active tab. A running job asks: kill, or detach and keep it running |
+| `Shift+W` | Close every finished tab |
+| `Ctrl+C` | Send SIGINT to the active tab's job |
+| `Y` | Copy `tail -f <log>` for the active tab to the clipboard |
+| `Ctrl+Shift+C` | Copy the active tab's whole log to the clipboard |
+| `M` | Recipe manager: sources, drop-ins, overrides, missing tools |
+| `Shift+R` | Reload recipes. Running jobs are untouched |
+| `L` | Toggle split / stacked layout (stacked is automatic under 120 columns) |
+| `H` | Show / hide the hotkey bar |
+| `Q Q` | Quit (double-tap). Asks first if jobs are running |
 
-Each run opens a tab and runs in parallel — start ping and curl and both
-hit the wire at once; `Ctrl+C` interrupts only the tab you're on and the tab then
-shows whatever the tool exited with, marked `interrupted`. (`--timeout` is
-a `run` CLI flag, per-invocation, not a TUI control.) If a job stops at a prompt (y/n, passphrase), type the
-answer in the reply field under its output and press Enter; `Esc` leaves the field.
-Prompts that read the terminal directly (sudo, ssh passphrases) work the same way,
-since the job owns its own pty.
+### Jobs
+
+Every run opens its own tab and runs at once; start ping and curl and both hit
+the wire together. `Ctrl+C` interrupts only the tab you are on, and the tab
+then shows whatever exit code the tool returned, marked `interrupted`.
+
+If a job stops at a prompt (`[y/N]`, a passphrase), a reply field appears under
+its output: type the answer and press `Enter`, or click one of the chips
+fieldlog offers for a `[y/N]`-style prompt. `Esc` leaves the field with the
+job still waiting. Prompts that read the terminal directly, such as sudo and
+ssh, work the same way because each job owns its own pty. Hotkeys are
+suspended while the reply field has focus.
+
+The target and DNS name cannot be changed while a job is running; stop the
+jobs first. The interface and log destination can.
+
+The ARGS band shows the command that will run. `E` opens the raw editor on the
+*template*, so `$TARGET` stays `$TARGET` and an edit made under one target
+still runs correctly against the next. Edits are per recipe and live for the
+session; `R` restores the variant default.
 
 ## CLI
 
 ```bash
-fieldlog list                        # every recipe
-fieldlog list ping                   # search tool, preset and flags
-fieldlog list -c ports               # category filter (case-insensitive substring)
-fieldlog list --runnable             # only tools found in $PATH
-fieldlog list --tools                # tools without presets
-fieldlog list -q                     # bare recipe IDs, one per line (for fzf/xargs)
+fieldlog list                            # every recipe, grouped by category, then the chains
+fieldlog list ping                       # search tool, preset name and flags
+fieldlog list -c dns                     # category filter (case-insensitive substring)
+fieldlog list --runnable                 # only tools found in $PATH
+fieldlog list --tools                    # one line per tool, no presets
+fieldlog list -q                         # bare recipe IDs and chain ids, one per line (for fzf / xargs)
 fieldlog list --json
 
-fieldlog show ping                   # a tool's first preset
-fieldlog show ping/quick -t 192.168.1.20 -H router1     # preset with variables filled in
+fieldlog show ping                       # a tool's first preset
+fieldlog show ping/quick -t 192.168.1.20 -H router1     # with the variables filled in
+fieldlog show reach -t 192.168.1.20      # a chain: every step's resolved command
 
-fieldlog run ping/quick 192.168.1.20              # target as an argument...
-fieldlog run ping/quick -t 192.168.1.20           # ...or as a flag
-fieldlog ping/quick 192.168.1.20                # "run" is optional (except for IDs
-                                               #   named list/show/run/history/report/
-                                               #   tui and their aliases — use "run"
-                                               #   explicitly)
-fieldlog run ping/quick 192.168.1.20 --dry-run  # print command, env and paths; run nothing
+fieldlog run ping/quick 192.168.1.20                # target as an argument...
+fieldlog run ping/quick -t 192.168.1.20             # ...or as a flag
+fieldlog ping/quick 192.168.1.20                    # "run" is optional
+fieldlog run ping/quick 192.168.1.20 --dry-run      # print command, env and paths; run nothing
 fieldlog run ping/quick 192.168.1.20 --extra-args "-c 1"
-fieldlog run reach 10.0.0.1                     # a chain: its recipes in order
+fieldlog run reach 192.168.1.20                     # a chain: its recipes in order
 
-fieldlog history                     # list target folders
-fieldlog history 192.168.1.20         # runs for one target folder
+fieldlog history                         # target folders in the workspace, with run counts
+fieldlog history 192.168.1.20            # runs for one folder
 fieldlog history router1 --json
 
-fieldlog report 192.168.1.20                      # every run as Markdown on stdout
-fieldlog report router1 --tail 10                 # 10 lines of each log instead of 40
-fieldlog report router1 --full -o run-report.md   # whole logs, written to a file
-fieldlog report router1 --since 12                # only runs #12 and up
+fieldlog report 192.168.1.20                        # every run as Markdown on stdout
+fieldlog report router1 --tail 10                   # 10 lines of each log instead of 40
+fieldlog report router1 --full -o run-report.md     # whole logs, written to a file
+fieldlog report router1 --since 12                  # only runs #12 and up
 ```
+
+The bare form `fieldlog <recipe> <target>` works for any recipe or chain whose
+id is not itself a command name (`list`, `show`, `run`, `history`, `report`,
+`tui`, or their aliases `ls`, `recipes`, `info`, `exec`, `log`, `runs`).
 
 ### `run` options
 
 | Option | Meaning |
 |--------|---------|
-| `-t`, `--target` | Target IP, CIDR or hostname (or pass it as the second argument) |
+| `-t`, `--target` | Target IP, CIDR or hostname. Or pass it as the second argument |
 | `-H`, `--host` | DNS name (`$HOST`, `$TARGET_HOST`) |
 | `-i`, `--interface` | Interface name (`$IFACE`, default `eth0`) |
-| `-l`, `--lhost` | Local IP (`$LHOST`); defaults to the interface's current IP |
+| `-l`, `--lhost` | Local IP (`$LHOST`). Default: the interface's current address |
 | `-w`, `--workspace` | Archive root (default `./targets`) |
-| `--artifact-root DIR` | Write logs to `DIR/<target>/` instead of the workspace |
-| `--timeout SECONDS` | Stop the job after this many seconds (recorded as exit 124) |
-| `-n`, `--dry-run` | Show what would run without running it |
-| `--extra-args "..."` | Append to the command |
+| `--artifact-root DIR` | Write logs and `$OUTDIR` under `DIR/<name>/` instead of the workspace |
+| `--timeout SECONDS` | Stop the job after this long, recorded as exit 124. Per step for a chain |
+| `-n`, `--dry-run` | Show what would run. Reserves no run number, creates nothing |
+| `--extra-args "..."` | Append to the command. Not accepted for a chain |
 | `-q`, `--quiet` | Tool output only, no banner or summary |
-| `--json` | Print the run record as JSON when done |
+| `--json` | Print the run record (or the chain summary record) as JSON when done |
+
+`show` accepts `-t`, `-H`, `-i` and `-l`. `history` accepts `-t`, `-w` and
+`--json`. `list` accepts `-c`, `-r`/`--runnable`, `--tools`, `-q`/`--names`
+and `--json`.
 
 ### `report` options
 
 | Option | Meaning |
 |--------|---------|
-| `-t`, `--target` | Target folder name (or pass it as the argument), as `history` uses it |
+| `-t`, `--target` | Target folder name, or pass it as the argument. Same rule as `history` |
 | `-w`, `--workspace` | Archive root (default `./targets`) |
-| `-o`, `--output FILE` | Write the Markdown to `FILE` (parent folders created); `-` is stdout |
+| `-o`, `--output FILE` | Write the Markdown to `FILE`, creating parent folders. `-` is stdout |
 | `--tail N` | Lines of each run's log to include (default 40) |
-| `--full` | Include each log in full instead of a tail |
+| `--full` | Include each log in full |
 | `--since ID` | Only runs numbered `ID` or higher |
 
-A report is one Markdown document: a summary table of every run, then a section
-per run with its command, timings, artifacts and log output. With `-o` nothing
-but the file is written — the confirmation goes to stderr — so it is safe to
-redirect. Binary artifacts are listed, never quoted.
-
-`show` accepts `-t`, `-H`, `-i`, `-l`. `history` accepts `-w` and `--json`.
+A report is one Markdown document: a summary table of every run, then a
+section per run with its command, timings, artifacts and log output. A chain's
+summary record renders as a step table. With `-o`, stdout stays empty and the
+confirmation goes to stderr, so the command is safe to pipe. Binary artifacts
+are listed, never quoted.
 
 ## Recipes
 
@@ -159,7 +209,7 @@ your own as `*.yaml` files in either:
 recipes:
   - id: ping                          # tool id (required)
     name: "ICMP Reachability"         # display name
-    bin: ping                          # executable checked in $PATH (default: id)
+    bin: ping                         # executable checked in $PATH (default: id)
     category: "Host & Reachability"   # grouping in the TUI and `list -c`
     presets:                          # required
       - id: quick                     # recipe ID becomes ping/quick
@@ -184,51 +234,58 @@ recipes:
 
 ### How the command is built
 
-If a preset's flags reference `$OUTDIR`, that per-run folder is created before
-the command runs, so a tool writing side-cars (`-oA`, `-w`, `--logfile`) has
-somewhere to write. Whatever files it produces are recorded in the run's
-`session.json` afterward — no need to declare them.
-
-- The command is `bin` + space + `flags`, run by `/bin/sh` under a pty.
+- The command is `bin`, a space, and `flags`, run by `/bin/sh` on a pty.
   `flags` is shell syntax: quote values with spaces; pipes, `;` and `$(...)` work.
-- If `flags` starts with `timeout ` or with the binary's own name, it is used as
-  the whole command. That is how you wrap a tool:
+- If `flags` starts with the binary's own name or with a wrapper (`timeout`,
+  `sudo`, `doas`, `env`, `nice`), it is used as the whole command:
 
   ```yaml
   flags: "timeout 60s ping -c 4 $TARGET"
   ```
 
-  The `$PATH` check still uses `bin`. The exit code (124 when `timeout` fires)
-  is recorded in `session.json`.
+  The `$PATH` check still uses `bin`.
+- A single simple command is `exec`'d, so the tool is the process fieldlog waits
+  on and the recorded exit code is the tool's own. A pipeline or a `;` list keeps
+  the shell in front, and the exit code is then the shell's view of it.
+- If the flags reference `$OUTDIR`, that per-run folder is created before the
+  command starts, so a tool that writes side files (`-w`, `--logfile`, `-oA`)
+  has somewhere to put them. Whatever it writes is recorded in the run's record
+  afterwards; nothing has to be declared.
 
 ### Variables
 
 fieldlog fills these in before running and shows the result in previews.
-`${NAME}` works too; any other `$VAR` is left for the shell.
+`${NAME}` works too. Any other `$VAR`, and shell forms like `${NAME:-x}`, are
+left for the shell, which has every binding in its environment.
 
 | Variable | Value |
 |----------|-------|
 | `$TARGET`, `$TARGET_IP` | Target IP, CIDR or hostname |
-| `$HOST`, `$TARGET_HOST` | DNS name. If unset and the target is a hostname, the target. Presets using it won't run without one |
-| `$LHOST` | Local IP |
+| `$HOST`, `$TARGET_HOST` | DNS name. If unset and the target is a hostname, the target. Presets using it are not runnable without one |
+| `$LHOST` | Local IP: the one given, else the interface's current address, read at launch |
 | `$IFACE` | Interface name |
 | `$OUTDIR`, `$OUT_DIR` | Per-run folder for files the tool writes: `targets/<name>/raw/<timestamp>/` |
-| `$RUN_ID` | Run number: `01`, `02`, … (set in the environment only) |
+| `$RUN_ID` | Run number, `01`, `02`, … Set in the environment only |
+
+A preset is **not runnable** while its variables are unmet or its binary is
+missing. The TUI says why; the CLI refuses with the same reason. Targets and
+DNS names may only contain letters, digits, `.`, `:`, `/`, `-` and `_`, since
+they are pasted into a shell command.
 
 ### Chains
 
-A **chain** is a named, ordered list of recipe IDs run one after another against
-the current scope. Chains live beside `recipes:` in the same YAML files:
+A **chain** is a named, ordered list of recipe IDs run one after another
+against the current scope. Chains live beside `recipes:` in the same files:
 
 ```yaml
 chains:
-  - id: reach                                 # chain id (required, can't be a tool id)
+  - id: reach                                 # chain id (required, cannot be a tool id)
     name: "reachability · ping, trace, ptr"   # display name (default: the id)
     category: "Chains"                        # grouping (default: "Chains")
     steps:                                    # required, at least one
-      - ping/quick                            # a step, stops the chain if it fails
+      - ping/quick                            # a step; the chain stops if it fails
       - recipe: traceroute/icmp               # the same step, written out
-        continue: true                        # …but keep going when this one fails
+        continue: true                        # …but keep going if this one fails
       - dig/ptr
 ```
 
@@ -238,57 +295,48 @@ chains:
 | `name` | chain | no | Display name |
 | `category` | chain | no | Group name. Default `Chains` |
 | `steps` | chain | yes | Recipe IDs in order. A bare tool id means its first preset |
-| `recipe` | step | yes | `tool/preset` (the mapping form) |
+| `recipe` | step | yes | `tool/preset`, in the mapping form |
 | `continue` | step | no | `true` keeps the chain going when this step fails |
 
-- A chain stops at the first non-zero exit unless that step says `continue: true`.
-  `Ctrl+C` always stops it, whatever the step says. The chain's exit status is the
-  first non-zero one it saw (130 if it was interrupted), so `fieldlog run reach …`
-  fails the way the step that failed did.
-- Every step shares one `$OUTDIR`, so a chain's side-car files land together. The
-  logs stay separate, one per step, named after the recipe as usual.
-- A chain whose id collides with a tool, that has no steps, or that names a recipe
-  nothing defines is skipped with a message — the rest of the catalog still loads.
-  Steps are checked once every file is merged, so a built-in chain may name a
-  preset a drop-in adds.
-- A drop-in adds chains; a chain with an existing id replaces the earlier one and
-  is listed as an override, exactly as a preset is.
+- A chain stops at the first non-zero exit unless that step says
+  `continue: true`. `Ctrl+C` always stops it. The chain's own exit status is the
+  first non-zero one it saw, or 130 if it was interrupted, so `fieldlog run reach …`
+  fails the way its failing step did.
+- A chain is runnable only when every step is. The reason names the step.
+- Every step shares one `$OUTDIR`, so side files from one chain land together.
+  Logs stay separate, one per step.
+- Each step is archived as its own run record, tagged with its position, and the
+  chain adds one summary record named `chain/<id>`: each step's run number and
+  exit code, where it stopped, and the shared `$OUTDIR`.
+- Steps are checked once every file is merged, so a built-in chain may name a
+  preset that a drop-in adds. A chain with a bad id, no steps, or an unknown
+  recipe is skipped with a message; the rest of the catalog still loads.
 
-Each step is archived as its own run record, and the chain adds one more record
-of its own — `chain/<id>`, with each step's run number, recipe and exit code,
-where it stopped, and the shared `$OUTDIR`. `fieldlog report` renders that as a
-step table instead of a log.
-
-`fieldlog list` shows chains in their own category, one line each:
+`fieldlog list` shows chains in their own section, one line each. A `?` marks a
+step the chain continues past:
 
 ```text
 reach      reachability · ping, trace, ptr    ping/quick → traceroute/icmp? → dig/ptr
 ```
 
-A `?` marks a step the chain continues past. In the TUI a `Chains` section sits
-under the recipes; selecting one lists its steps read-only and `Enter` runs the
-whole chain, a tab per step. Per-recipe args edits (`E`) still apply inside a
-chain — the order and the steps themselves are edited in the YAML.
+In the TUI, chains sit under the recipes. Selecting one lists its steps
+read-only; `Enter` runs the whole chain, one tab per step. Per-recipe args
+edits (`E`) still apply inside a chain. The steps themselves are edited in the
+YAML.
 
 ### Drop-in files
 
 Drop-ins load after the built-in catalog, in filename order: the config
 directory first, then `./recipes.d/`.
 
-- The same filename in both directories is loaded once — the local `./recipes.d/`
-  file wins, being the more specific of the two, and the shadowing is reported.
-- A new tool `id` adds a tool.
-- An existing tool `id` adds its presets to that tool. A preset with an existing
-  `id` replaces the built-in one; the recipe manager (`M`) lists overrides.
-- A file that fails to parse is reported and skipped; the rest still load.
-
-This repo ships a `recipes.d/` of optional, longer-running network diagnostic
-recipes kept out of the packaged catalog on purpose.
-To use them after a `pipx` install, copy them into your config directory:
-
-```bash
-cp path/to/fieldlog/recipes.d/*.yaml ~/.config/fieldlog/recipes.d/
-```
+- A new tool `id` adds a tool. A new chain `id` adds a chain.
+- An existing tool `id` adds its presets to that tool. A preset or chain with an
+  existing `id` replaces the earlier one; the recipe manager (`M`) lists these
+  overrides.
+- The same filename in both directories is loaded once: the local `./recipes.d/`
+  file wins, and the shadowing is reported.
+- A file that fails to parse is reported, with the line, and skipped. The rest
+  still load. Editor leftovers (`*~`, `*.swp`, `*.bak`, `*.orig`) are ignored.
 
 Adding a preset to the built-in `ping`:
 
@@ -301,40 +349,72 @@ recipes:
         flags: "-c 1 -W 1 $TARGET"
 ```
 
-## Where output goes
+This repo's own `recipes.d/` is empty. It is the local drop-in directory for
+when you run fieldlog from a checkout.
+
+## The archive
 
 ```text
 targets/
-└── <name>/                         # dns name if set, else the target (/ becomes _)
-    ├── session.json                # JSON array, one record per run
-    ├── notes/
+├── .last-scope.json                # the TUI's remembered scope for this workspace
+├── .pinned-recent.json             # pinned and recent recipes
+└── <name>/                         # DNS name if set, else the target ("/" becomes "_")
+    ├── session.json                # JSON array, one record per run, appended under a lock
+    ├── .run-counter                # highest run number handed out
     └── raw/
-        ├── 20260912T180156_ping_quick_01.log    # full terminal output
-        └── 20260912T180156/                    # that run's $OUTDIR
+        ├── 20260912T180156_ping_quick_01.log    # what the tool printed, ANSI stripped
+        └── 20260912T180156/                    # that run's $OUTDIR, if it used one
 ```
 
-- A subnet like `192.168.1.0/24` gets the folder `192.168.1.0_24`.
-- `fieldlog history <name>` uses the folder name: the dns name if you set one.
-- Each record holds the recipe ID, command, variables, log path, start and end
-  times, exit code, and any new files found in the target folder.
-- The exit code is the tool's own, never fabricated: interrupting a run adds
-  `"interrupted": true` to its record and leaves the code the tool returned
-  (`ping` catches SIGINT, prints its statistics and exits 0). A tool that does
-  not handle SIGINT is killed by it and shows 130, the shell's 128+signal.
-- `--artifact-root DIR` (or *log destination* in `T`) moves logs and `$OUTDIR` to
-  `DIR/<target>/`; `session.json` stays in the workspace and records those files
-  with absolute paths, since they sit outside the target folder.
-- Run numbers are claimed under a lock (`.session.lock`), and the highest number
-  handed out is kept in `.run-counter`, so a CLI run beside the TUI never reuses one.
+A run record:
+
+```json
+{
+  "id": "01",
+  "recipe": "ping/quick",
+  "command": "ping -c 4 -W 1 192.168.1.20",
+  "environment": {"TARGET": "192.168.1.20", "TARGET_IP": "192.168.1.20", "TARGET_HOST": "",
+                  "LHOST": "192.168.1.5", "IFACE": "eth0", "OUT_DIR": "…/raw/20260912T180156", "RUN_ID": "01"},
+  "artifact_log": "…/targets/192.168.1.20/raw/20260912T180156_ping_quick_01.log",
+  "out_dir": "…/targets/192.168.1.20/raw/20260912T180156",
+  "start_time": "2026-09-12T17:01:56.734145+00:00",
+  "end_time": "2026-09-12T17:01:59.801200+00:00",
+  "duration_sec": 3.07,
+  "exit_code": 0,
+  "artifacts": [{"path": "raw/20260912T180156_ping_quick_01.log", "lines": 9, "bytes": 425}]
+}
+```
+
+Optional keys: `"interrupted": true` when the operator sent SIGINT, `"chain":
+{"id", "step", "of"}` on a chain step, `"binary": true` on an artifact that is
+not text.
+
+- A subnet like `192.168.1.0/24` gets the folder `192.168.1.0_24`. Anything else
+  outside `[A-Za-z0-9._-]` becomes `-`.
+- `fieldlog history <name>` and `report <name>` take the folder name: the DNS
+  name if you set one, else the target.
+- The exit code is the tool's own, never fabricated. `ping` catches SIGINT,
+  prints its statistics and exits 0; the record says `exit_code: 0` and
+  `interrupted: true`. A tool that does not handle SIGINT is killed by it and
+  shows 130, the shell's 128 + signal.
+- `artifacts` lists every file that appeared or changed under the target folder
+  during the run, primary log first.
+- `--artifact-root DIR` (or the *log destination* in `T`) moves logs and
+  `$OUTDIR` to `DIR/<name>/`. `session.json` stays in the workspace and records
+  those files with absolute paths, since they sit outside the target folder.
+- Run numbers are per target folder, claimed under `.session.lock`, and the
+  highest number handed out is kept in `.run-counter`, so a CLI run beside the
+  TUI never reuses one. A dry run claims nothing.
+- Log filenames use local time; the record's timestamps are UTC.
 
 ## Scope
 
-Built for tools that run to completion and write to stdout or files: ping, curl,
-dig, traceroute and similar. Answering a one-line prompt works; long interactive
-sessions are out of scope.
+Built for tools that run to completion and write to stdout or files: ping,
+curl, dig, traceroute, iperf3 and similar. Answering a one-line prompt works;
+long interactive sessions are out of scope.
 
-Planned: parsers that turn tool output into structured findings (e.g. ping
-output into reachability results).
+Planned: parsers that turn tool output into structured findings, so a ping run
+can be read as "4 of 4 replies, 0.02 ms" without opening the log.
 
 ## License
 

@@ -108,7 +108,7 @@ def dispatch_argv(argv: Optional[List[str]] = None) -> Tuple[str, List[str]]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fieldlog",
-        description="fieldlog: Operator-driven network diagnostic & enumeration archive",
+        description="fieldlog: run catalogued network diagnostics against a target and keep a log of every run",
     )
     parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
 
