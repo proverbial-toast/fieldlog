@@ -19,7 +19,7 @@ import signal
 import struct
 import termios
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
@@ -363,8 +363,8 @@ def _append_manifest(
         "environment": manifest_environment(env),
         "artifact_log": str(job.log_path),
         "out_dir": str(job.out_dir) if job.out_dir else "",
-        "start_time": datetime.fromtimestamp(start, timezone.utc).isoformat(),
-        "end_time": datetime.fromtimestamp(end, timezone.utc).isoformat(),
+        "start_time": datetime.fromtimestamp(start).isoformat(),
+        "end_time": datetime.fromtimestamp(end).isoformat(),
         "duration_sec": round(end - start, 2),
         "exit_code": code,
         # The code is the tool's own; this says the operator asked it to stop.
