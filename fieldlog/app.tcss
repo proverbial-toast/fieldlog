@@ -304,8 +304,12 @@ Screen {
 }
 
 #btn-run.-disabled {
-    color: #4e5d5a;
-    background: #101514;
+    color: #e0776a;
+    background: #1a0f0e;
+}
+
+#btn-run.-disabled:hover {
+    color: #f0958a;
 }
 
 #btn-pin {
