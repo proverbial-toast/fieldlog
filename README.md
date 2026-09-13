@@ -377,8 +377,8 @@ A run record:
                   "LHOST": "192.168.1.5", "IFACE": "eth0", "OUT_DIR": "…/raw/20260912T180156", "RUN_ID": "01"},
   "artifact_log": "…/targets/192.168.1.20/raw/20260912T180156_ping_quick_01.log",
   "out_dir": "…/targets/192.168.1.20/raw/20260912T180156",
-  "start_time": "2026-09-12T17:01:56.734145+00:00",
-  "end_time": "2026-09-12T17:01:59.801200+00:00",
+  "start_time": "2026-09-12T18:01:56.734145",
+  "end_time": "2026-09-12T18:01:59.801200",
   "duration_sec": 3.07,
   "exit_code": 0,
   "artifacts": [{"path": "raw/20260912T180156_ping_quick_01.log", "lines": 9, "bytes": 425}]
@@ -405,7 +405,7 @@ not text.
 - Run numbers are per target folder, claimed under `.session.lock`, and the
   highest number handed out is kept in `.run-counter`, so a CLI run beside the
   TUI never reuses one. A dry run claims nothing.
-- Log filenames use local time; the record's timestamps are UTC.
+- Log filenames and record timestamps use local time.
 
 ## Scope
 
