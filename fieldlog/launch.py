@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 
 from fieldlog.archive import next_run_number, reserve_run_number
 from fieldlog.recipes import format_command
-from fieldlog.runner import build_env
+from fieldlog.runner import build_env, exec_form
 from fieldlog.state import ActiveJob, TargetSession, prepare_job_paths, resolve_flags, template_vars
 
 
@@ -86,7 +86,9 @@ def plan_launch(
         # ponytail: coreutils timeout, so the job exits 124 on its own and run_job records it
         # coreutils timeout signals the whole process group on expiry, so the
         # sh -c wrapper (kept for pipes / ${VAR:-default}) is cleaned up too.
-        command = f"timeout -k 5 {timeout:g}s sh -c {shlex.quote(command)}"
+        # The inner shell execs a simple command for the same reason run_job
+        # does: the tool's own exit code is what timeout then reports.
+        command = f"timeout -k 5 {timeout:g}s sh -c {shlex.quote(exec_form(command))}"
 
     job = ActiveJob(
         id=run_id,

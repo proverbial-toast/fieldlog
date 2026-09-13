@@ -547,6 +547,8 @@ async def execute_cli_job(
         console.print(f"[dim]{'─' * 80}[/dim]")
         status_style = "green" if code == 0 else "red"
         status_label = f"[DONE:{code}]" if code == 0 else f"[FAIL:{code}]"
+        if job.interrupted:
+            status_label += " (interrupted)"
         art_count = delta.total_files if delta else 1
         lines_count = delta.total_lines if delta else job.lines_count
         bytes_count = delta.total_bytes if delta else job.bytes_count
@@ -766,7 +768,11 @@ def handle_history(args: argparse.Namespace) -> int:
         start = r.get("start_time", "")
         artifacts = r.get("artifacts", [])
         status_col = "green" if code == 0 else "red"
-        console.print(f"  [bold]#{rid}[/bold] [{status_col}]{recipe}[/{status_col}] | exit {code} | {dur}s | {start}")
+        flag = " interrupted" if r.get("interrupted") else ""
+        console.print(
+            f"  [bold]#{rid}[/bold] [{status_col}]{recipe}[/{status_col}] "
+            f"| exit {code}{flag} | {dur}s | {start}"
+        )
         if artifacts:
             for a in artifacts:
                 console.print(f"      ↳ {a.get('path')} ({a.get('bytes', 0)} B)")

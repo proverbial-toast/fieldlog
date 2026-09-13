@@ -2882,6 +2882,8 @@ class FieldlogApp(App):
                 _safe_write(Text(msg, style=DIM))
                 job.log_lines.append(msg)
             exit_line = f"[Runner] exit {code} in {job.elapsed:.2f}s"
+            if job.interrupted:
+                exit_line += " · interrupted"
             _safe_write(Text(exit_line, style=ACCENT if code == 0 else ERR))
             job.log_lines.append(exit_line)
         except asyncio.CancelledError:
@@ -2894,8 +2896,6 @@ class FieldlogApp(App):
             _safe_write(Text(err, style=ERR))
             job.log_lines.append(err)
         finally:
-            if job.interrupted:
-                job.exit_code = code = 130
             if job.end_time is None:
                 job.end_time = time.time()
             for t in self.tabs:

@@ -14,6 +14,7 @@ import json
 import os
 import pty
 import re
+import shlex
 import signal
 import struct
 import termios
@@ -134,6 +135,50 @@ def _open_pty() -> tuple[int, int]:
     return master, slave
 
 
+def exec_form(command: str) -> str:
+    """`exec <command>` when it is one simple command, else unchanged.
+
+    /bin/sh (dash) forks even a lone `sh -c "ping …"`, and on a group SIGINT
+    the shell dies of the signal while ping catches it and exits 0 — so the
+    code proc.wait() saw was the shell's, never the tool's. exec makes the
+    tool the process we wait on. A list or pipeline keeps the shell: exec
+    would drop everything after the first command. Redirections are fine.
+    """
+    if "\n" in command:
+        return command
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:              # unbalanced quote: let the shell complain
+        return command
+    if not tokens or tokens[0] == "exec":
+        return command
+    for tok in tokens:
+        if set(tok) <= set("();<>|&") and not (tok[0] in "<>" and set(tok) <= set("<>&")):
+            return command
+    return f"exec {command}"
+
+
+def _make_ctty(slave: int) -> Callable[[], None]:
+    """preexec_fn that makes `slave` the child's controlling terminal.
+
+    A new session has no controlling tty, so without the TIOCSCTTY a tool that
+    opens /dev/tty for its prompt (sudo, ssh passphrases, `read < /dev/tty`)
+    fails with "no tty present" / ENXIO no matter what stdin is.
+
+    ponytail: this runs BEFORE subprocess's close_fds sweep, so `slave` (an fd
+    > 2 in the child) is still open here — no pass_fds needed. setsid() is also
+    why start_new_session is gone: it would only do the same thing twice.
+    """
+
+    def preexec() -> None:
+        os.setsid()  # session leader + own process group, what killpg(pid) relies on
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+    return preexec
+
+
 async def run_job(
     command: str,
     job: ActiveJob,
@@ -166,13 +211,13 @@ async def run_job(
     master, slave = _open_pty()
     try:
         proc = await asyncio.create_subprocess_shell(
-            command,
+            exec_form(command),
             stdin=slave,
             stdout=slave,
             stderr=slave,          # merged, so the raw log matches what the pane shows
             env=env,
             cwd=str(session.target_dir),
-            start_new_session=True,  # its own process group, so SIGINT reaches children
+            preexec_fn=_make_ctty(slave),  # own session + the pty as controlling tty
         )
     finally:
         os.close(slave)
@@ -252,9 +297,7 @@ async def run_job(
             if pending:
                 emit(pending)
 
-        code = await proc.wait()
-        if job.interrupted:
-            code = 130
+        code = shell_exit_code(await proc.wait())
         job.exit_code = code
         job.end_time = time.time()
         job.await_prompt = None
@@ -280,6 +323,12 @@ async def run_job(
                 proc.terminate()
             except ProcessLookupError:
                 pass
+
+
+def shell_exit_code(code: int) -> int:
+    """asyncio reports a signal death as a negative number; record the shell's
+    128+signal instead, so an uncaught SIGINT reads 130 and SIGKILL 137."""
+    return 128 + (-code) if code < 0 else code
 
 
 def _append_manifest(
@@ -318,6 +367,8 @@ def _append_manifest(
         "end_time": datetime.fromtimestamp(end, timezone.utc).isoformat(),
         "duration_sec": round(end - start, 2),
         "exit_code": code,
+        # The code is the tool's own; this says the operator asked it to stop.
+        **({"interrupted": True} if job.interrupted else {}),
         "artifacts": artifact_entries,
     }
     if job.chain:

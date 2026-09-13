@@ -70,9 +70,12 @@ value.
 | `Q Q`       | Quit (double-tap) · `Ctrl+Q` quits in one press         |
 
 Each run opens a tab and runs in parallel — start ping and curl and both
-hit the wire at once; `Ctrl+C` interrupts only the tab you're on. (`--timeout` is
+hit the wire at once; `Ctrl+C` interrupts only the tab you're on and the tab then
+shows whatever the tool exited with, marked `interrupted`. (`--timeout` is
 a `run` CLI flag, per-invocation, not a TUI control.) If a job stops at a prompt (y/n, passphrase), type the
 answer in the reply field under its output and press Enter; `Esc` leaves the field.
+Prompts that read the terminal directly (sudo, ssh passphrases) work the same way,
+since the job owns its own pty.
 
 ## CLI
 
@@ -314,6 +317,10 @@ targets/
 - `fieldlog history <name>` uses the folder name: the dns name if you set one.
 - Each record holds the recipe ID, command, variables, log path, start and end
   times, exit code, and any new files found in the target folder.
+- The exit code is the tool's own, never fabricated: interrupting a run adds
+  `"interrupted": true` to its record and leaves the code the tool returned
+  (`ping` catches SIGINT, prints its statistics and exits 0). A tool that does
+  not handle SIGINT is killed by it and shows 130, the shell's 128+signal.
 - `--artifact-root DIR` (or *log destination* in `T`) moves logs and `$OUTDIR` to
   `DIR/<target>/`; `session.json` stays in the workspace and records those files
   with absolute paths, since they sit outside the target folder.

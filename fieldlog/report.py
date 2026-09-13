@@ -49,20 +49,27 @@ def human_size(num_bytes: object) -> str:
     return f"{size / (1024 * 1024):.1f} MB"
 
 
-def exit_label(code: object) -> str:
-    """Plain reading of an exit code, for headings."""
+def exit_label(code: object, interrupted: bool = False) -> str:
+    """Plain reading of an exit code, for headings. `interrupted` is the
+    operator's SIGINT, which the code itself no longer implies."""
     try:
         value = int(code)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return str(code)
-    note = EXIT_NOTES.get(value)
+    note = "interrupted" if interrupted else EXIT_NOTES.get(value)
     return f"{value} ({note})" if note else str(value)
 
 
-def exit_cell(code: object) -> str:
-    """Table form: a clean run stays quiet, a failure is bold."""
-    label = exit_label(code)
-    return label if label == "0" else f"**{label}**"
+def exit_cell(code: object, interrupted: bool = False) -> str:
+    """Table form: a clean run stays quiet, a failure is bold. An interrupt
+    annotates the code without making a 0 read as a failure."""
+    label = exit_label(code, interrupted)
+    return label if exit_label(code) == "0" else f"**{label}**"
+
+
+def record_interrupted(record: dict) -> bool:
+    """A record carries the flag only when the operator asked for the stop."""
+    return bool(record.get("interrupted"))
 
 
 def format_time(stamp: object) -> str:
@@ -268,7 +275,7 @@ def render_report(
             f"| {escape_cell(record.get('recipe', 'unknown'))} "
             f"| {format_time(record.get('start_time'))} "
             f"| {format_duration(record.get('duration_sec'))} "
-            f"| {exit_cell(record.get('exit_code', 0))} "
+            f"| {exit_cell(record.get('exit_code', 0), record_interrupted(record))} "
             f"| {len(artifacts)} |"
         )
     lines.append("")
@@ -276,7 +283,8 @@ def render_report(
     for record in runs:
         rid = record.get("id", "??")
         recipe = record.get("recipe", "unknown")
-        lines += [f"## #{rid} · {recipe} · exit {exit_label(record.get('exit_code', 0))}", ""]
+        label = exit_label(record.get("exit_code", 0), record_interrupted(record))
+        lines += [f"## #{rid} · {recipe} · exit {label}", ""]
         lines += _code_block(str(record.get("command", "") or ""))
         lines.append("")
 
