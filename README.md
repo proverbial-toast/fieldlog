@@ -169,7 +169,7 @@ id is not itself a command name (`list`, `show`, `run`, `history`, `report`,
 
 | Option | Meaning |
 |--------|---------|
-| `-t`, `--target` | Target IP, CIDR or hostname. Or pass it as the second argument |
+| `-t`, `--target` | Target IP, CIDR, hostname or ssh `user@host`. Or pass it as the second argument |
 | `-H`, `--host` | DNS name (`$HOST`, `$TARGET_HOST`) |
 | `-i`, `--interface` | Interface name (`$IFACE`, default `eth0`) |
 | `-l`, `--lhost` | Local IP (`$LHOST`). Default: the interface's current address |
@@ -265,8 +265,8 @@ left for the shell, which has every binding in its environment.
 
 | Variable | Value |
 |----------|-------|
-| `$TARGET`, `$TARGET_IP` | Target IP, CIDR or hostname |
-| `$HOST`, `$TARGET_HOST` | DNS name. If unset and the target is a hostname, the target. Presets using it are not runnable without one |
+| `$TARGET`, `$TARGET_IP` | Target IP, CIDR, hostname or ssh `user@host` |
+| `$HOST`, `$TARGET_HOST` | DNS name. If unset and the target is a hostname (not `user@host`), the target. Presets using it are not runnable without one |
 | `$LHOST` | Local IP: the one given, else the interface's current address, read at launch |
 | `$IFACE` | Interface name |
 | `$OUTDIR`, `$OUT_DIR` | Per-run folder for files the tool writes: `targets/<name>/raw/<timestamp>/` |
@@ -275,7 +275,8 @@ left for the shell, which has every binding in its environment.
 A preset is **not runnable** while its variables are unmet or its binary is
 missing. The TUI says why; the CLI refuses with the same reason. Targets and
 DNS names may only contain letters, digits, `.`, `:`, `/`, `-` and `_`, since
-they are pasted into a shell command.
+they are pasted into a shell command. Targets may also contain `@`, for an ssh
+`user@host`.
 
 ### Chains
 

@@ -65,12 +65,15 @@ def is_tool_installed(bin_name: str) -> bool:
 # A scope value is interpolated into a shell command line (runner runs it via
 # create_subprocess_shell), so anything outside this set — spaces, ; | & $ ` ( )
 # etc. — could break out of the command. IPs, CIDRs and hostnames need none of it.
+# A target may also be an ssh `user@host`: `@` means nothing to sh without the
+# `$` or `(` that stay refused.
 _UNSAFE_SCOPE = re.compile(r"[^A-Za-z0-9._:/-]")
+_UNSAFE_TARGET = re.compile(r"[^A-Za-z0-9._:/@-]")
 
 
-def unsafe_scope_chars(value: str) -> str:
+def unsafe_scope_chars(value: str, pattern: re.Pattern = _UNSAFE_SCOPE) -> str:
     """The distinct disallowed characters in a target/host, '' if it is clean."""
-    return "".join(dict.fromkeys(_UNSAFE_SCOPE.findall(value or "")))
+    return "".join(dict.fromkeys(pattern.findall(value or "")))
 
 
 def is_blocked(tool: dict, preset: dict, session: TargetSession) -> Tuple[bool, str, str]:
@@ -83,9 +86,9 @@ def is_blocked(tool: dict, preset: dict, session: TargetSession) -> Tuple[bool, 
     if "TARGET" in used:
         if not (session.target or "").strip():
             return True, "variant needs a target · set one in T → scope", "T → scope, then fill in target IP or subnet"
-        bad = unsafe_scope_chars(session.target)
+        bad = unsafe_scope_chars(session.target, _UNSAFE_TARGET)
         if bad:
-            return True, f"target has unsafe characters ({bad}) · fix it in T → scope", "targets are IPs, CIDRs or hostnames — no shell metacharacters"
+            return True, f"target has unsafe characters ({bad}) · fix it in T → scope", "targets are IPs, CIDRs, hostnames or user@host — no shell metacharacters"
     if "HOST" in used:
         if not session.dns_name:
             return True, "variant needs a dns name · set one in T → scope", "T → scope, then fill in dns name"

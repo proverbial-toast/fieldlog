@@ -138,8 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
     # run
     run_p = subparsers.add_parser("run", help="Execute a recipe against a target", aliases=["exec"])
     run_p.add_argument("recipe", help="Recipe specifier (e.g. 'ping/quick' or 'ping')")
-    run_p.add_argument("target", nargs="?", default="", help="Target IP, CIDR subnet, or hostname")
-    run_p.add_argument("-t", "--target", dest="target_flag", default="", help="Target IP, CIDR subnet, or hostname")
+    run_p.add_argument("target", nargs="?", default="", help="Target IP, CIDR subnet, hostname, or ssh user@host")
+    run_p.add_argument("-t", "--target", dest="target_flag", default="", help="Target IP, CIDR subnet, hostname, or ssh user@host")
     run_p.add_argument("-H", "--host", "--hostname", dest="host", default="", help="Hostname for $HOST")
     run_p.add_argument("-i", "-I", "--interface", default="", help="Interface to bind to ($IFACE)")
     run_p.add_argument("-l", "--lhost", default="", help="Local host address ($LHOST)")
@@ -170,8 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # tui
     tui_p = subparsers.add_parser("tui", help="Launch interactive Textual TUI")
-    tui_p.add_argument("target", nargs="?", default="", help="Target IP, CIDR subnet, or hostname")
-    tui_p.add_argument("-t", "--target", dest="target_flag", default="", help="Target IP, CIDR subnet, or hostname")
+    tui_p.add_argument("target", nargs="?", default="", help="Target IP, CIDR subnet, hostname, or ssh user@host")
+    tui_p.add_argument("-t", "--target", dest="target_flag", default="", help="Target IP, CIDR subnet, hostname, or ssh user@host")
     tui_p.add_argument("-H", "--host", "--hostname", dest="host", default="", help="Hostname for $HOST")
     tui_p.add_argument("-i", "-I", "--interface", default="", help="Interface to bind to ($IFACE)")
     tui_p.add_argument("-l", "--lhost", default="", help="Local host address ($LHOST; default: interface IP)")

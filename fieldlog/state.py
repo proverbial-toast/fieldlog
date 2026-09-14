@@ -154,12 +154,14 @@ class TargetSession:
 
     @property
     def target_kind(self) -> str:
-        """Classify target as subnet, literal address, or hostname."""
+        """Classify target as subnet, literal address, ssh user@host, or hostname."""
         t = (self.target or "").strip()
         if re.search(r"/\d+$", t):
             return "subnet"
         if re.match(r"^[0-9a-fA-F:.]+$", t):
             return "address"
+        if "@" in t:
+            return "user@host"
         return "hostname"
 
     @property
