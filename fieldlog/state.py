@@ -147,7 +147,7 @@ class TargetSession:
 
     target: str = ""                          # address or subnet -> $TARGET
     hostname: str = ""                        # dns name -> $HOST
-    lhost: str = ""                           # local host address -> $LHOST
+    lhost: str = ""                           # address the operator set -> $LHOST ('' follows the interface)
     interface: str = "eth0"                   # local interface name -> $IFACE
     workspace_dir: Path = field(default_factory=lambda: Path("./targets"))
     artifact_root: str = DEFAULT_ARTIFACT_ROOT

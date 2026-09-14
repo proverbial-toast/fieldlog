@@ -33,6 +33,8 @@ def test_empty_lhost_blocked():
     assert "T → scope" in hint
 
     assert is_blocked(tool, preset, TargetSession(interface="nosuch0", lhost="10.9.9.9"))[0] is False
+    blocked, reason, _ = is_blocked(tool, preset, TargetSession(interface="nosuch0", lhost="10.9.9.9;id"))
+    assert blocked and "local address has unsafe characters (;)" in reason
     assert is_blocked(tool, {"id": "i", "flags": "-I $IFACE"}, TargetSession(interface="nosuch0"))[0] is False
 
 

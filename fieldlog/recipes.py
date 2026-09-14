@@ -95,10 +95,15 @@ def is_blocked(tool: dict, preset: dict, session: TargetSession) -> Tuple[bool, 
         bad = unsafe_scope_chars(session.dns_name)
         if bad:
             return True, f"dns name has unsafe characters ({bad}) · fix it in T → scope", "hostnames are letters, digits, dots and hyphens — no shell metacharacters"
-    if "LHOST" in used and not session.effective_lhost():
-        # An interface with no IPv4 would turn `-B $LHOST` into a bare `-B`.
-        iface = session.interface or "the interface"
-        return True, f"variant needs a local address · {iface} has no IPv4 address", "T → scope, then pick an interface that has an address · on the CLI, -i IFACE or -l ADDR"
+    if "LHOST" in used:
+        lhost = session.effective_lhost()
+        if not lhost:
+            # An interface with no IPv4 would turn `-B $LHOST` into a bare `-B`.
+            iface = session.interface or "the interface"
+            return True, f"variant needs a local address · {iface} has no IPv4 address", "T → scope, then pick an interface that has an address or type iface / address · on the CLI, -i IFACE or -l ADDR"
+        bad = unsafe_scope_chars(lhost)
+        if bad:
+            return True, f"local address has unsafe characters ({bad}) · fix it in T → scope", "local addresses are IPv4 or IPv6 — no shell metacharacters"
     return False, f"{bin_name} · in $PATH", ""
 
 

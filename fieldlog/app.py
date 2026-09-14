@@ -170,6 +170,16 @@ def default_interface() -> str:
     return next((name for name, ip in list_box_interfaces() if name != "lo" and ip), fallback)
 
 
+def parse_iface_field(raw: str, current: str) -> Tuple[str, str]:
+    """(interface, local address) from the scope form's interface field.
+
+    `tun0 / 10.8.0.2` sets both. A bare `tun0` leaves the address empty, so $LHOST
+    follows the interface. A blank name keeps `current`.
+    """
+    name, _, addr = (raw or "").partition("/")
+    return name.strip() or current, addr.strip()
+
+
 def tokenize(s: str) -> List[str]:
     """Shell-tokenise an argument string, respecting quoted substrings."""
     out: List[str] = []
@@ -612,9 +622,9 @@ class TargetModal(ModalScreen[bool]):
         target_id = getattr(target, "id", "") or ""
         if target_id.startswith("iface-"):
             name = target_id[len("iface-"):]
-            ip = dict(self.ifaces).get(name, "")
             self.iface_name = name
-            self.query_one("#in-iface", Input).value = f"{name} / {ip}" if ip else name
+            # The row already shows its address; `name / ip` here would save it as a set one.
+            self.query_one("#in-iface", Input).value = name
             self._repaint_ifaces()
 
     def action_save(self) -> None:
@@ -646,11 +656,11 @@ class TargetModal(ModalScreen[bool]):
         # Empty means the default: the target workspace's raw/ dir.
         self.session.artifact_root = self.query_one("#in-log-dest", Input).value.strip().rstrip("/")
 
-        iface_raw = self.query_one("#in-iface", Input).value.strip()
-        name = iface_raw.split("/")[0].strip() if iface_raw else self.iface_name
+        name, addr = parse_iface_field(self.query_one("#in-iface", Input).value, self.iface_name)
         if name:
             self.session.interface = name
-            self.session.lhost = get_interface_ip(name) or dict(self.ifaces).get(name, "")
+            # Only a typed `iface / address` sets one; otherwise $LHOST follows the interface.
+            self.session.lhost = addr
         self.dismiss(True)
 
     def action_cancel(self) -> None:
@@ -1152,10 +1162,10 @@ class FieldlogApp(App):
         self.session = session or TargetSession(interface="")
         # ponytail: a named interface (flag or remembered) is kept even with no IP yet
         # (tun0 before the VPN is up); only an unset one is chosen for its address.
+        # session.lhost is never filled in from the interface: effective_lhost() reads
+        # it when a job starts, so a saved scope cannot pin yesterday's address.
         if not self.session.interface:
             self.session.interface = default_interface()
-        if not self.session.lhost:
-            self.session.lhost = get_interface_ip(self.session.interface)
 
         self.jobs: Dict[str, ActiveJob] = {}
         self.tabs: List[TabDescriptor] = [TabDescriptor("system", "[System]", "system", "system")]
@@ -1257,7 +1267,7 @@ class FieldlogApp(App):
         """Substituted values that should render amber in the token view."""
         s = self.session
         root = (s.artifact_root or "").strip().rstrip("/")
-        return [v for v in (s.target, s.dns_name, s.interface, s.lhost, root) if v]
+        return [v for v in (s.target, s.dns_name, s.interface, s.effective_lhost(), root) if v]
 
     # ---- Logging ---------------------------------------------------------
     def _log_width(self) -> Optional[int]:
@@ -1474,7 +1484,7 @@ class FieldlogApp(App):
                 Text.assemble(
                     ("INTERFACE\n", FAINT),
                     (s.interface, FG),
-                    (f" ({s.lhost or '—'})", DIM),
+                    (f" ({s.effective_lhost() or '—'})", DIM),
                 )
             )
             active = sum(1 for j in self.jobs.values() if j.running)
