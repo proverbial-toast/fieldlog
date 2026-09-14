@@ -110,6 +110,12 @@ interfaces: without `-i` it uses `eth0`.
 | `H` | Show / hide the hotkey bar |
 | `Q Q` | Quit (double-tap). Asks first if jobs are running |
 
+The RECIPES pane lists **Pinned** (`P`) and **Recent** above **All Recipes**.
+Recent holds the last six recipes or chains launched from the TUI; runs started
+with `fieldlog run` are not added. `Ctrl+P` with nothing typed shows the same
+pinned and recent entries. Both lists are kept per workspace in
+`.pinned-recent.json`.
+
 ### Jobs
 
 Every run opens its own tab and runs at once; start ping and curl and both hit
@@ -144,7 +150,7 @@ fieldlog list ping                       # a tool id: that tool's recipes
 fieldlog list sweep                      # anything else: search tool, preset name and flags
 fieldlog list -V                         # every recipe with its flags (also with a tool or search)
 fieldlog list --runnable                 # only tools found in $PATH
-fieldlog list -q                         # bare recipe IDs and chain ids, one per line (for fzf / xargs)
+fieldlog list -q                         # tool/preset IDs and chain ids, one per line, nothing else (for fzf / xargs)
 fieldlog list --json
 
 fieldlog show ping                       # a tool's first preset
@@ -154,6 +160,7 @@ fieldlog show reach -t 192.168.1.20      # a chain: every step's resolved comman
 fieldlog run ping/quick 192.168.1.20                # target as an argument...
 fieldlog run ping/quick -t 192.168.1.20             # ...or as a flag
 fieldlog ping/quick 192.168.1.20                    # "run" is optional
+fieldlog run ping 192.168.1.20                      # a tool id alone: its first preset, ping/quick
 fieldlog run ping/quick 192.168.1.20 --dry-run      # print command, env and paths; run nothing
 fieldlog run ping/quick 192.168.1.20 --extra-args "-c 1"
 fieldlog run reach 192.168.1.20                     # a chain: its recipes in order
@@ -168,9 +175,18 @@ fieldlog report router1 --full -o run-report.md     # whole logs, written to a f
 fieldlog report router1 --since 12                  # only runs #12 and up
 ```
 
-The bare form `fieldlog <recipe> <target>` works for any recipe or chain whose
-id is not itself a command name (`list`, `show`, `run`, `history`, `report`,
-`tui`, or their aliases `ls`, `recipes`, `info`, `exec`, `log`, `runs`).
+Wherever `run`, `show` or a chain step expects a recipe ID, a tool id alone
+means that tool's first preset, and for `run` and `show` a chain id means the
+chain. The bare form `fieldlog <recipe> <target>` takes all three, as long as
+the id is not itself a command name (`list`, `show`, `run`, `history`,
+`report`, `tui`, or their aliases `ls`, `recipes`, `info`, `exec`, `log`,
+`runs`).
+
+`history` and `report` take a folder name, not a target, whether as an argument
+or with `-t`. The folder is the DNS name if the runs had one, else the target:
+after `fieldlog run ping/quick 192.168.1.20 -H router1`, use
+`fieldlog history router1`, because `history 192.168.1.20` finds nothing.
+`fieldlog history` with no name lists the folders.
 
 ### `run` options
 
@@ -320,14 +336,17 @@ chains:
 
 - A chain stops at the first non-zero exit unless that step says
   `continue: true`. `Ctrl+C` always stops it. The chain's own exit status is the
-  first non-zero one it saw, or 130 if it was interrupted, so `fieldlog run reach …`
-  fails the way its failing step did.
+  first non-zero one it saw, including one from a step it continued past, or 130
+  if it was interrupted. So a chain whose `continue: true` step failed still
+  exits non-zero, even when every later step succeeds.
 - A chain is runnable only when every step is. The reason names the step.
 - Every step shares one `$OUTDIR`, so side files from one chain land together.
   Logs stay separate, one per step.
-- Each step is archived as its own run record, tagged with its position, and the
-  chain adds one summary record named `chain/<id>`: each step's run number and
-  exit code, where it stopped, and the shared `$OUTDIR`.
+- Each step is archived as its own run record, tagged with its position. When
+  the chain ends, it appends one summary record named `chain/<id>` to the same
+  `session.json`: each step's run number and exit code, where it stopped, and
+  the shared `$OUTDIR`. The summary takes a run number of its own, so a
+  three-step chain that runs to the end adds four runs to `history`'s count.
 - Steps are checked once every file is merged, so a built-in chain may name a
   preset that a drop-in adds. A chain with a bad id, no steps, or an unknown
   recipe is skipped with a message; the rest of the catalog still loads.
