@@ -86,7 +86,7 @@ interfaces: without `-i` it uses `eth0`.
 
 | Key | Action |
 |-----|--------|
-| `T` | Set target, DNS name, interface, local address and log destination |
+| `T` | Set target, DNS name, interface, local address and log destination: where logs and `$OUTDIR` go instead of the workspace, `--artifact-root` on the CLI |
 | `↑ ↓` `j k` | Move within the focused pane |
 | `Tab` | Switch focus between RECIPES and VARIANTS |
 | `Enter` | On a tool: jump to its variants. On a variant or chain: run it |
@@ -103,12 +103,17 @@ interfaces: without `-i` it uses `eth0`.
 | `Shift+W` | Close every finished tab |
 | `Ctrl+C` | Send SIGINT to the active tab's job |
 | `Y` | Copy `tail -f <log>` for the active tab to the clipboard |
-| `Ctrl+Shift+C` | Copy the active tab's whole log to the clipboard |
+| `Ctrl+Shift+C` | Copy the active tab's log to the clipboard, the last 500 KB if it is longer. Many terminals keep this key for their own copy; the *Copy active log* command in `Ctrl+P` does the same |
 | `M` | Recipe manager: sources, drop-ins, overrides, missing tools |
 | `Shift+R` | Reload recipes. Running jobs are untouched |
 | `L` | Toggle split / stacked layout (stacked is automatic under 120 columns) |
 | `H` | Show / hide the hotkey bar |
 | `Q Q` | Quit (double-tap). Asks first if jobs are running |
+
+Both copy keys use OSC 52: fieldlog writes the text as an escape sequence and
+your terminal puts it on the clipboard. That works over ssh, and nothing is
+copied on the remote machine. It needs a terminal that supports OSC 52 (macOS
+Terminal does not) and, inside tmux, `set -g set-clipboard on`.
 
 The RECIPES pane lists **Pinned** (`P`) and **Recent** above **All Recipes**.
 Recent holds the last six recipes or chains launched from the TUI; runs started
@@ -274,8 +279,11 @@ recipes:
 
   The `$PATH` check still uses `bin`.
 - A single simple command is `exec`'d, so the tool is the process fieldlog waits
-  on and the recorded exit code is the tool's own. A pipeline or a `;` list keeps
-  the shell in front, and the exit code is then the shell's view of it.
+  on and the recorded exit code is the tool's own. Redirections (`> out.txt`,
+  `2>&1`) and backquotes still count as one command. A pipeline (`|`), a list
+  (`;`, `&&`, `||`, a trailing `&`), parentheses, including `$( … )` and
+  `$(( … ))`, or a line break keeps the shell in front, and the exit code is
+  then the shell's view of it.
 - If the flags reference `$OUTDIR`, that per-run folder is created before the
   command starts, so a tool that writes side files (`-w`, `--logfile`, `-oA`)
   has somewhere to put them. Whatever it writes is recorded in the run's record
@@ -292,8 +300,10 @@ recipes:
 ### Variables
 
 fieldlog fills these in before running and shows the result in previews.
-`${NAME}` works too. Any other `$VAR`, and shell forms like `${NAME:-x}`, are
-left for the shell, which has every binding in its environment.
+`${NAME}` works too. Every variable below is also exported into the job's
+environment, under both spellings, so whatever fieldlog leaves alone still
+expands in the shell: any other `$VAR`, shell forms like `${TARGET:-x}`, and a
+script that reads `$OUTDIR` itself.
 
 | Variable | Value |
 |----------|-------|
@@ -373,7 +383,8 @@ directory first, then `./recipes.d/`.
   existing `id` replaces the earlier one; the recipe manager (`M`) lists these
   overrides.
 - The same filename in both directories is loaded once: the local `./recipes.d/`
-  file wins, and the shadowing is reported.
+  file wins and the config-directory file is not read at all, so even ids that
+  only it defines are gone. The shadowing is reported.
 - A file that fails to parse is reported, with the line, and skipped. The rest
   still load. Editor leftovers (`*~`, `*.swp`, `*.bak`, `*.orig`) are ignored.
 
@@ -458,7 +469,8 @@ A run record:
 
 Optional keys: `"interrupted": true` when the operator sent SIGINT, `"chain":
 {"id", "step", "of"}` on a chain step, `"binary": true` on an artifact that is
-not text.
+not text. The `environment` block leaves out `HOST` and `OUTDIR`: both are
+exported to the job, but they always equal `TARGET_HOST` and `OUT_DIR`.
 
 - The folder name is built in two steps. First `/` becomes `_`, so the subnet
   `192.168.1.0/24` gets the folder `192.168.1.0_24`. Then any character still
