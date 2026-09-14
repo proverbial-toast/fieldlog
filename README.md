@@ -71,9 +71,13 @@ fieldlog tui -t 192.168.1.0/24 -H router1 -i eth0 -w ~/audits
 
 The scope is remembered per workspace in `<workspace>/.last-scope.json`, so a
 bare `fieldlog` resumes where you left off; any flag you pass overrides the
-remembered value. With no interface given, fieldlog picks the first one that
-has an IPv4 address. An interface you name is kept even if it has no address
-yet (a VPN that comes up later), and `T` changes all of it at runtime.
+remembered value. If no interface is passed or remembered, the TUI starts on
+`eth0` if it has an IPv4 address, else on the first other interface that has
+one (never `lo`). An interface you name is kept even with no address yet, such
+as a VPN that comes up later. Unless a local address is set, `$LHOST` is the
+interface's address when the TUI starts or, if it had none then, whatever it
+has when a job starts. `T` changes all of it at runtime. `fieldlog run` never
+switches: without `-i` it uses `eth0`.
 
 ### Keys
 
@@ -171,8 +175,8 @@ id is not itself a command name (`list`, `show`, `run`, `history`, `report`,
 |--------|---------|
 | `-t`, `--target` | Target IP, CIDR, hostname or ssh `user@host`. Or pass it as the second argument |
 | `-H`, `--host` | DNS name (`$HOST`, `$TARGET_HOST`) |
-| `-i`, `--interface` | Interface name (`$IFACE`, default `eth0`) |
-| `-l`, `--lhost` | Local IP (`$LHOST`). Default: the interface's current address |
+| `-i`, `--interface` | Interface name (`$IFACE`). Default `eth0`, even if it has no address: `run` never switches like the TUI does |
+| `-l`, `--lhost` | Local IP (`$LHOST`). Default: the interface's IPv4 address. Presets using `$LHOST` are not runnable without one |
 | `-w`, `--workspace` | Archive root (default `./targets`) |
 | `--artifact-root DIR` | Write logs and `$OUTDIR` under `DIR/<name>/` instead of the workspace |
 | `--timeout SECONDS` | Stop the job after this long, recorded as exit 124. Per step for a chain |
@@ -276,7 +280,7 @@ left for the shell, which has every binding in its environment.
 |----------|-------|
 | `$TARGET`, `$TARGET_IP` | Target IP, CIDR, hostname or ssh `user@host` |
 | `$HOST`, `$TARGET_HOST` | DNS name. If unset and the target is a hostname (not `user@host`), the target. Presets using it are not runnable without one |
-| `$LHOST` | Local IP: the one given, else the interface's current address, read at launch |
+| `$LHOST` | Local IP: the one given, else the interface's IPv4 address, read when the job starts (the TUI fills it in at startup, see [TUI](#tui)). Presets using it are not runnable without one |
 | `$IFACE` | Interface name |
 | `$OUTDIR`, `$OUT_DIR` | Per-run folder for files the tool writes: `targets/<name>/raw/<timestamp>/` |
 | `$RUN_ID` | Run number, `01`, `02`, … Set in the environment only |
@@ -434,8 +438,10 @@ Optional keys: `"interrupted": true` when the operator sent SIGINT, `"chain":
 {"id", "step", "of"}` on a chain step, `"binary": true` on an artifact that is
 not text.
 
-- A subnet like `192.168.1.0/24` gets the folder `192.168.1.0_24`. Anything else
-  outside `[A-Za-z0-9._-]` becomes `-`.
+- The folder name is built in two steps. First `/` becomes `_`, so the subnet
+  `192.168.1.0/24` gets the folder `192.168.1.0_24`. Then any character still
+  outside `[A-Za-z0-9._-]` becomes `-`: `fe80::1` gets `fe80--1` and
+  `chris@jump1` gets `chris-jump1`.
 - `fieldlog history <name>` and `report <name>` take the folder name: the DNS
   name if you set one, else the target.
 - The exit code is the tool's own, never fabricated. `ping` catches SIGINT,
