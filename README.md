@@ -127,11 +127,11 @@ session; `R` restores the variant default.
 ## CLI
 
 ```bash
-fieldlog list                            # every recipe, grouped by category, then the chains
-fieldlog list ping                       # search tool, preset name and flags
-fieldlog list -c dns                     # category filter (case-insensitive substring)
+fieldlog list                            # one line per tool, then the chains
+fieldlog list ping                       # a tool id: that tool's recipes
+fieldlog list sweep                      # anything else: search tool, preset name and flags
+fieldlog list -V                         # every recipe with its flags (also with a tool or search)
 fieldlog list --runnable                 # only tools found in $PATH
-fieldlog list --tools                    # one line per tool, no presets
 fieldlog list -q                         # bare recipe IDs and chain ids, one per line (for fzf / xargs)
 fieldlog list --json
 
@@ -177,7 +177,7 @@ id is not itself a command name (`list`, `show`, `run`, `history`, `report`,
 | `--json` | Print the run record (or the chain summary record) as JSON when done |
 
 `show` accepts `-t`, `-H`, `-i` and `-l`. `history` accepts `-t`, `-w` and
-`--json`. `list` accepts `-c`, `-r`/`--runnable`, `--tools`, `-q`/`--names`
+`--json`. `list` accepts `-r`/`--runnable`, `-V`/`--verbose`, `-q`/`--names`
 and `--json`.
 
 ### `report` options
@@ -212,7 +212,6 @@ recipes:
   - id: ping                          # tool id (required)
     name: "ICMP Reachability"         # display name
     bin: ping                         # executable checked in $PATH (default: id)
-    category: "Host & Reachability"   # grouping in the TUI and `list -c`
     presets:                          # required
       - id: quick                     # recipe ID becomes ping/quick
         name: "quick · 4 probes"
@@ -227,7 +226,6 @@ recipes:
 | `id` | tool | yes | Tool id, first half of the recipe ID |
 | `name` | tool | no | Display name |
 | `bin` | tool | no | Executable to check in `$PATH` and run. Default: `id` |
-| `category` | tool | no | Group name |
 | `presets` | tool | yes | List of presets |
 | `id` | preset | yes | Second half of the recipe ID |
 | `flags` | preset | yes | What to run after `bin` (see below) |
@@ -283,7 +281,6 @@ against the current scope. Chains live beside `recipes:` in the same files:
 chains:
   - id: reach                                 # chain id (required, cannot be a tool id)
     name: "reachability · ping, trace, ptr"   # display name (default: the id)
-    category: "Chains"                        # grouping (default: "Chains")
     steps:                                    # required, at least one
       - ping/quick                            # a step; the chain stops if it fails
       - recipe: traceroute/icmp               # the same step, written out
@@ -295,7 +292,6 @@ chains:
 |-------|-------|----------|---------|
 | `id` | chain | yes | How the CLI and TUI name it. Must not match a tool id |
 | `name` | chain | no | Display name |
-| `category` | chain | no | Group name. Default `Chains` |
 | `steps` | chain | yes | Recipe IDs in order. A bare tool id means its first preset |
 | `recipe` | step | yes | `tool/preset`, in the mapping form |
 | `continue` | step | no | `true` keeps the chain going when this step fails |

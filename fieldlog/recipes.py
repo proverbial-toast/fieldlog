@@ -161,7 +161,7 @@ def _bin_text(value) -> str:
 
 
 def normalize_recipe(r: dict) -> dict:
-    """Ensure id, bin, category and presets exist."""
+    """Ensure id, bin and presets exist."""
     item = dict(r)
     item["id"] = str(item.get("id", "")).strip()
 
@@ -322,7 +322,7 @@ def _merge(tools: List[dict], incoming: List[dict], src: Optional[str], override
             tools.append(tool)
             by_id[tool["id"]] = tool
             continue
-        for key in ("name", "bin", "category"):
+        for key in ("name", "bin"):
             if key in new and src is None:
                 target[key] = new[key]
         existing = {p["id"]: i for i, p in enumerate(target["presets"])}
@@ -341,7 +341,7 @@ def _merge(tools: List[dict], incoming: List[dict], src: Optional[str], override
 
 
 def normalize_chain(c: dict) -> dict:
-    """Ensure id, name, category and a list of `{recipe, continue}` steps.
+    """Ensure id, name and a list of `{recipe, continue}` steps.
 
     A step written as a bare string is "stop on failure"; the recipe itself is
     left as written here and resolved to `tool/preset` once every file is in.
@@ -358,7 +358,6 @@ def normalize_chain(c: dict) -> dict:
     return {
         "id": cid,
         "name": str(c.get("name") or cid),
-        "category": str(c.get("category") or "Chains"),
         "steps": steps,
     }
 
@@ -449,6 +448,12 @@ def chain_arrow(chain: dict, mark_continue: bool = True) -> str:
         s["recipe"] + ("?" if mark_continue and s.get("continue") else "")
         for s in chain.get("steps", [])
     )
+
+
+def steps_label(chain: dict) -> str:
+    """`1 step`, `3 steps`."""
+    n = len(chain.get("steps", []))
+    return f"{n} step{'' if n == 1 else 's'}"
 
 
 def _where(exc: Exception) -> str:

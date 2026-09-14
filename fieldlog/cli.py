@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from rich.console import Console
-from rich.table import Table
+from rich.markup import escape
 from rich.text import Text
 
 from fieldlog import __version__
@@ -39,6 +39,7 @@ from fieldlog.recipes import (
     load_catalog,
     score,
     search,
+    steps_label,
 )
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
@@ -68,6 +69,10 @@ SUBCOMMANDS = {
     "report",
 }
 ROOT_FLAGS = {"-h", "--help", "-v", "--version"}
+
+# Rich reads `[fieldlog]`, or any `[word]` in a command, as a style tag and
+# prints nothing for it — so everything printed from data goes through escape().
+TAG = escape("[fieldlog]")
 
 
 def dispatch_argv(argv: Optional[List[str]] = None) -> Tuple[str, List[str]]:
@@ -115,14 +120,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     # list
-    list_p = subparsers.add_parser("list", help="List available recipes and tools", aliases=["recipes", "ls"])
-    list_p.add_argument("query", nargs="?", default="", help="Optional search query matching tool, preset, or flags")
-    list_p.add_argument("-c", "--category", default="", help="Filter recipes by category")
+    list_p = subparsers.add_parser("list", help="List tools and chains; name a tool to see its recipes", aliases=["recipes", "ls"])
+    list_p.add_argument("query", nargs="?", default="", help="A tool id to list its recipes, or a search over tool, preset name and flags")
     list_p.add_argument("-r", "--runnable", action="store_true", help="Only show tools installed in $PATH")
-    list_p.add_argument("--tools", action="store_true", help="Show tools overview without presets")
     list_p.add_argument("-q", "--names", action="store_true", help="Output bare recipe IDs (one per line)")
     list_p.add_argument("--json", action="store_true", help="Output recipe catalog as JSON")
-    list_p.add_argument("-V", "--verbose", action="store_true", help="Display full preset command flags")
+    list_p.add_argument("-V", "--verbose", action="store_true", help="Show every recipe and its flags")
 
     # show
     show_p = subparsers.add_parser("show", help="Show detailed recipe specification and preview", aliases=["info"])
@@ -185,12 +188,10 @@ def chain_runnable(catalog: Catalog, chain: dict) -> bool:
     )
 
 
-def filter_chains(catalog: Catalog, query: str, cat_filter: str, runnable_only: bool) -> List[dict]:
-    """Chains surviving the same query / category / runnable filters as tools."""
+def filter_chains(catalog: Catalog, query: str, runnable_only: bool) -> List[dict]:
+    """Chains surviving the same query / runnable filters as tools."""
     out = []
     for chain in catalog.chains:
-        if cat_filter and cat_filter not in chain.get("category", "").lower():
-            continue
         if query and not chain_matches(chain, query):
             continue
         if runnable_only and not chain_runnable(catalog, chain):
@@ -199,13 +200,93 @@ def filter_chains(catalog: Catalog, query: str, cat_filter: str, runnable_only: 
     return out
 
 
+def recipe_missing(tool: dict, preset: dict) -> bool:
+    """The recipe's binary is not in $PATH — the one blocker `list` can know."""
+    return not is_tool_installed(preset.get("bin", tool.get("bin", tool["id"])))
+
+
+# The narrowest id / name columns `list` uses, and the widest a name may push them.
+MIN_WIDTHS = (12, 34)
+NAME_CAP = 44
+
+
+def clip(text: str, width: int) -> str:
+    """`text` cut to `width` columns, the cut marked with an ellipsis."""
+    return text if len(text) <= width else text[: max(1, width - 1)] + "…"
+
+
+def column_widths(rows: List[dict]) -> Tuple[int, int]:
+    """(id, name) widths fitting every row, so a long chain name cannot push its
+    step count out of line. Names wider than NAME_CAP are clipped instead."""
+    id_width = max([MIN_WIDTHS[0]] + [len(r["id"]) for r in rows])
+    name_width = max([MIN_WIDTHS[1]] + [len(r.get("name", "")) for r in rows])
+    return id_width, min(name_width, NAME_CAP)
+
+
+def tool_line(tool: dict, widths: Tuple[int, int] = MIN_WIDTHS) -> str:
+    """A tool as the TUI's recipe tree shows it: id, name, variant count or n/a."""
+    tid = escape(tool["id"].ljust(widths[0]))
+    name = escape(clip(tool.get("name", ""), widths[1]).ljust(widths[1]))
+    if is_tool_installed(tool.get("bin", tool["id"])):
+        return f"  [bold]{tid}[/bold] {name} [dim]{len(tool.get('presets', []))}v[/dim]"
+    return f"  [dim]{tid} {name} n/a[/dim]"
+
+
+def recipe_line(tool: dict, preset: dict, verbose: bool, indent: str = "  ", mark: str = "") -> str:
+    """A recipe as one row: its ID (plus a chain step's `?`) and name, and its
+    flags under -V."""
+    key = escape(f"{tool['id']}/{preset['id']}{mark}".ljust(22))
+    name = preset.get("name", preset["id"])
+    if verbose:
+        rest = f"{escape(name.ljust(30))} [dim]{escape(preset.get('flags', ''))}[/dim]"
+    else:
+        rest = escape(name)
+    if recipe_missing(tool, preset):
+        return f"{indent}[dim]{key} {rest}[/dim]"
+    return f"{indent}[green]{key}[/green] {rest}"
+
+
+def chain_line(chain: dict, verbose: bool, widths: Tuple[int, int] = MIN_WIDTHS) -> str:
+    """A chain as one row: id, name and step count — its steps under -V."""
+    cid = escape(chain["id"].ljust(widths[0]))
+    name = escape(clip(chain.get("name", chain["id"]), widths[1]).ljust(widths[1]))
+    if verbose:
+        tail = f"[green]{escape(chain_arrow(chain))}[/green]"
+    else:
+        tail = f"[dim]{steps_label(chain)}[/dim]"
+    return f"  [bold]{cid}[/bold] {name} {tail}"
+
+
+def print_chain(console: Console, catalog: Catalog, chain: dict, verbose: bool) -> None:
+    """One chain and its steps in order — what `list <chain>` digs into."""
+    console.print(
+        f"[bold]{escape(chain['id'])}[/bold]  {escape(chain.get('name', chain['id']))}  "
+        f"[dim]{steps_label(chain)} · stops at the first failure, except where marked ?[/dim]"
+    )
+    for index, (tool, preset, keep_going) in enumerate(chain_steps(catalog, chain), start=1):
+        mark = "?" if keep_going else ""
+        console.print(recipe_line(tool, preset, verbose, indent=f"  {index} ", mark=mark))
+
+
+def print_tool(console: Console, tool: dict, verbose: bool) -> None:
+    """One tool and its recipes — what `list <tool>` digs into."""
+    bin_name = tool.get("bin", tool["id"])
+    if is_tool_installed(bin_name):
+        badge = f"[green]✓ {escape(bin_name)} in $PATH[/green]"
+    else:
+        hint = KNOWN_INSTALL.get(bin_name, f"apt install {bin_name}")
+        badge = f"[red]✗ {escape(bin_name)} not in $PATH — {escape(hint)}[/red]"
+    console.print(f"[bold]{escape(tool['id'])}[/bold]  {escape(tool.get('name', ''))}  {badge}")
+    for preset in tool.get("presets", []):
+        console.print(recipe_line(tool, preset, verbose))
+
+
 def handle_list(args: argparse.Namespace, catalog: Catalog) -> int:
     query = (args.query or "").strip().lower()
-    cat_filter = (args.category or "").strip().lower()
     runnable_only = getattr(args, "runnable", False)
-    tools_only = getattr(args, "tools", False)
     names_only = getattr(args, "names", False)
     as_json = getattr(args, "json", False)
+    verbose = getattr(args, "verbose", False)
 
     # Filter tools & presets
     filtered_tools: List[dict] = []
@@ -213,10 +294,6 @@ def handle_list(args: argparse.Namespace, catalog: Catalog) -> int:
         bin_name = tool.get("bin", tool.get("id", ""))
         installed = is_tool_installed(bin_name)
         if runnable_only and not installed:
-            continue
-
-        cat_name = tool.get("category", "")
-        if cat_filter and cat_filter not in cat_name.lower():
             continue
 
         # Filter presets
@@ -235,7 +312,7 @@ def handle_list(args: argparse.Namespace, catalog: Catalog) -> int:
             t_copy["installed"] = installed
             filtered_tools.append(t_copy)
 
-    chains = filter_chains(catalog, query, cat_filter, runnable_only)
+    chains = filter_chains(catalog, query, runnable_only)
 
     if as_json:
         json_data = []
@@ -257,7 +334,6 @@ def handle_list(args: argparse.Namespace, catalog: Catalog) -> int:
                 "kind": "tool",
                 "id": t["id"],
                 "name": t.get("name", t["id"]),
-                "category": t.get("category", ""),
                 "bin": t.get("bin", t.get("id", "")),
                 "installed": t.get("installed", False),
                 "presets": json_presets,
@@ -267,7 +343,6 @@ def handle_list(args: argparse.Namespace, catalog: Catalog) -> int:
                 "kind": "chain",
                 "id": c["id"],
                 "name": c.get("name", c["id"]),
-                "category": c.get("category", "Chains"),
                 "steps": [
                     {"recipe": s["recipe"], "continue": bool(s.get("continue"))}
                     for s in c.get("steps", [])
@@ -284,71 +359,53 @@ def handle_list(args: argparse.Namespace, catalog: Catalog) -> int:
             print(c["id"])
         return 0
 
-    if tools_only:
-        table = Table(title="fieldlog Tools", show_header=True, header_style="bold cyan")
-        table.add_column("TOOL", style="bold")
-        table.add_column("CATEGORY")
-        table.add_column("VARIANTS", justify="right")
-        table.add_column("STATUS")
+    console = Console()
 
-        for t in filtered_tools:
-            bin_name = t.get("bin", t.get("id", ""))
-            status = "[green]✓ installed[/green]" if t.get("installed") else f"[red]✗ missing[/red] ({KNOWN_INSTALL.get(bin_name, 'apt install ' + bin_name)})"
-            table.add_row(
-                t["id"],
-                t.get("category", "General"),
-                str(len(t.get("presets", []))),
-                status,
-            )
-        Console().print(table)
+    if query:
+        # An exact tool or chain id digs into it, as selecting it in the TUI does.
+        tool = next((t for t in catalog.tools if t["id"].lower() == query), None)
+        if tool is not None:
+            print_tool(console, tool, verbose)
+            return 0
+        chain = next((c for c in catalog.chains if c["id"].lower() == query), None)
+        if chain is not None:
+            print_chain(console, catalog, chain, verbose)
+            return 0
+
+        # Any other query: ranked recipe rows, as the TUI's filter shows them.
+        hits = search(catalog.tools, query, recipe_missing, hide_missing=runnable_only, limit=catalog.total_variants)
+        for t, p, _missing in hits:
+            console.print(recipe_line(t, p, verbose))
+        widths = column_widths(chains)
+        for c in chains:
+            console.print(chain_line(c, verbose, widths))
+        if not hits and not chains:
+            console.print(f"[dim]no recipes or chains match '{escape(query)}'[/dim]")
         return 0
 
-    # Default: Grouped category -> tool -> preset output
-    console = Console()
-    by_category: dict[str, List[dict]] = {}
-    for t in filtered_tools:
-        cat = t.get("category", "General")
-        by_category.setdefault(cat, []).append(t)
-
-    total_variants = sum(len(t.get("presets", [])) for t in filtered_tools)
-    runnable_variants = sum(
-        len(t.get("presets", [])) for t in filtered_tools if t.get("installed")
-    )
-    missing_bins = len([t for t in filtered_tools if not t.get("installed")])
-
-    for cat_name, tools in by_category.items():
-        console.print(f"\n[bold cyan]{cat_name}[/bold cyan]")
-        for t in tools:
-            bin_name = t.get("bin", t.get("id", ""))
-            if t.get("installed"):
-                bin_badge = f"[green]✓ {bin_name} in $PATH[/green]"
-            else:
-                hint = KNOWN_INSTALL.get(bin_name, f"apt install {bin_name}")
-                bin_badge = f"[red]✗ {bin_name}: not found in $PATH — {hint}[/red]"
-            console.print(f"  [bold]{t['id']}[/bold]  [dim]{t.get('name', '')}[/dim]  [{bin_badge}]")
-            for p in t.get("presets", []):
-                rkey = f"{t['id']}/{p['id']}"
-                pname = p.get("name", p["id"])
-                pflags = p.get("flags", "")
-                console.print(f"    [green]{rkey:<20}[/green] [white]{pname:<25}[/white] [dim]{pflags}[/dim]")
-
-    by_chain_category: dict[str, List[dict]] = {}
+    # Default: one row per tool, installed first, as the TUI's recipe tree.
+    tools = sorted(filtered_tools, key=lambda t: (not t["installed"], t.get("bin", t["id"])))
+    if tools:
+        console.print("[bold dim]RECIPES[/bold dim]")
+    widths = column_widths(tools + chains)
+    for t in tools:
+        console.print(tool_line(t, widths))
+        if verbose:
+            for p in t["presets"]:
+                console.print(recipe_line(t, p, True, indent="    "))
+    if chains:
+        console.print("\n[bold dim]CHAINS[/bold dim]")
     for c in chains:
-        by_chain_category.setdefault(c.get("category", "Chains"), []).append(c)
-    for cat_name, items in by_chain_category.items():
-        console.print(f"\n[bold cyan]{cat_name}[/bold cyan]")
-        for c in items:
-            console.print(
-                f"  [bold]{c['id']:<10}[/bold] [white]{c.get('name', c['id']):<34}[/white] "
-                f"[green]{chain_arrow(c)}[/green]"
-            )
+        console.print(chain_line(c, verbose, widths))
 
+    installed =sum(1 for t in tools if t["installed"])
+    variants = sum(len(t["presets"]) for t in tools)
     console.print(
-        f"\n[dim]{'─' * 80}[/dim]\n"
-        f"[bold]Catalog:[/bold] {len(filtered_tools)} tools · {total_variants} recipes · "
-        f"{runnable_variants} runnable · {missing_bins} missing binaries · "
-        f"{len(chains)} chains · {len(catalog.files)} drop-in files"
+        f"\n[dim]{len(tools)} tools · {variants} recipes · {installed} installed · "
+        f"{len(chains)} chain{'' if len(chains) == 1 else 's'}[/dim]"
     )
+    if not verbose:
+        console.print("[dim]list <tool> for its recipes · show <recipe> for detail · -V for everything[/dim]")
     return 0
 
 
@@ -366,9 +423,8 @@ def handle_show_chain(chain: dict, catalog: Catalog, session: TargetSession) -> 
     """The chain header, then each step's command as it would be run."""
     console = Console()
     steps = chain_steps(catalog, chain)
-    console.print(f"\n[bold green]Chain: {chain['id']}[/bold green]")
-    console.print(f"  [bold]Name:[/bold]        {chain.get('name', chain['id'])}")
-    console.print(f"  [bold]Category:[/bold]    {chain.get('category', 'Chains')}")
+    console.print(f"\n[bold green]Chain: {escape(chain['id'])}[/bold green]")
+    console.print(f"  [bold]Name:[/bold]        {escape(chain.get('name', chain['id']))}")
     console.print(
         f"  [bold]Steps:[/bold]       {len(steps)} "
         f"[dim]· stops at the first failure, except where marked ?[/dim]\n"
@@ -378,7 +434,7 @@ def handle_show_chain(chain: dict, catalog: Catalog, session: TargetSession) -> 
         bin_name = preset.get("bin", tool.get("bin", tool["id"]))
         command = format_command(bin_name, resolve_flags(session, preset.get("flags", "")))
         mark = "[green]✓[/green]" if is_tool_installed(bin_name) else "[red]✗[/red]"
-        console.print(f"  {index} {mark} [green]{rkey:<22}[/green] [dim]{command}[/dim]")
+        console.print(f"  {index} {mark} [green]{escape(rkey.ljust(22))}[/green] [dim]{escape(command)}[/dim]")
     return 0
 
 
@@ -401,19 +457,18 @@ def handle_show(args: argparse.Namespace, catalog: Catalog) -> int:
     rkey = f"{tool['id']}/{preset['id']}"
 
     console = Console()
-    console.print(f"\n[bold green]Recipe: {rkey}[/bold green]")
-    console.print(f"  [bold]Name:[/bold]        {preset.get('name', preset['id'])}")
-    console.print(f"  [bold]Tool:[/bold]        {tool['id']} ({tool.get('name', '')})")
-    console.print(f"  [bold]Category:[/bold]    {tool.get('category', 'General')}")
+    console.print(f"\n[bold green]Recipe: {escape(rkey)}[/bold green]")
+    console.print(f"  [bold]Name:[/bold]        {escape(preset.get('name', preset['id']))}")
+    console.print(f"  [bold]Tool:[/bold]        {escape(tool['id'])} ({escape(tool.get('name', ''))})")
     if installed:
-        console.print(f"  [bold]Binary:[/bold]      [green]✓ {bin_name} (installed in $PATH)[/green]")
+        console.print(f"  [bold]Binary:[/bold]      [green]✓ {escape(bin_name)} (installed in $PATH)[/green]")
     else:
         hint = KNOWN_INSTALL.get(bin_name, f"apt install {bin_name}")
-        console.print(f"  [bold]Binary:[/bold]      [red]✗ {bin_name} (missing from $PATH — {hint})[/red]")
+        console.print(f"  [bold]Binary:[/bold]      [red]✗ {escape(bin_name)} (missing from $PATH — {escape(hint)})[/red]")
 
-
-    console.print(f"\n[bold]Raw Flags:[/bold]\n  {format_command(tool.get('bin', tool['id']), raw_flags)}")
-    console.print(f"\n[bold]Resolved (sample/target preview):[/bold]\n  {format_command(tool.get('bin', tool['id']), resolved)}")
+    # The preset's own bin, when it has one — the binary that actually runs.
+    console.print(f"\n[bold]Raw Flags:[/bold]\n  {escape(format_command(bin_name, raw_flags))}")
+    console.print(f"\n[bold]Resolved (sample/target preview):[/bold]\n  {escape(format_command(bin_name, resolved))}")
     return 0
 
 
@@ -435,9 +490,9 @@ async def execute_cli_job(
 
     if not quiet and not as_json:
         console = Console()
-        console.print(f"\n[bold cyan][fieldlog][/bold cyan] Spawning [bold]{job.name}[/bold]")
-        console.print(f"  [dim]Command:[/dim]     {command}")
-        console.print(f"  [dim]Log:[/dim]         {job.log_path}")
+        console.print(f"\n[bold cyan]{TAG}[/bold cyan] Spawning [bold]{escape(job.name)}[/bold]")
+        console.print(f"  [dim]Command:[/dim]     {escape(command)}")
+        console.print(f"  [dim]Log:[/dim]         {escape(str(job.log_path))}")
         console.print(f"[dim]{'─' * 80}[/dim]")
 
     def sink(text: str, _stream: str) -> None:
@@ -554,13 +609,13 @@ async def execute_cli_job(
         bytes_count = delta.total_bytes if delta else job.bytes_count
 
         console.print(
-            f"[{status_style}][fieldlog] {status_label} {job.name} | {elapsed}s | "
+            f"[{status_style}]{TAG} {escape(status_label)} {escape(job.name)} | {elapsed}s | "
             f"+{art_count} files (+{lines_count} lines, {bytes_count} B)[/{status_style}]"
         )
         if delta and delta.artifacts:
             console.print("  [bold]Artifacts:[/bold]")
             for a in delta.artifacts:
-                console.print(f"    - {a.path} ({a.lines or 0} lines, {a.bytes} B)")
+                console.print(f"    - {escape(a.path)} ({a.lines or 0} lines, {a.bytes} B)")
 
     return code
 
@@ -583,13 +638,13 @@ def print_dry_run(plan: LaunchPlan, step: str = "") -> None:
     console = Console()
     heading = f"── DRY-RUN PREVIEW{' · ' + step if step else ''} ──"
     console.print(f"\n[bold yellow]{heading}[/bold yellow]")
-    console.print(f"  [bold]Recipe:[/bold]      {job.recipe_id}/{job.variant_id} #{job.id}")
-    console.print(f"  [bold]Command:[/bold]     {plan.command}")
+    console.print(f"  [bold]Recipe:[/bold]      {escape(f'{job.recipe_id}/{job.variant_id}')} #{job.id}")
+    console.print(f"  [bold]Command:[/bold]     {escape(plan.command)}")
     console.print(f"  [bold]Environment:[/bold]")
     for k in ("TARGET", "TARGET_IP", "TARGET_HOST", "HOST", "LHOST", "IFACE", "OUT_DIR", "OUTDIR", "RUN_ID"):
-        console.print(f"    {k}={plan.env[k]}")
-    console.print(f"  [bold]Primary Log:[/bold] {job.log_path}")
-    console.print(f"  [bold]Out Dir:[/bold]     {job.out_dir}")
+        console.print(f"    {k}={escape(str(plan.env[k]))}")
+    console.print(f"  [bold]Primary Log:[/bold] {escape(str(job.log_path))}")
+    console.print(f"  [bold]Out Dir:[/bold]     {escape(str(job.out_dir))}")
     console.print(f"[bold yellow]{'─' * len(heading)}[/bold yellow]\n")
 
 
@@ -630,9 +685,9 @@ def handle_run_chain(args: argparse.Namespace, catalog: Catalog, chain: dict) ->
         info = plan.job.chain or {}
         if not quiet and not as_json:
             console.print(
-                f"\n[bold cyan][fieldlog][/bold cyan] chain {chain['id']} · "
+                f"\n[bold cyan]{TAG}[/bold cyan] chain {escape(chain['id'])} · "
                 f"step {info.get('step')}/{info.get('of')} "
-                f"{plan.job.recipe_id}/{plan.job.variant_id} #{plan.job.id}"
+                f"{escape(f'{plan.job.recipe_id}/{plan.job.variant_id}')} #{plan.job.id}"
             )
         for warning in plan.warnings:
             sys.stderr.write(f"Warning: {warning}\n")
@@ -650,13 +705,13 @@ def handle_run_chain(args: argparse.Namespace, catalog: Catalog, chain: dict) ->
         if record["stopped_at"]:
             last_code = record["steps"][-1]["exit_code"] if record["steps"] else result.exit_code
             console.print(
-                f"[red][fieldlog] chain {chain['id']} · stopped at step {ran} "
-                f"({record['stopped_at']} exit {last_code})[/red]"
+                f"[red]{TAG} chain {escape(chain['id'])} · stopped at step {ran} "
+                f"({escape(record['stopped_at'])} exit {last_code})[/red]"
             )
         else:
             style = "green" if result.exit_code == 0 else "red"
             console.print(
-                f"[{style}][fieldlog] chain {chain['id']} · {ran}/{len(steps)} steps · "
+                f"[{style}]{TAG} chain {escape(chain['id'])} · {ran}/{len(steps)} steps · "
                 f"exit {result.exit_code}[/{style}]"
             )
     return result.exit_code
@@ -732,10 +787,10 @@ def handle_history(args: argparse.Namespace) -> int:
             sys.stderr.write(f"No target folders found under {workspace}\n")
             return 0
         console = Console()
-        console.print(f"[bold cyan]Available Targets in {workspace}:[/bold cyan]")
+        console.print(f"[bold cyan]Available Targets in {escape(str(workspace))}:[/bold cyan]")
         for d in sorted(subdirs, key=lambda p: p.name):
             hist = load_target_history(d)
-            console.print(f"  [bold]{d.name}[/bold] ({hist.total_runs} runs)")
+            console.print(f"  [bold]{escape(d.name)}[/bold] ({hist.total_runs} runs)")
         return 0
 
     target_dir = workspace / scope_dir(target)
@@ -757,7 +812,7 @@ def handle_history(args: argparse.Namespace) -> int:
         return 0
 
     console = Console()
-    console.print(f"\n[bold cyan]Run History for {target} ({target_dir}):[/bold cyan]\n")
+    console.print(f"\n[bold cyan]Run History for {escape(target)} ({escape(str(target_dir))}):[/bold cyan]\n")
     for r in runs:
         if not isinstance(r, dict):
             continue
@@ -770,12 +825,12 @@ def handle_history(args: argparse.Namespace) -> int:
         status_col = "green" if code == 0 else "red"
         flag = " interrupted" if r.get("interrupted") else ""
         console.print(
-            f"  [bold]#{rid}[/bold] [{status_col}]{recipe}[/{status_col}] "
-            f"| exit {code}{flag} | {dur}s | {start}"
+            f"  [bold]#{escape(str(rid))}[/bold] [{status_col}]{escape(str(recipe))}[/{status_col}] "
+            f"| exit {code}{flag} | {dur}s | {escape(str(start))}"
         )
         if artifacts:
             for a in artifacts:
-                console.print(f"      ↳ {a.get('path')} ({a.get('bytes', 0)} B)")
+                console.print(f"      ↳ {escape(str(a.get('path')))} ({a.get('bytes', 0)} B)")
     return 0
 
 

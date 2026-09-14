@@ -11,7 +11,6 @@ recipes:
   - id: ping
     name: "ICMP Reachability"
     bin: ping
-    category: "Host & Reachability"
     presets:
       - id: quick
         name: "quick · 4 probes"
@@ -32,7 +31,6 @@ recipes:
   - id: traceroute
     name: "Path & MTU Trace"
     bin: traceroute
-    category: "Host & Reachability"
     presets:
       - id: icmp
         name: "icmp · numeric"
@@ -47,7 +45,6 @@ recipes:
   - id: mtr
     name: "Continuous Path Monitor"
     bin: mtr
-    category: "Host & Reachability"
     presets:
       - id: report
         name: "report · 100 cycles"
@@ -59,7 +56,6 @@ recipes:
   - id: arp-scan
     name: "ARP Layer-2 Discovery"
     bin: arp-scan
-    category: "Host & Reachability"
     presets:
       - id: localnet
         name: "localnet"
@@ -71,7 +67,6 @@ recipes:
   - id: dig
     name: "DNS Query"
     bin: dig
-    category: "DNS & Resolution"
     presets:
       - id: a
         name: "A record"
@@ -89,7 +84,6 @@ recipes:
   - id: resolvectl
     name: "Local Resolver State"
     bin: resolvectl
-    category: "DNS & Resolution"
     presets:
       - id: status
         name: "status"
@@ -101,7 +95,6 @@ recipes:
   - id: curl
     name: "HTTP Latency Profiler"
     bin: curl
-    category: "HTTP & Endpoint Health"
     presets:
       - id: timing80
         name: "timing breakdown :80"
@@ -127,7 +120,6 @@ recipes:
   - id: openssl
     name: "TLS Certificate Validator"
     bin: openssl
-    category: "HTTP & Endpoint Health"
     presets:
       - id: chain
         name: "chain + expiry"
@@ -139,7 +131,6 @@ recipes:
   - id: wrk
     name: "HTTP Load Probe"
     bin: wrk
-    category: "HTTP & Endpoint Health"
     presets:
       - id: smoke
         name: "smoke · 10s / 4 conn"
@@ -148,7 +139,6 @@ recipes:
   - id: ss
     name: "Local Socket Table"
     bin: ss
-    category: "Ports & Services"
     presets:
       - id: listen
         name: "listening sockets"
@@ -160,7 +150,6 @@ recipes:
   - id: tcpdump
     name: "Packet Capture"
     bin: tcpdump
-    category: "Ports & Services"
     presets:
       - id: host
         name: "host filter · 200 pkts"
@@ -172,7 +161,6 @@ recipes:
   - id: iperf3
     name: "Throughput Benchmark"
     bin: iperf3
-    category: "Infrastructure & Bandwidth"
     presets:
       - id: tcp4
         name: "tcp · 10s / 4 streams"
@@ -187,7 +175,6 @@ recipes:
   - id: ethtool
     name: "Link & NIC Counters"
     bin: ethtool
-    category: "Infrastructure & Bandwidth"
     presets:
       - id: link
         name: "link settings"
@@ -201,7 +188,6 @@ recipes:
 chains:
   - id: reach
     name: "reachability · ping, trace, ptr"
-    category: "Chains"
     steps:
       - ping/quick
       - recipe: traceroute/icmp

@@ -53,7 +53,7 @@ def _catalog():
     from fieldlog.recipes import Catalog, normalize_recipe
 
     return Catalog(tools=[normalize_recipe({
-        "id": "probe", "bin": "true", "category": "Test",
+        "id": "probe", "bin": "true",
         "presets": [
             {"id": "hostonly", "flags": "$TARGET_HOST.stamp"},
             {"id": "bracedhost", "flags": "${HOST}.stamp"},

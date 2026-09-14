@@ -68,7 +68,6 @@ def test_chain_steps_normalise_and_resolve(tmp_path: Path):
         {"recipe": "bad/x", "continue": True},
     ]
     assert chain["name"] == "c1"                 # defaults to the id
-    assert chain["category"] == "Chains"
     assert cat.errors == []
 
 

@@ -49,6 +49,7 @@ from fieldlog.recipes import (
     is_tool_installed,
     load_catalog,
     search,
+    steps_label,
 )
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
@@ -689,7 +690,7 @@ class RecipeManagerModal(ModalScreen):
                         row.tooltip = t["state"]
                         with row:
                             yield Static(Text(t["bin"], style=t["bin_style"]), classes="mgr-tool-bin")
-                            yield Static(t["cat"], classes="mgr-tool-cat")
+                            yield Static(t["name"], classes="mgr-tool-name", markup=False)
                             yield Static(t["variants"], classes="mgr-tool-variants")
                             yield Static(Text(t["emits"], style=WARN), classes="mgr-tool-emits")
                             yield Static(Text(t["state"], style=t["state_color"]), classes="mgr-tool-state")
@@ -972,7 +973,7 @@ class PaletteModal(ModalScreen[Optional[Tuple]]):
                 f"{c['id'][:10]:<11}",
                 f"{c.get('name', c['id'])[:26]:<27}",
                 f"{('' if ok else 'step blocked'):<16}",
-                f"{('chain · ' + str(len(c.get('steps', []))) + ' steps')[:16]:>16}",
+                f"{('chain · ' + steps_label(c))[:16]:>16}",
             )
         else:
             t, p = item["tool"], item["preset"]
@@ -982,7 +983,7 @@ class PaletteModal(ModalScreen[Optional[Tuple]]):
                 f"{t_bin[:10]:<11}",
                 f"{p.get('name', p['id'])[:26]:<27}",
                 f"{state[:15]:<16}",
-                f"{t.get('category', '')[:16]:>16}",
+                f"{truncate_right(t.get('name', ''), 16):>16}",
             )
         if is_on and ok:
             return (
@@ -1235,7 +1236,7 @@ class FieldlogApp(App):
     def _chain_row(self, chain: dict) -> TreeRow:
         return TreeRow(
             "chain", label=chain.get("name", chain["id"]), bin=chain["id"],
-            meta=f"{len(chain.get('steps', []))} steps",
+            meta=steps_label(chain),
             blocked=self.chain_blocked_flag(chain),
         )
 
@@ -2442,7 +2443,7 @@ class FieldlogApp(App):
 
     def manager_tools(self) -> List[dict]:
         out = []
-        for t in sorted(self.recipes, key=lambda t: (t.get("category", ""), t.get("bin", t["id"]))):
+        for t in sorted(self.recipes, key=lambda t: t.get("bin", t["id"])):
             ok = is_tool_installed(t.get("bin", ""))
             emitting = sum(1 for p in t.get("presets", []) if self._writes_outdir(p))
             fresh = sum(1 for k in self.added_variants if k.split("/")[0] == t["id"])
@@ -2450,7 +2451,7 @@ class FieldlogApp(App):
                 "id": t["id"],
                 "bin": t.get("bin", t["id"]),
                 "bin_style": f"bold {FG}" if ok else UNFOCUSED,
-                "cat": t.get("category", ""),
+                "name": t.get("name", ""),
                 "variants": f"{len(t.get('presets', []))}v",
                 "emits": f"⇩ {emitting}" if emitting else "",
                 "state": (t.get("version") or "available") if ok else "not on $PATH",

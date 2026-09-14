@@ -950,7 +950,7 @@ ModalScreen {
     margin-left: 1;
 }
 
-.mgr-tool-cat {
+.mgr-tool-name {
     width: 1fr;
     color: #7f8c88;
 }
