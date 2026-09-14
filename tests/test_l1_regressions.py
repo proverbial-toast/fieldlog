@@ -22,6 +22,20 @@ def test_empty_target_blocked():
     assert blocked_no_target is False
 
 
+def test_empty_lhost_blocked():
+    """An interface with no IPv4 leaves $LHOST empty, so a preset using it must not run."""
+    tool = {"id": "true", "bin": "true"}
+    preset = {"id": "serve", "flags": "-s -1 -B ${LHOST}"}
+
+    blocked, reason, hint = is_blocked(tool, preset, TargetSession(interface="nosuch0"))
+    assert blocked is True
+    assert "needs a local address" in reason and "nosuch0" in reason
+    assert "T → scope" in hint
+
+    assert is_blocked(tool, preset, TargetSession(interface="nosuch0", lhost="10.9.9.9"))[0] is False
+    assert is_blocked(tool, {"id": "i", "flags": "-I $IFACE"}, TargetSession(interface="nosuch0"))[0] is False
+
+
 def test_dry_run_creates_no_files(tmp_workspace: Path):
     from fieldlog.launch import plan_launch
 
