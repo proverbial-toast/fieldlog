@@ -362,8 +362,40 @@ recipes:
         flags: "-c 1 -W 1 $TARGET"
 ```
 
-This repo's own `recipes.d/` is empty. It is the local drop-in directory for
+This repo's own `recipes.d/` holds example recipes (`examples.yaml`) and chains
+built from them (`chains.yaml`). It is the local drop-in directory, so they load
 when you run fieldlog from a checkout.
+
+### GUI recipes
+
+A recipe can open a window and run until you close it. `rcap/ssh` in
+[`recipes.d/examples.yaml`](recipes.d/examples.yaml) streams a remote `tcpdump`
+over ssh into a local Wireshark and keeps the capture as a run artifact:
+
+```yaml
+flags: >-
+  env ssh $TARGET "(tcpdump -i ${RIFACE:-eth0} -U -s0 -w - not port 22; kill 0) & cat >/dev/null; kill 0"
+  | tee $OUTDIR/remote.pcap
+  | wireshark -k -i -
+```
+
+- **Keep the GUI in the foreground.** The run lasts until the window closes and
+  records the GUI's exit code. `wireshark &` or `nohup wireshark &` is killed
+  as soon as the shell exits.
+- **No `--timeout`.** It closes the window when time runs out.
+- **Start fieldlog where a GUI can open.** Jobs inherit fieldlog's environment,
+  so `DISPLAY` or `WAYLAND_DISPLAY` must be set in that terminal.
+- **`env` in front** stops fieldlog prepending `bin`, which would give
+  `wireshark ssh …`. The `$PATH` check still uses `wireshark`.
+- **Never `ssh -t` in a pipe.** A remote terminal rewrites bytes and corrupts
+  the stream.
+- **`(…; kill 0) & cat >/dev/null; kill 0`** stops the remote capture when you
+  close the window or press `Ctrl+C`, even on a quiet interface.
+- The target can be `user@host` or a `Host` alias from `~/.ssh/config`.
+  `RIFACE=ens192 fieldlog run rcap/ssh jump1` picks the remote interface.
+
+The tests behind these points are in
+[`docs/investigations/2026-09-13-ssh-wireshark.md`](docs/investigations/2026-09-13-ssh-wireshark.md).
 
 ## The archive
 

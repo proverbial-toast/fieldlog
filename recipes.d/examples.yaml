@@ -1,0 +1,146 @@
+# Candidate example recipes — each one exercises a different corner of the format.
+recipes:
+  - id: curl
+    presets:
+      - id: pin
+        name: "pin $HOST to $TARGET · skip dns"
+        flags: >-
+          -sS -o /dev/null --resolve $HOST:443:$TARGET
+          -w "%{http_code} ip=%{remote_ip} tls=%{time_appconnect}s total=%{time_total}s\n"
+          https://$HOST/
+      - id: p95
+        name: "20 requests · p50 / p95"
+        flags: >-
+          -sS -o /dev/null -w "%{time_total}\n" "https://$HOST/?[1-20]"
+          | sort -n
+          | awk '{t[NR]=$1} END {printf "n=%d p50=%.3fs p95=%.3fs max=%.3fs\n", NR, t[int(NR*0.5)], t[int(NR*0.95)], t[NR]}'
+      - id: hops
+        name: "redirect chain · status + location"
+        flags: >-
+          -sSL --max-redirs 10 -o /dev/null -D - http://$HOST/
+          | tr -d '\r' | grep -iE '^(HTTP/|location:)'
+
+  - id: openssl
+    presets:
+      - id: leaf
+        name: "leaf cert · subject, SANs, dates"
+        flags: >-
+          openssl s_client -connect $HOST:443 -servername $HOST </dev/null 2>/dev/null
+          | openssl x509 -noout -subject -issuer -dates -ext subjectAltName
+      - id: expires14
+        name: "fail if cert expires within 14 days"
+        flags: >-
+          openssl s_client -connect $HOST:443 -servername $HOST </dev/null 2>/dev/null
+          | openssl x509 -noout -enddate -checkend $((14 * 86400))
+      - id: versions
+        name: "which tls versions are accepted"
+        flags: >-
+          timeout 30 sh -c 'for v in tls1 tls1_1 tls1_2 tls1_3; do printf "%-8s " $v;
+          openssl s_client -connect $HOST:443 -servername $HOST -$v -cipher DEFAULT@SECLEVEL=0
+          </dev/null >/dev/null 2>&1 && echo accepted || echo refused; done'
+
+  - id: ss
+    presets:
+      - id: tcpinfo
+        name: "rtt · cwnd · retrans to target"
+        flags: "-tni dst $TARGET"
+      - id: https
+        name: "established on :443, either side"
+        flags: "-tn state established '( dport = :443 or sport = :443 )'"
+      - id: backlog
+        name: "listen queues with a backlog"
+        flags: "-ltn | awk 'NR == 1 || $2 > 0'"
+
+  - id: ip
+    name: "Routing & Neighbours"
+    bin: ip
+    presets:
+      - id: route
+        name: "route + source used for target"
+        flags: "route get $TARGET"
+      - id: from
+        name: "route when sourced from $LHOST"
+        flags: "route get $TARGET from $LHOST"
+      - id: neigh
+        name: "neighbour cache · stale + failed"
+        flags: "neigh show dev $IFACE nud stale nud failed nud incomplete"
+
+  - id: tcpcheck
+    name: "TCP Connect Check"
+    bin: bash
+    presets:
+      - id: common
+        name: "22 53 80 443 · /dev/tcp, no nc"
+        flags: >-
+          bash -c 'for p in 22 53 80 443; do timeout 1 bash -c ": </dev/tcp/$TARGET/$p" 2>/dev/null
+          && echo "$p open" || echo "$p closed/filtered"; done'
+
+  - id: fping
+    name: "Parallel ICMP Sweep"
+    bin: fping
+    presets:
+      - id: sweep
+        name: "alive hosts in subnet"
+        flags: "-a -q -g -r 1 $TARGET 2>/dev/null || [ $? -eq 1 ]"
+
+  - id: dig
+    presets:
+      - id: nssearch
+        name: "soa serial per authoritative ns"
+        flags: "+nssearch $HOST"
+      - id: resolvers
+        name: "same answer from 3 public resolvers?"
+        flags: >-
+          timeout 20 sh -c 'for ns in 1.1.1.1 8.8.8.8 9.9.9.9; do printf "%-8s " $ns;
+          dig +short +time=2 +tries=1 A $HOST @$ns | sort | paste -sd, -; done'
+      - id: vtrace
+        name: "dnssec validation trace (delv)"
+        bin: delv
+        flags: "+vtrace $HOST"
+
+  - id: tcpdump
+    presets:
+      - id: ring
+        name: "ring buffer · 5 × 60s pcaps"
+        flags: "-i $IFACE -nn -s 128 -G 60 -W 5 -w $OUTDIR/ring-%H%M%S.pcap host $TARGET"
+      - id: synrst
+        name: "handshakes & resets only (sudo)"
+        flags: "sudo tcpdump -i $IFACE -nn -c 100 'tcp[tcpflags] & (tcp-syn|tcp-rst) != 0 and host $TARGET'"
+
+  - id: ethtool
+    presets:
+      - id: errors
+        name: "non-zero error / drop counters"
+        flags: >-
+          -S $IFACE | awk -F': *' 'tolower($1) ~ /err|drop|miss|crc|fifo/ && $2 != 0 {print; n++}
+          END {if (!n) print "no non-zero error counters"}'
+
+  - id: nmap
+    name: "TLS Audit"
+    bin: nmap
+    presets:
+      - id: ciphers
+        name: "cipher suites + grades :443"
+        flags: "-Pn -p 443 --script ssl-enum-ciphers -oA $OUTDIR/tls $HOST"
+
+  - id: iperf3
+    presets:
+      - id: serve
+        name: "one-shot server bound to $LHOST"
+        flags: "-s -1 -B $LHOST"
+
+  # Remote tcpdump streamed over ssh into a local Wireshark, kept as $OUTDIR/remote.pcap.
+  # Wireshark stays in the foreground, so the run lasts until its window closes.
+  # No `ssh -t` and no --timeout. The target can be user@host or an ssh-config
+  # alias; RIFACE=ens192 picks the remote interface.
+  # See docs/investigations/2026-09-13-ssh-wireshark.md.
+  - id: rcap
+    name: "Remote Capture → Wireshark"
+    bin: wireshark
+    presets:
+      - id: ssh
+        name: "tcpdump over ssh · live gui + pcap"
+        flags: >-
+          env ssh $TARGET "(tcpdump -i ${RIFACE:-eth0} -U -s0 -w - not port 22; kill 0) & cat >/dev/null; kill 0"
+          | tee $OUTDIR/remote.pcap
+          | wireshark -k -i -

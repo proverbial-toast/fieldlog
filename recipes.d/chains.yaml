@@ -1,0 +1,37 @@
+# Candidate chains built from base + examples.yaml recipes.
+chains:
+  - id: https-check
+    name: "https endpoint · route, ports, cert, tls, latency"
+    steps:
+      - ip/route
+      - recipe: tcpcheck/common
+        continue: true
+      - openssl/expires14
+      - openssl/versions
+      - curl/pin
+      - curl/p95
+
+  - id: tls-audit
+    name: "certificate + protocol + cipher audit"
+    steps:
+      - openssl/leaf
+      - recipe: openssl/expires14
+        continue: true
+      - openssl/versions
+      - nmap/ciphers
+
+  - id: dns-sanity
+    name: "dns · authoritative, resolvers, dnssec, pinned fetch"
+    steps:
+      - dig/nssearch
+      - dig/resolvers
+      - recipe: dig/vtrace
+        continue: true
+      - curl/pin
+
+  - id: lan-survey
+    name: "local segment · route, neighbours, sweep"
+    steps:
+      - ip/route
+      - ip/neigh
+      - fping/sweep
