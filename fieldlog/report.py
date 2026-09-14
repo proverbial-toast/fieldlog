@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -73,10 +74,21 @@ def record_interrupted(record: dict) -> bool:
 
 
 def format_time(stamp: object) -> str:
-    """`2026-09-12T12:00:49.734145` -> `2026-09-12 12:00:49`, as stored (localtime)."""
+    """`2026-09-12T12:00:49.734145` -> `2026-09-12 12:00:49`, as stored (localtime).
+
+    A stamp with an offset — a chain summary written before chains switched to
+    localtime — is converted to local time, so it reads on its steps' clock."""
     text = str(stamp or "").strip()
     if not text:
         return "—"
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        moment = None
+    if moment is not None:
+        if moment.tzinfo is not None:
+            moment = moment.astimezone()
+        return moment.strftime("%Y-%m-%d %H:%M:%S")
     head = text.replace("T", " ")
     for cut in ("+", "Z"):
         idx = head.find(cut, 10)

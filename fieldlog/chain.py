@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional
 
@@ -91,8 +91,9 @@ async def run_chain(
         "environment": manifest_environment(build_env(session, Path(out_dir), run_id)),
         "artifact_log": "",
         "out_dir": out_dir,
-        "start_time": datetime.fromtimestamp(start, timezone.utc).isoformat(),
-        "end_time": datetime.fromtimestamp(end, timezone.utc).isoformat(),
+        # Naive local time, as every step's own record is (see runner).
+        "start_time": datetime.fromtimestamp(start).isoformat(),
+        "end_time": datetime.fromtimestamp(end).isoformat(),
         "duration_sec": round(end - start, 2),
         "artifacts": [],
     }

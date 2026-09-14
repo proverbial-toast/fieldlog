@@ -224,6 +224,36 @@ def test_cli_chain_continues_past_a_failure_when_told_to(tmp_path: Path, tmp_wor
     assert chain_record["exit_code"] == 1
 
 
+def test_chain_summary_times_are_local_like_its_steps(tmp_path: Path, tmp_workspace: Path):
+    from fieldlog.cli import handle_run
+
+    cat = _catalog(tmp_path, """
+        chains:
+          - id: c1
+            steps:
+              - ok/x
+        """)
+    assert handle_run(_run_args("c1", tmp_workspace, "-q"), cat) == 0
+
+    runs = _session_runs(tmp_workspace)
+    step = next(r for r in runs if r["recipe"] == "ok/x")
+    chain_record = next(r for r in runs if r["recipe"] == "chain/c1")
+    for stamp in (chain_record["start_time"], chain_record["end_time"]):
+        assert "+" not in stamp and "Z" not in stamp
+    # One clock: the summary spans its step instead of sitting an offset away.
+    assert chain_record["start_time"] <= step["start_time"] <= chain_record["end_time"]
+
+
+def test_report_reads_an_old_utc_chain_stamp_in_local_time():
+    from datetime import datetime, timezone
+
+    from fieldlog.report import format_time
+
+    utc = datetime(2026, 9, 13, 21, 8, 35, tzinfo=timezone.utc)
+    assert format_time(utc.isoformat()) == utc.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    assert format_time("2026-09-13T22:08:35.123456") == "2026-09-13 22:08:35"
+
+
 # ---- 6. list ---------------------------------------------------------------
 
 
