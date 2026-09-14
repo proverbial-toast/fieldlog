@@ -111,8 +111,19 @@ def test_launch_leaves_outdir_alone_when_unreferenced(tmp_workspace: Path):
     assert not plan.job.out_dir.exists()
 
 
+@pytest.mark.parametrize("outdir, created", [(True, True), (False, False)])
+def test_launch_creates_outdir_when_the_preset_asks(tmp_workspace: Path, outdir, created):
+    """A script that reads $OUTDIR from its env leaves no trace in the flags."""
+    from fieldlog.launch import plan_launch
+
+    session = TargetSession(target="10.0.0.1", workspace_dir=tmp_workspace)
+    plan = plan_launch(session, NOOP_TOOL, {"id": "noop", "flags": "/opt/capture.sh $TARGET", "outdir": outdir})
+    assert plan.job.out_dir.is_dir() is created
+
+
 def test_tui_outdir_marker():
     from fieldlog.app import FieldlogApp
 
     assert FieldlogApp._writes_outdir({"flags": "-w ${OUT_DIR}/x.pcap"})
+    assert FieldlogApp._writes_outdir({"flags": "/opt/capture.sh", "outdir": True})
     assert not FieldlogApp._writes_outdir({"flags": "--out $OUTDIRECTORY"})

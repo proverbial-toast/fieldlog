@@ -236,6 +236,7 @@ recipes:
 | `flags` | preset | yes | What to run after `bin` (see below) |
 | `name` | preset | no | Display name |
 | `bin` | preset | no | Overrides the tool's `bin` for this preset |
+| `outdir` | preset | no | `true` creates `$OUTDIR` even when `flags` don't mention it (see below) |
 
 ### How the command is built
 
@@ -256,6 +257,14 @@ recipes:
   command starts, so a tool that writes side files (`-w`, `--logfile`, `-oA`)
   has somewhere to put them. Whatever it writes is recorded in the run's record
   afterwards; nothing has to be declared.
+- A script that writes to `$OUTDIR` from its environment doesn't show it in the
+  flags. Set `outdir: true` on its preset and the folder is created anyway:
+
+  ```yaml
+  - id: script
+    flags: "env bash /home/chris/bin/capture.sh $TARGET"
+    outdir: true
+  ```
 
 ### Variables
 

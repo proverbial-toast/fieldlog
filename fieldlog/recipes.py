@@ -98,6 +98,17 @@ def is_blocked(tool: dict, preset: dict, session: TargetSession) -> Tuple[bool, 
     return False, f"{bin_name} · in $PATH", ""
 
 
+def writes_outdir(preset: dict, flags: Optional[str] = None) -> bool:
+    """Whether `$OUTDIR` must exist before the preset runs.
+
+    Either its flags (or `flags`, an edit of them) reference it, or the preset
+    says `outdir: true` for a script that writes there from its environment,
+    which no scan of the command line can see.
+    """
+    text = preset.get("flags", "") if flags is None else flags
+    return preset.get("outdir") is True or "OUTDIR" in template_vars(str(text))
+
+
 def find_recipe(catalog: Catalog, spec: str) -> Tuple[Optional[dict], Optional[dict], Optional[str]]:
     """Look up a recipe by '<tool>/<preset>' or '<tool>'.
     Returns (tool, preset, error_message). If tool only, uses first preset.

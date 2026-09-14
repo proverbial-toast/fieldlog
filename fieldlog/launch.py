@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from fieldlog.archive import next_run_number, reserve_run_number
-from fieldlog.recipes import format_command
+from fieldlog.recipes import format_command, writes_outdir
 from fieldlog.runner import build_env, exec_form
-from fieldlog.state import ActiveJob, TargetSession, prepare_job_paths, resolve_flags, template_vars
+from fieldlog.state import ActiveJob, TargetSession, prepare_job_paths, resolve_flags
 
 
 @dataclass
@@ -75,8 +75,7 @@ def plan_launch(
     warnings: List[str] = []
     # $OUTDIR must exist before a command that writes into it starts. Extra args
     # reach the shell unsubstituted, so the template is what is checked.
-    writes_outdir = "OUTDIR" in template_vars(f"{template} {extra_args}")
-    if not dry_run and writes_outdir:
+    if not dry_run and writes_outdir(preset, f"{template} {extra_args}"):
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
         except (PermissionError, OSError):

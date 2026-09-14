@@ -50,6 +50,7 @@ from fieldlog.recipes import (
     load_catalog,
     search,
     steps_label,
+    writes_outdir,
 )
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
@@ -64,7 +65,6 @@ from fieldlog.state import (
     run_stamp,
     save_last_scope,
     save_pinned_recent,
-    template_vars,
 )
 
 VERSION = __version__
@@ -2441,7 +2441,7 @@ class FieldlogApp(App):
     @staticmethod
     def _writes_outdir(preset: dict) -> bool:
         """True if the preset writes into $OUTDIR (so its dir must be created)."""
-        return "OUTDIR" in template_vars(str(preset.get("flags", "")))
+        return writes_outdir(preset)
 
     def manager_tools(self) -> List[dict]:
         out = []
