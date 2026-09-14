@@ -74,16 +74,19 @@ bare `fieldlog` resumes where you left off; any flag you pass overrides the
 remembered value. If no interface is passed or remembered, the TUI starts on
 `eth0` if it has an IPv4 address, else on the first other interface that has
 one (never `lo`). An interface you name is kept even with no address yet, such
-as a VPN that comes up later. Unless a local address is set, `$LHOST` is the
-interface's address when the TUI starts or, if it had none then, whatever it
-has when a job starts. `T` changes all of it at runtime. `fieldlog run` never
-switches: without `-i` it uses `eth0`.
+as a VPN that comes up later. `T` changes all of it at runtime.
+
+`$LHOST` is the address the interface has when a job starts, unless you set one:
+with `-l`, or by typing `tun0 / 10.8.0.2` in the interface field of `T`. Typing
+just `tun0`, or clicking an interface in the list, goes back to its own address.
+Only an address you set is remembered. `fieldlog run` never switches
+interfaces: without `-i` it uses `eth0`.
 
 ### Keys
 
 | Key | Action |
 |-----|--------|
-| `T` | Set target, DNS name, interface and log destination |
+| `T` | Set target, DNS name, interface, local address and log destination |
 | `↑ ↓` `j k` | Move within the focused pane |
 | `Tab` | Switch focus between RECIPES and VARIANTS |
 | `Enter` | On a tool: jump to its variants. On a variant or chain: run it |
@@ -280,7 +283,7 @@ left for the shell, which has every binding in its environment.
 |----------|-------|
 | `$TARGET`, `$TARGET_IP` | Target IP, CIDR, hostname or ssh `user@host` |
 | `$HOST`, `$TARGET_HOST` | DNS name. If unset and the target is a hostname (not `user@host`), the target. Presets using it are not runnable without one |
-| `$LHOST` | Local IP: the one given, else the interface's IPv4 address, read when the job starts (the TUI fills it in at startup, see [TUI](#tui)). Presets using it are not runnable without one |
+| `$LHOST` | Local IP: the one given, else the interface's IPv4 address, read when the job starts (see [TUI](#tui) to set one there). Presets using it are not runnable without one |
 | `$IFACE` | Interface name |
 | `$OUTDIR`, `$OUT_DIR` | Per-run folder for files the tool writes: `targets/<name>/raw/<timestamp>/` |
 | `$RUN_ID` | Run number, `01`, `02`, … Set in the environment only |
