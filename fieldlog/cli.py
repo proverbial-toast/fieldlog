@@ -898,7 +898,10 @@ def tui_session(args: argparse.Namespace) -> TargetSession:
         "lhost": args.lhost,
     }
     scope.update({k: v.strip() for k, v in given.items() if v.strip()})
-    session = TargetSession(**scope) if scope else TargetSession()
+    # An interface neither passed nor remembered stays unset, so the TUI picks
+    # one with an address; a named one is kept even without.
+    scope.setdefault("interface", "")
+    session = TargetSession(**scope)
     session.workspace_dir = workspace
     return session
 

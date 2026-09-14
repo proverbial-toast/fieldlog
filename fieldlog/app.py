@@ -161,6 +161,15 @@ def list_box_interfaces() -> List[Tuple[str, str]]:
     return ifaces
 
 
+def default_interface() -> str:
+    """The interface to start on when none is named: `eth0` if it has an IPv4
+    address, else the first other interface that has one (never `lo`), else `eth0`."""
+    fallback = TargetSession.interface
+    if get_interface_ip(fallback):
+        return fallback
+    return next((name for name, ip in list_box_interfaces() if name != "lo" and ip), fallback)
+
+
 def tokenize(s: str) -> List[str]:
     """Shell-tokenise an argument string, respecting quoted substrings."""
     out: List[str] = []
@@ -1140,18 +1149,13 @@ class FieldlogApp(App):
         self._last_quit_press: float = float("-inf")
         self.catalog: Catalog = load_catalog()
         self._recipes: List[dict] = self.catalog.tools
-        self.session = session or TargetSession()
+        self.session = session or TargetSession(interface="")
+        # ponytail: a named interface (flag or remembered) is kept even with no IP yet
+        # (tun0 before the VPN is up); only an unset one is chosen for its address.
+        if not self.session.interface:
+            self.session.interface = default_interface()
         if not self.session.lhost:
-            ip = get_interface_ip(self.session.interface)
-            if ip:
-                self.session.lhost = ip
-            # ponytail: an interface named on the command line is kept even with no IP yet
-            # (tun0 before the VPN is up); only the default gets swapped for one that has an IP.
-            elif self.session.interface == TargetSession.interface:
-                for name, if_ip in list_box_interfaces():
-                    if name != "lo" and if_ip:
-                        self.session.interface, self.session.lhost = name, if_ip
-                        break
+            self.session.lhost = get_interface_ip(self.session.interface)
 
         self.jobs: Dict[str, ActiveJob] = {}
         self.tabs: List[TabDescriptor] = [TabDescriptor("system", "[System]", "system", "system")]
