@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from fieldlog.launch import plan_launch
-from fieldlog.runner import BLOCK_GRACE, interrupt_job, run_job, send_stdin
+from fieldlog.runner import BLOCK_GRACE, interrupt_job, loggable_reply, run_job, send_stdin
 from fieldlog.state import TargetSession
 
 SH_TOOL = {"id": "sh", "bin": "sh"}
@@ -55,7 +55,27 @@ async def test_prompt_read_from_dev_tty_is_answerable(tmp_workspace: Path):
     code = await asyncio.wait_for(task, timeout=5)
 
     assert code == 0
-    assert "got:hello" in plan.job.log_path.read_text()
+    log = plan.job.log_path.read_text()
+    assert "got:hello" in log
+    # "pw: " offers no choices, so the reply itself stays out of the log.
+    assert "› (reply hidden)" in log
+    assert "› hello" not in log
+
+
+@pytest.mark.parametrize(
+    "prompt, reply, logged",
+    [
+        ("Are you sure you want to continue connecting (yes/no/[fingerprint])? ", "yes", "yes"),
+        ("Continue? [y/N] ", "n", "n"),
+        ("Continue? [y/N] ", "", ""),
+        ("Continue? [y/N] ", "yesplease", None),
+        ("Enter passphrase for key '/home/chris/.ssh/id_ed25519': ", "chris", None),  # path words are no choice
+        ("[sudo] password for chris: ", "sudo", None),
+        ("interface: ", "eth1", None),
+    ],
+)
+def test_only_offered_choices_are_logged(prompt, reply, logged):
+    assert loggable_reply(prompt, reply) == logged
 
 
 @pytest.mark.asyncio

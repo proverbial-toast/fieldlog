@@ -96,6 +96,26 @@ def kill_job(job: ActiveJob, grace: float = 10.0) -> bool:
     return True
 
 
+# A choice group a prompt offers: `[y/N]`, `(yes/no/[fingerprint])`. The brackets
+# are required, so the words of a path in a prompt (`/home/chris/.ssh/…`) never count.
+_CHOICES = re.compile(r"[\[(]\s*(\[?\w+\]?(?:\s*/\s*\[?\w+\]?)+)\s*[\])]")
+
+HIDDEN_REPLY = "(reply hidden)"
+
+
+def loggable_reply(prompt: str, text: str) -> Optional[str]:
+    """`text` if it may be written into the run log, else None.
+
+    Only an empty line or one of the prompt's bracketed choices may, so a
+    password or passphrase typed into the reply field never lands in an artifact.
+    """
+    reply = text.strip().lower()
+    if not reply:
+        return text
+    choices = {c.strip(" []").lower() for m in _CHOICES.finditer(prompt or "") for c in m[1].split("/")}
+    return text if reply in choices else None
+
+
 def send_stdin(job: ActiveJob, text: str) -> bool:
     """Write one operator-typed line to the job's pty.
 
@@ -109,14 +129,17 @@ def send_stdin(job: ActiveJob, text: str) -> bool:
         os.write(fd, (text + "\n").encode("utf-8", errors="replace"))
     except OSError:
         return False
+    prompt = job.await_prompt or ""
     job.await_prompt = None
     job.await_since = None
     queue = getattr(job, "_queue", None)
     if queue is not None:
         # Echo is off on the slave, so the reply reaches the artifact only
         # because we put it there — and it must, or the log reads as a
-        # question nobody answered.
-        queue.put_nowait(("note", f"› {text}"))
+        # question nobody answered. A reply that is not one of the prompt's
+        # choices may be a secret, so only the fact of it is written.
+        shown = loggable_reply(prompt, text)
+        queue.put_nowait(("note", f"› {shown if shown is not None else HIDDEN_REPLY}"))
     return True
 
 

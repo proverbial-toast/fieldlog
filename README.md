@@ -116,6 +116,11 @@ job still waiting. Prompts that read the terminal directly, such as sudo and
 ssh, work the same way because each job owns its own pty. Hotkeys are
 suspended while the reply field has focus.
 
+The log shows the reply, as `› yes`, only when it is one of the choices the
+prompt lists in brackets, such as `[y/N]` or `(yes/no/[fingerprint])`. Any
+other reply, such as a passphrase, is logged as `› (reply hidden)`. `fieldlog run`
+forwards keystrokes to the job and logs none of them.
+
 The target and DNS name cannot be changed while a job is running; stop the
 jobs first. The interface and log destination can.
 

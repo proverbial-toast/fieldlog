@@ -53,7 +53,7 @@ from fieldlog.recipes import (
 )
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
-from fieldlog.runner import interrupt_job, kill_job, run_job, send_stdin
+from fieldlog.runner import HIDDEN_REPLY, interrupt_job, kill_job, loggable_reply, run_job, send_stdin
 from fieldlog.state import (
     ActiveJob,
     TargetSession,
@@ -2061,7 +2061,9 @@ class FieldlogApp(App):
             return
         if send_stdin(job, reply):
             field.value = ""
-            self.write_system_log(f'[runner] stdin → "{reply}" · resuming')
+            shown = loggable_reply(prompt, reply)
+            said = f'"{shown}"' if shown is not None else HIDDEN_REPLY
+            self.write_system_log(f"[runner] stdin → {said} · resuming")
             self._refresh_stdin_bar()
             self._refresh_status_band()
 
