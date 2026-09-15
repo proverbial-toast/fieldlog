@@ -137,7 +137,7 @@ def test_chain_blocked_names_the_first_blocked_step(tmp_path: Path):
 
     blocked, reason, hint = chain_blocked(cat, find_chain(cat, "broken"), session)
     assert blocked and reason.startswith("step 2 gone/x: ") and "not found in $PATH" in reason
-    assert hint
+    assert hint == ""  # a missing binary carries no install hint
 
     assert chain_blocked(cat, find_chain(cat, "fine"), session) == (False, "2 steps ready", "")
 

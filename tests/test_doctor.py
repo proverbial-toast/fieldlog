@@ -76,17 +76,15 @@ def test_json_output(catalog, capsys):
     out = json.loads(capsys.readouterr().out)
     assert set(out) == {"scope", "tools", "chains", "summary"}
     assert out["summary"]["recipes_total"] == 3
-    assert any(
-        m["bin"] == "definitely-not-a-real-binary-xyz"
-        for m in out["summary"]["missing_binaries"]
-    )
+    assert "definitely-not-a-real-binary-xyz" in out["summary"]["missing_binaries"]
 
 
 def test_human_output_flags_missing_binary(catalog, capsys):
     assert handle_doctor(_args(["doctor"]), catalog) == 0
     out = capsys.readouterr().out
-    assert "install:" in out
+    assert "missing:" in out
     assert "definitely-not-a-real-binary-xyz" in out
+    assert "apt install" not in out               # no distro-specific install syntax
 
 
 def test_dispatch_check_alias():

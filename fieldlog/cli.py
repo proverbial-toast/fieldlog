@@ -25,7 +25,6 @@ from fieldlog.archive import load_target_history
 from fieldlog.report import DEFAULT_TAIL, load_runs, render_report, run_number
 from fieldlog.recipes import (
     Catalog,
-    KNOWN_INSTALL,
     chain_arrow,
     chain_blocked,
     chain_matches,
@@ -292,8 +291,7 @@ def print_tool(console: Console, tool: dict, verbose: bool) -> None:
     if is_tool_installed(bin_name):
         badge = f"[green]✓ {escape(bin_name)} in $PATH[/green]"
     else:
-        hint = KNOWN_INSTALL.get(bin_name, f"apt install {bin_name}")
-        badge = f"[red]✗ {escape(bin_name)} not in $PATH — {escape(hint)}[/red]"
+        badge = f"[red]✗ {escape(bin_name)} not in $PATH[/red]"
     console.print(f"[bold]{escape(tool['id'])}[/bold]  {escape(tool.get('name', ''))}  {badge}")
     for preset in tool.get("presets", []):
         console.print(recipe_line(tool, preset, verbose))
@@ -481,8 +479,7 @@ def handle_show(args: argparse.Namespace, catalog: Catalog) -> int:
     if installed:
         console.print(f"  [bold]Binary:[/bold]      [green]✓ {escape(bin_name)} (installed in $PATH)[/green]")
     else:
-        hint = KNOWN_INSTALL.get(bin_name, f"apt install {bin_name}")
-        console.print(f"  [bold]Binary:[/bold]      [red]✗ {escape(bin_name)} (missing from $PATH — {escape(hint)})[/red]")
+        console.print(f"  [bold]Binary:[/bold]      [red]✗ {escape(bin_name)} (missing from $PATH)[/red]")
 
     # The preset's own bin, when it has one — the binary that actually runs.
     console.print(f"\n[bold]Raw Flags:[/bold]\n  {escape(format_command(bin_name, raw_flags))}")
@@ -939,7 +936,7 @@ def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
     tools: List[dict] = []
     recipes_ready = 0
     recipes_total = 0
-    missing: dict = {}                          # bin -> install hint, deduped
+    missing: set = set()                        # bin names not on $PATH, deduped
     needs = {"target": 0, "dns": 0, "lhost": 0, "interface": 0}
 
     for tool in catalog.tools:
@@ -951,8 +948,7 @@ def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
             if blocked:
                 bucket = doctor_bucket(reason)
                 if bucket == "binary":
-                    bin_name = preset.get("bin", tool.get("bin", tool["id"]))
-                    missing[bin_name] = KNOWN_INSTALL.get(bin_name, f"apt install {bin_name}")
+                    missing.add(preset.get("bin", tool.get("bin", tool["id"])))
                 elif bucket in needs:
                     needs[bucket] += 1
             else:
@@ -1027,7 +1023,7 @@ def doctor_report_json(scan: dict, session: TargetSession) -> dict:
             "recipes_total": scan["recipes_total"],
             "chains_ready": scan["chains_ready"],
             "chains_total": scan["chains_total"],
-            "missing_binaries": [{"bin": b, "hint": h} for b, h in sorted(scan["missing"].items())],
+            "missing_binaries": sorted(scan["missing"]),
             "needs": scan["needs"],
         },
     }
@@ -1062,8 +1058,7 @@ def handle_doctor(args: argparse.Namespace, catalog: Catalog) -> int:
         if t["ready"] == t["total"]:
             mark, style, note = "✓", "green", f"{t['ready']}/{t['total']} ready"
         elif t["ready"] == 0 and not is_tool_installed(bin_name):
-            hint = KNOWN_INSTALL.get(bin_name, f"apt install {bin_name}")
-            mark, style, note = "✗", "red", f"{bin_name} not in $PATH — {hint}"
+            mark, style, note = "✗", "red", f"{bin_name} not in $PATH"
         else:
             mark, style, note = "◐", "yellow", f"{t['ready']}/{t['total']} ready"
         tid = escape(tool["id"].ljust(id_w))
@@ -1088,8 +1083,8 @@ def handle_doctor(args: argparse.Namespace, catalog: Catalog) -> int:
         f"{scan['chains_ready']}/{scan['chains_total']} chains ready[/dim]"
     )
     if scan["missing"]:
-        items = " · ".join(f"{escape(b)} ({escape(h)})" for b, h in sorted(scan["missing"].items()))
-        console.print(f"[red]install:[/red] {items}")
+        items = " · ".join(escape(b) for b in sorted(scan["missing"]))
+        console.print(f"[red]missing:[/red] {items}")
     hints = []
     if scan["needs"]["target"]:
         hints.append(f"set a target (-t) to unlock {scan['needs']['target']}")

@@ -27,7 +27,7 @@ targets/192.168.1.20/
 - Linux (the runner uses a pty and `SIOCGIFADDR`)
 - Python 3.11 or newer
 - The tools themselves: ping, curl, dig, traceroute and so on. fieldlog does not
-  bundle them. A tool missing from `$PATH` is listed but marked, with an install hint.
+  bundle them. A tool missing from `$PATH` is listed but marked as unavailable.
 - Root, or the right capabilities, for tools that need it (tcpdump, arp-scan,
   `ping -f`). fieldlog does not escalate; write `sudo` into the recipe if you want it.
 
@@ -198,8 +198,8 @@ after `fieldlog run ping/quick 192.168.1.20 -H router1`, use
 `fieldlog history` with no name lists the folders.
 
 `doctor` (alias `check`) reads the whole catalog against a scope and reports what
-is runnable, what is missing from `$PATH` (with an install hint), and which scope
-values would unlock the rest — a preflight before a job. Each verdict is the same
+is runnable, what is missing from `$PATH`, and which scope values would unlock
+the rest — a preflight before a job. Each verdict is the same
 one `run` would reach. It takes the scope flags `-t`, `-H`, `-i`, `-l` (or a bare
 target), plus `-v` for a per-preset breakdown and `--json`. It touches nothing on
 disk and exits 0.

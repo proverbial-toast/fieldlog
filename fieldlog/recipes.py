@@ -40,21 +40,6 @@ DROPIN_DIR = get_dropin_dir()
 # Editor leftovers that must never take effect silently.
 _SKIP_SUFFIXES = ("~", ".swp", ".swo", ".bak", ".orig", ".rej")
 
-KNOWN_INSTALL: Dict[str, str] = {
-    "mtr": "apt install mtr-tiny",
-    "dig": "apt install dnsutils",
-    "resolvectl": "systemd-resolved",
-    "wrk": "apt install wrk",
-    "ss": "apt install iproute2",
-    "tcpdump": "apt install tcpdump",
-    "iperf3": "apt install iperf3",
-    "ethtool": "apt install ethtool",
-    "traceroute": "apt install traceroute",
-    "ping": "apt install iputils-ping",
-    "curl": "apt install curl",
-    "openssl": "apt install openssl",
-}
-
 
 @functools.lru_cache(maxsize=256)
 def is_tool_installed(bin_name: str) -> bool:
@@ -81,7 +66,7 @@ def is_blocked(tool: dict, preset: dict, session: TargetSession) -> Tuple[bool, 
     distinct reasons and must never be reported as each other."""
     bin_name = preset.get("bin", tool.get("bin", tool.get("id", "")))
     if not is_tool_installed(bin_name):
-        return True, f"{bin_name}: not found in $PATH", KNOWN_INSTALL.get(bin_name, f"apt install {bin_name}")
+        return True, f"{bin_name}: not found in $PATH", ""
     used = template_vars(preset.get("flags", ""))
     if "TARGET" in used:
         if not (session.target or "").strip():
