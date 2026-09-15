@@ -104,6 +104,13 @@ def is_blocked(tool: dict, preset: dict, session: TargetSession) -> Tuple[bool, 
         bad = unsafe_scope_chars(lhost)
         if bad:
             return True, f"local address has unsafe characters ({bad}) · fix it in T → scope", "local addresses are IPv4 or IPv6 — no shell metacharacters"
+    if "IFACE" in used:
+        # $IFACE is interpolated into the shell command like the scope above, so
+        # it takes the same allowlist. An empty interface stays allowed: the
+        # command just carries a blank, the same as before this check.
+        bad = unsafe_scope_chars(session.interface)
+        if bad:
+            return True, f"interface has unsafe characters ({bad}) · fix it in T → scope", "interface names are letters, digits, dots, colons and hyphens — no shell metacharacters"
     return False, f"{bin_name} · in $PATH", ""
 
 
