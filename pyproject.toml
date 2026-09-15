@@ -40,8 +40,11 @@ Issues = "https://github.com/proverbial-toast/fieldlog/issues"
 [project.scripts]
 fieldlog = "fieldlog.__main__:main"
 
-[tool.setuptools]
-packages = ["fieldlog"]
+[tool.setuptools.packages.find]
+# Found, not hand-listed: a literal ["fieldlog"] missed fieldlog.tui when app.py
+# was split, and the wheel shipped without it — every subcommand worked and the
+# TUI died on import. The CI package job installs the wheel and imports it.
+include = ["fieldlog*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "fieldlog.__version__" }
