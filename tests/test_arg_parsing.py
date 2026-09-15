@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from fieldlog.app import arg_groups, tokenize
+from fieldlog.tui.helpers import arg_groups, tokenize
 
 
 @pytest.mark.parametrize(
