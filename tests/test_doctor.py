@@ -87,6 +87,16 @@ def test_human_output_flags_missing_binary(catalog, capsys):
     assert "apt install" not in out               # no distro-specific install syntax
 
 
+def test_scope_blocked_chain_reads_cleanly(catalog, capsys):
+    """A chain blocked only by scope is a terse 'needs a target', not the TUI's
+    'set one in T → scope' and not the internal 'variant' wording."""
+    assert handle_doctor(_args(["doctor"]), catalog) == 0
+    out = capsys.readouterr().out
+    assert "needs a target" in out               # the `needy` chain, cleanly phrased
+    assert "set one in T" not in out
+    assert "variant" not in out
+
+
 def test_dispatch_check_alias():
     assert dispatch_argv(["check", "10.0.0.1"]) == ("cli", ["doctor", "10.0.0.1"])
     assert dispatch_argv(["doctor"]) == ("cli", ["doctor"])

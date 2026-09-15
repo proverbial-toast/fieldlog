@@ -927,6 +927,27 @@ def doctor_bucket(reason: str) -> str:
     return "other"
 
 
+# Terse, CLI-neutral phrasing for a scope block; the footer says how to set each.
+_DOCTOR_SCOPE_NOTE = {
+    "target": "needs a target",
+    "dns": "needs a dns name",
+    "lhost": "needs a local address",
+    "interface": "interface has unsafe characters",
+}
+
+
+def doctor_mark(blocked: bool, reason: str, ready_note: str) -> Tuple[str, str, str]:
+    """(mark, style, note) for one line. A missing binary is a ✗ — the gap doctor
+    is for; a scope-only block is a ◐ (otherwise ready, just needs a scope value),
+    phrased without the TUI's 'set one in T → scope' guidance the footer replaces."""
+    if not blocked:
+        return "✓", "green", ready_note
+    bucket = doctor_bucket(reason)
+    if bucket == "binary":
+        return "✗", "red", reason.split(" · ")[0]
+    return "◐", "yellow", _DOCTOR_SCOPE_NOTE.get(bucket, reason.split(" · ")[0])
+
+
 def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
     """Per-tool, per-preset and per-chain runnability, plus rolled-up counts.
 
@@ -1066,16 +1087,16 @@ def handle_doctor(args: argparse.Namespace, catalog: Catalog) -> int:
         console.print(f"  [{style}]{mark}[/{style}] [bold]{tid}[/bold] {name}  [dim]{escape(note)}[/dim]")
         if verbose:
             for r in t["rows"]:
-                pm, ps = ("✓", "green") if not r["blocked"] else ("✗", "red")
+                mark, style, note = doctor_mark(r["blocked"], r["reason"], "ready")
                 key = escape(f"{tool['id']}/{r['preset']['id']}")
-                console.print(f"      [{ps}]{pm}[/{ps}] {key}  [dim]{escape(r['reason'])}[/dim]")
+                console.print(f"      [{style}]{mark}[/{style}] {key}  [dim]{escape(note)}[/dim]")
 
     if scan["chains"]:
         console.print("\n[bold dim]CHAINS[/bold dim]")
         for c in scan["chains"]:
-            mark, style = ("✓", "green") if not c["blocked"] else ("✗", "red")
+            mark, style, note = doctor_mark(c["blocked"], c["reason"], c["reason"])
             cid = escape(c["chain"]["id"].ljust(id_w))
-            console.print(f"  [{style}]{mark}[/{style}] [bold]{cid}[/bold] [dim]{escape(c['reason'])}[/dim]")
+            console.print(f"  [{style}]{mark}[/{style}] [bold]{cid}[/bold] [dim]{escape(note)}[/dim]")
 
     console.print(
         f"\n[dim]{scan['recipes_ready']}/{scan['recipes_total']} recipes ready · "
