@@ -36,6 +36,18 @@ def test_empty_lhost_blocked():
     assert is_blocked(tool, {"id": "i", "flags": "-I $IFACE"}, TargetSession(interface="nosuch0"))[0] is False
 
 
+def test_pty_fd_is_readable_before_the_job_spawns(tmp_path: Path):
+    """The CLI registers its stdin reader before run_job opens the pty, so a
+    keystroke in that window reads pty_fd on a job that has never been spawned."""
+    from fieldlog.runner import send_stdin
+    from fieldlog.state import ActiveJob
+
+    job = ActiveJob(id="01", recipe_id="ping", name="ping #01", log_path=tmp_path / "01.log")
+    assert job.pty_fd is None
+    assert job._queue is None
+    assert send_stdin(job, "y") is False
+
+
 def test_dry_run_creates_no_files(tmp_workspace: Path):
     from fieldlog.launch import plan_launch
 

@@ -122,7 +122,7 @@ def send_stdin(job: ActiveJob, text: str) -> bool:
     Never called with anything the operator did not type: there is no
     auto-answering and no remembered reply anywhere in this module.
     """
-    fd = getattr(job, "pty_fd", None)
+    fd = job.pty_fd
     if fd is None or not job.running:
         return False
     try:
@@ -132,7 +132,7 @@ def send_stdin(job: ActiveJob, text: str) -> bool:
     prompt = job.await_prompt or ""
     job.await_prompt = None
     job.await_since = None
-    queue = getattr(job, "_queue", None)
+    queue = job._queue
     if queue is not None:
         # Echo is off on the slave, so the reply reaches the artifact only
         # because we put it there — and it must, or the log reads as a

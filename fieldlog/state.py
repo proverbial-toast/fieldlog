@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Tuple
 
 if TYPE_CHECKING:
+    import asyncio
+
     from fieldlog.archive import ArtifactDelta
 
 DEFAULT_ARTIFACT_ROOT = ""  # empty: logs live in the target workspace raw/ dir
@@ -316,6 +318,10 @@ class ActiveJob:
     variant_id: str = ""
     command: str = ""
     pid: Optional[int] = None
+    # Owned by runner.py, but declared here: the CLI reads pty_fd from the moment
+    # it registers its stdin reader, which is before run_job has opened the pty.
+    pty_fd: Optional[int] = None
+    _queue: Optional[asyncio.Queue] = None
     lines_count: int = 0
     bytes_count: int = 0
     interrupted: bool = False
