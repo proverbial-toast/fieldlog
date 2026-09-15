@@ -66,6 +66,8 @@ SUBCOMMANDS = {
     "log",
     "runs",
     "report",
+    "doctor",
+    "check",
 }
 ROOT_FLAGS = {"-h", "--help", "-v", "--version"}
 
@@ -102,7 +104,10 @@ def dispatch_argv(argv: Optional[List[str]] = None) -> Tuple[str, List[str]]:
     if first in ("log", "runs"):
         return "cli", ["history"] + argv[1:]
 
-    if first in ("list", "show", "run", "history", "report") or first in ROOT_FLAGS:
+    if first in ("check",):
+        return "cli", ["doctor"] + argv[1:]
+
+    if first in ("list", "show", "run", "history", "report", "doctor") or first in ROOT_FLAGS:
         return "cli", argv
 
     # Any other bare token defaults to prepending 'run'
@@ -166,6 +171,20 @@ def build_parser() -> argparse.ArgumentParser:
     report_p.add_argument("--tail", type=int, default=DEFAULT_TAIL, help=f"Lines of each log to include (default: {DEFAULT_TAIL})")
     report_p.add_argument("--full", action="store_true", help="Include each log in full instead of a tail")
     report_p.add_argument("--since", default="", help="Only runs with an id at or above this number")
+
+    # doctor
+    doc_p = subparsers.add_parser(
+        "doctor",
+        help="Report which recipes and chains can run against a scope, and what is missing",
+        aliases=["check"],
+    )
+    doc_p.add_argument("target", nargs="?", default="", help="Target IP, CIDR, hostname or ssh user@host")
+    doc_p.add_argument("-t", "--target", dest="target_flag", default="", help="Target (or pass it as the argument)")
+    doc_p.add_argument("-H", "--host", "--hostname", dest="host", default="", help="DNS name ($HOST)")
+    doc_p.add_argument("-i", "-I", "--interface", default="", help="Interface ($IFACE); default eth0")
+    doc_p.add_argument("-l", "--lhost", default="", help="Local address ($LHOST)")
+    doc_p.add_argument("-v", "--verbose", action="store_true", help="Show every preset's status and reason")
+    doc_p.add_argument("--json", action="store_true", help="Emit the report as JSON")
 
     # tui
     tui_p = subparsers.add_parser("tui", help="Launch interactive Textual TUI")
@@ -885,6 +904,204 @@ def handle_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def doctor_session(args: argparse.Namespace) -> TargetSession:
+    """The scope `doctor` checks the catalog against — scope flags only."""
+    return TargetSession(
+        target=(getattr(args, "target_flag", "") or getattr(args, "target", "")).strip(),
+        hostname=getattr(args, "host", "").strip(),
+        interface=(getattr(args, "interface", "") or "eth0").strip(),
+        lhost=getattr(args, "lhost", "").strip(),
+    )
+
+
+# is_blocked's reasons, bucketed by what would unblock the recipe. Matched on the
+# stable phrases is_blocked emits, so doctor never re-derives that logic itself.
+def doctor_bucket(reason: str) -> str:
+    if "not found in $PATH" in reason:
+        return "binary"
+    if "dns name" in reason:
+        return "dns"
+    if "local address" in reason:
+        return "lhost"
+    if "interface has unsafe" in reason:
+        return "interface"
+    if "target" in reason:
+        return "target"
+    return "other"
+
+
+def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
+    """Per-tool, per-preset and per-chain runnability, plus rolled-up counts.
+
+    Every verdict comes from is_blocked / chain_blocked, so doctor and an actual
+    run can never disagree on whether something is runnable.
+    """
+    tools: List[dict] = []
+    recipes_ready = 0
+    recipes_total = 0
+    missing: dict = {}                          # bin -> install hint, deduped
+    needs = {"target": 0, "dns": 0, "lhost": 0, "interface": 0}
+
+    for tool in catalog.tools:
+        rows = []
+        for preset in tool.get("presets", []):
+            blocked, reason, hint = is_blocked(tool, preset, session)
+            recipes_total += 1
+            bucket = ""
+            if blocked:
+                bucket = doctor_bucket(reason)
+                if bucket == "binary":
+                    bin_name = preset.get("bin", tool.get("bin", tool["id"]))
+                    missing[bin_name] = KNOWN_INSTALL.get(bin_name, f"apt install {bin_name}")
+                elif bucket in needs:
+                    needs[bucket] += 1
+            else:
+                recipes_ready += 1
+            rows.append({"preset": preset, "blocked": blocked, "reason": reason, "hint": hint})
+        ready = sum(1 for r in rows if not r["blocked"])
+        tools.append({"tool": tool, "rows": rows, "ready": ready, "total": len(rows)})
+
+    chains = []
+    chains_ready = 0
+    for chain in catalog.chains:
+        blocked, reason, hint = chain_blocked(catalog, chain, session)
+        if not blocked:
+            chains_ready += 1
+        chains.append({"chain": chain, "blocked": blocked, "reason": reason, "hint": hint})
+
+    tools_installed = sum(1 for t in catalog.tools if is_tool_installed(t.get("bin", t["id"])))
+    return {
+        "tools": tools,
+        "chains": chains,
+        "recipes_ready": recipes_ready,
+        "recipes_total": recipes_total,
+        "tools_installed": tools_installed,
+        "tools_total": len(catalog.tools),
+        "chains_ready": chains_ready,
+        "chains_total": len(catalog.chains),
+        "missing": missing,
+        "needs": needs,
+    }
+
+
+def doctor_report_json(scan: dict, session: TargetSession) -> dict:
+    """The scan as a machine-readable record."""
+    return {
+        "scope": {
+            "target": session.target,
+            "host": session.dns_name,
+            "interface": session.interface,
+            "lhost": session.effective_lhost(),
+        },
+        "tools": [
+            {
+                "id": t["tool"]["id"],
+                "bin": t["tool"].get("bin", t["tool"]["id"]),
+                "ready": t["ready"],
+                "total": t["total"],
+                "presets": [
+                    {
+                        "recipe": f"{t['tool']['id']}/{r['preset']['id']}",
+                        "runnable": not r["blocked"],
+                        "reason": r["reason"],
+                        "hint": r["hint"],
+                    }
+                    for r in t["rows"]
+                ],
+            }
+            for t in scan["tools"]
+        ],
+        "chains": [
+            {
+                "id": c["chain"]["id"],
+                "runnable": not c["blocked"],
+                "reason": c["reason"],
+                "hint": c["hint"],
+            }
+            for c in scan["chains"]
+        ],
+        "summary": {
+            "tools_installed": scan["tools_installed"],
+            "tools_total": scan["tools_total"],
+            "recipes_ready": scan["recipes_ready"],
+            "recipes_total": scan["recipes_total"],
+            "chains_ready": scan["chains_ready"],
+            "chains_total": scan["chains_total"],
+            "missing_binaries": [{"bin": b, "hint": h} for b, h in sorted(scan["missing"].items())],
+            "needs": scan["needs"],
+        },
+    }
+
+
+def handle_doctor(args: argparse.Namespace, catalog: Catalog) -> int:
+    session = doctor_session(args)
+    scan = doctor_scan(catalog, session)
+
+    if getattr(args, "json", False):
+        print(json.dumps(doctor_report_json(scan, session), indent=2))
+        return 0
+
+    console = Console()
+    verbose = getattr(args, "verbose", False)
+
+    scope_bits = []
+    if session.target:
+        scope_bits.append(f"target {escape(session.target)}")
+    if session.dns_name:
+        scope_bits.append(f"dns {escape(session.dns_name)}")
+    ip = session.effective_lhost()
+    scope_bits.append(f"iface {escape(session.interface)}" + (f" ({escape(ip)})" if ip else " (no address)"))
+    console.print(f"[bold cyan]{TAG}[/bold cyan] doctor · {' · '.join(scope_bits)}\n")
+
+    id_w = max([12] + [len(t["tool"]["id"]) for t in scan["tools"]] + [len(c["chain"]["id"]) for c in scan["chains"]])
+
+    console.print("[bold dim]RECIPES[/bold dim]")
+    for t in scan["tools"]:
+        tool = t["tool"]
+        bin_name = tool.get("bin", tool["id"])
+        if t["ready"] == t["total"]:
+            mark, style, note = "✓", "green", f"{t['ready']}/{t['total']} ready"
+        elif t["ready"] == 0 and not is_tool_installed(bin_name):
+            hint = KNOWN_INSTALL.get(bin_name, f"apt install {bin_name}")
+            mark, style, note = "✗", "red", f"{bin_name} not in $PATH — {hint}"
+        else:
+            mark, style, note = "◐", "yellow", f"{t['ready']}/{t['total']} ready"
+        tid = escape(tool["id"].ljust(id_w))
+        name = escape(clip(tool.get("name", ""), NAME_CAP))
+        console.print(f"  [{style}]{mark}[/{style}] [bold]{tid}[/bold] {name}  [dim]{escape(note)}[/dim]")
+        if verbose:
+            for r in t["rows"]:
+                pm, ps = ("✓", "green") if not r["blocked"] else ("✗", "red")
+                key = escape(f"{tool['id']}/{r['preset']['id']}")
+                console.print(f"      [{ps}]{pm}[/{ps}] {key}  [dim]{escape(r['reason'])}[/dim]")
+
+    if scan["chains"]:
+        console.print("\n[bold dim]CHAINS[/bold dim]")
+        for c in scan["chains"]:
+            mark, style = ("✓", "green") if not c["blocked"] else ("✗", "red")
+            cid = escape(c["chain"]["id"].ljust(id_w))
+            console.print(f"  [{style}]{mark}[/{style}] [bold]{cid}[/bold] [dim]{escape(c['reason'])}[/dim]")
+
+    console.print(
+        f"\n[dim]{scan['recipes_ready']}/{scan['recipes_total']} recipes ready · "
+        f"{scan['tools_installed']}/{scan['tools_total']} tools installed · "
+        f"{scan['chains_ready']}/{scan['chains_total']} chains ready[/dim]"
+    )
+    if scan["missing"]:
+        items = " · ".join(f"{escape(b)} ({escape(h)})" for b, h in sorted(scan["missing"].items()))
+        console.print(f"[red]install:[/red] {items}")
+    hints = []
+    if scan["needs"]["target"]:
+        hints.append(f"set a target (-t) to unlock {scan['needs']['target']}")
+    if scan["needs"]["dns"]:
+        hints.append(f"set a dns name (-H) to unlock {scan['needs']['dns']}")
+    if scan["needs"]["lhost"]:
+        hints.append(f"pick an interface with an address (-i/-l) to unlock {scan['needs']['lhost']}")
+    if hints:
+        console.print(f"[dim]{escape(' · '.join(hints))}[/dim]")
+    return 0
+
+
 def tui_session(args: argparse.Namespace) -> TargetSession:
     """Starting scope for the TUI: the workspace's remembered scope, with any
     flags given on the command line overriding it."""
@@ -923,6 +1140,8 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
         return handle_history(args)
     if args.command == "report":
         return handle_report(args)
+    if args.command in ("doctor", "check"):
+        return handle_doctor(args, catalog)
     if args.command == "tui":
         from fieldlog.app import FieldlogApp
 

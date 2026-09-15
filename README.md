@@ -178,20 +178,31 @@ fieldlog report 192.168.1.20                        # every run as Markdown on s
 fieldlog report router1 --tail 10                   # 10 lines of each log instead of 40
 fieldlog report router1 --full -o run-report.md     # whole logs, written to a file
 fieldlog report router1 --since 12                  # only runs #12 and up
+
+fieldlog doctor                                     # what can run now, and what's missing
+fieldlog doctor 192.168.1.20 -H router1             # runnability against a scope
+fieldlog doctor --json                              # the same report as a JSON record
 ```
 
 Wherever `run`, `show` or a chain step expects a recipe ID, a tool id alone
 means that tool's first preset, and for `run` and `show` a chain id means the
 chain. The bare form `fieldlog <recipe> <target>` takes all three, as long as
 the id is not itself a command name (`list`, `show`, `run`, `history`,
-`report`, `tui`, or their aliases `ls`, `recipes`, `info`, `exec`, `log`,
-`runs`).
+`report`, `doctor`, `tui`, or their aliases `ls`, `recipes`, `info`, `exec`,
+`log`, `runs`, `check`).
 
 `history` and `report` take a folder name, not a target, whether as an argument
 or with `-t`. The folder is the DNS name if the runs had one, else the target:
 after `fieldlog run ping/quick 192.168.1.20 -H router1`, use
 `fieldlog history router1`, because `history 192.168.1.20` finds nothing.
 `fieldlog history` with no name lists the folders.
+
+`doctor` (alias `check`) reads the whole catalog against a scope and reports what
+is runnable, what is missing from `$PATH` (with an install hint), and which scope
+values would unlock the rest — a preflight before a job. Each verdict is the same
+one `run` would reach. It takes the scope flags `-t`, `-H`, `-i`, `-l` (or a bare
+target), plus `-v` for a per-preset breakdown and `--json`. It touches nothing on
+disk and exits 0.
 
 ### `run` options
 
@@ -211,7 +222,8 @@ after `fieldlog run ping/quick 192.168.1.20 -H router1`, use
 
 `show` accepts `-t`, `-H`, `-i` and `-l`. `history` accepts `-t`, `-w` and
 `--json`. `list` accepts `-r`/`--runnable`, `-V`/`--verbose`, `-q`/`--names`
-and `--json`.
+and `--json`. `doctor` accepts `-t`, `-H`, `-i`, `-l`, `-v`/`--verbose` and
+`--json`.
 
 ### `report` options
 
