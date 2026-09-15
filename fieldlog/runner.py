@@ -342,10 +342,18 @@ async def run_job(
             pass
         job.pty_fd = None
         if proc.returncode is None:
+            # Reached only when the worker was cancelled (the app quitting)
+            # while the job is still live. Signal the whole process group, not
+            # just the leader: a pipeline's shell leaves children in the group
+            # that a bare terminate() would orphan. Jobs run in their own
+            # session (setsid in _make_ctty), so the pgid is the leader's pid.
             try:
-                proc.terminate()
-            except ProcessLookupError:
-                pass
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    proc.terminate()
+                except (ProcessLookupError, OSError):
+                    pass
 
 
 def shell_exit_code(code: int) -> int:
