@@ -45,7 +45,7 @@ def test_is_blocked_uses_canonical_names():
     assert is_blocked(NOOP_TOOL, host_only, TargetSession(target="", hostname="h.example"))[0] is False
 
     braced_host = {"id": "b", "flags": "${HOST}"}
-    blocked, reason, _ = is_blocked(NOOP_TOOL, braced_host, TargetSession(target="10.0.0.1"))
+    blocked, reason = is_blocked(NOOP_TOOL, braced_host, TargetSession(target="10.0.0.1"))
     assert blocked and "dns name" in reason
 
 

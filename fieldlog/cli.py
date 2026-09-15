@@ -687,11 +687,9 @@ def handle_run_chain(args: argparse.Namespace, catalog: Catalog, chain: dict) ->
             print_dry_run(plan, f"step {index}/{len(steps)}")
         return 0
 
-    blocked, reason, hint = chain_blocked(catalog, chain, session)
+    blocked, reason = chain_blocked(catalog, chain, session)
     if blocked:
         sys.stderr.write(f"Error: Cannot run chain '{chain['id']}': {reason}\n")
-        if hint:
-            sys.stderr.write(f"Hint: {hint}\n")
         return 1
 
     console = Console()
@@ -745,21 +743,9 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
 
     session = run_session(args)
 
-    flags_template = preset.get("flags", "")
-    needs_target = "TARGET" in template_vars(flags_template)
-    if needs_target and not session.target:
-        sys.stderr.write(
-            f"Error: Recipe '{tool['id']}/{preset['id']}' requires a target IP or subnet ($TARGET).\n"
-            f"Specify --target <IP> or pass [target]:\n"
-            f"  fieldlog run {tool['id']}/{preset['id']} <target>\n"
-        )
-        return 1
-
-    blocked, reason, hint = is_blocked(tool, preset, session)
+    blocked, reason = is_blocked(tool, preset, session)
     if blocked:
         sys.stderr.write(f"Error: Cannot run '{tool['id']}/{preset['id']}': {reason}\n")
-        if hint:
-            sys.stderr.write(f"Hint: {hint}\n")
         return 1
 
     dry_run = getattr(args, "dry_run", False)
@@ -939,7 +925,7 @@ _DOCTOR_SCOPE_NOTE = {
 def doctor_mark(blocked: bool, reason: str, ready_note: str) -> Tuple[str, str, str]:
     """(mark, style, note) for one line. A missing binary is a ✗ — the gap doctor
     is for; a scope-only block is a ◐ (otherwise ready, just needs a scope value),
-    phrased without the TUI's 'set one in T → scope' guidance the footer replaces."""
+    with doctor's own terse note for the scope kind (the footer says how to set it)."""
     if not blocked:
         return "✓", "green", ready_note
     bucket = doctor_bucket(reason)
@@ -963,7 +949,7 @@ def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
     for tool in catalog.tools:
         rows = []
         for preset in tool.get("presets", []):
-            blocked, reason, hint = is_blocked(tool, preset, session)
+            blocked, reason = is_blocked(tool, preset, session)
             recipes_total += 1
             bucket = ""
             if blocked:
@@ -974,17 +960,17 @@ def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
                     needs[bucket] += 1
             else:
                 recipes_ready += 1
-            rows.append({"preset": preset, "blocked": blocked, "reason": reason, "hint": hint})
+            rows.append({"preset": preset, "blocked": blocked, "reason": reason})
         ready = sum(1 for r in rows if not r["blocked"])
         tools.append({"tool": tool, "rows": rows, "ready": ready, "total": len(rows)})
 
     chains = []
     chains_ready = 0
     for chain in catalog.chains:
-        blocked, reason, hint = chain_blocked(catalog, chain, session)
+        blocked, reason = chain_blocked(catalog, chain, session)
         if not blocked:
             chains_ready += 1
-        chains.append({"chain": chain, "blocked": blocked, "reason": reason, "hint": hint})
+        chains.append({"chain": chain, "blocked": blocked, "reason": reason})
 
     tools_installed = sum(1 for t in catalog.tools if is_tool_installed(t.get("bin", t["id"])))
     return {
@@ -1021,7 +1007,6 @@ def doctor_report_json(scan: dict, session: TargetSession) -> dict:
                         "recipe": f"{t['tool']['id']}/{r['preset']['id']}",
                         "runnable": not r["blocked"],
                         "reason": r["reason"],
-                        "hint": r["hint"],
                     }
                     for r in t["rows"]
                 ],
@@ -1033,7 +1018,6 @@ def doctor_report_json(scan: dict, session: TargetSession) -> dict:
                 "id": c["chain"]["id"],
                 "runnable": not c["blocked"],
                 "reason": c["reason"],
-                "hint": c["hint"],
             }
             for c in scan["chains"]
         ],

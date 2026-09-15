@@ -434,8 +434,8 @@ class FieldlogApp(App):
     def selected_chain(self) -> Optional[dict]:
         return self.get_chain(self.selected_chain_id) if self.selected_chain_id else None
 
-    def is_blocked(self, tool: dict, preset: dict) -> Tuple[bool, str, str]:
-        """(blocked, reason, hint). Missing binary and missing dns name are
+    def is_blocked(self, tool: dict, preset: dict) -> Tuple[bool, str]:
+        """(blocked, reason). Missing binary and missing dns name are
         distinct reasons and must never be reported as each other."""
         return is_blocked(tool, preset, self.session)
 
@@ -915,7 +915,7 @@ class FieldlogApp(App):
             self.selected_tool_id = tool["id"]
         preset = self.get_preset(tool, self.selected_preset_id)
         key = f"{tool['id']}/{preset['id']}"
-        blocked, _, _ = self.is_blocked(tool, preset)
+        blocked, _ = self.is_blocked(tool, preset)
 
         try:
             self.query_one("#variants-bin", Static).update(
@@ -975,7 +975,7 @@ class FieldlogApp(App):
     def _refresh_chain_variants(self, var_list: Vertical, chain: dict) -> None:
         """The steps, numbered and read-only: a chain's order lives in its yaml.
         Plain Statics, not VariantRowWidgets — a click here selects nothing."""
-        blocked, _reason, _hint = chain_blocked(self.catalog, chain, self.session)
+        blocked, _reason = chain_blocked(self.catalog, chain, self.session)
         key = f"chain/{chain['id']}"
         try:
             self.query_one("#variants-bin", Static).update(Text("chain", style=f"bold {FG}"))

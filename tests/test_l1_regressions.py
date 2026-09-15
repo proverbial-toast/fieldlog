@@ -11,13 +11,12 @@ def test_empty_target_blocked():
 
     tool = {"id": "ping", "bin": "ping"}
     preset_with_target = {"id": "quick", "flags": "-c 1 $TARGET"}
-    blocked, reason, hint = is_blocked(tool, preset_with_target, session)
+    blocked, reason = is_blocked(tool, preset_with_target, session)
     assert blocked is True
-    assert "variant needs a target" in reason
-    assert "T → scope" in hint
+    assert "needs a target" in reason
 
     preset_without_target = {"id": "localnet", "flags": "--interface=$IFACE"}
-    blocked_no_target, _, _ = is_blocked(tool, preset_without_target, session)
+    blocked_no_target, _ = is_blocked(tool, preset_without_target, session)
     # Ping without target in flags shouldn't block on target
     assert blocked_no_target is False
 
@@ -27,13 +26,12 @@ def test_empty_lhost_blocked():
     tool = {"id": "true", "bin": "true"}
     preset = {"id": "serve", "flags": "-s -1 -B ${LHOST}"}
 
-    blocked, reason, hint = is_blocked(tool, preset, TargetSession(interface="nosuch0"))
+    blocked, reason = is_blocked(tool, preset, TargetSession(interface="nosuch0"))
     assert blocked is True
     assert "needs a local address" in reason and "nosuch0" in reason
-    assert "T → scope" in hint
 
     assert is_blocked(tool, preset, TargetSession(interface="nosuch0", lhost="10.9.9.9"))[0] is False
-    blocked, reason, _ = is_blocked(tool, preset, TargetSession(interface="nosuch0", lhost="10.9.9.9;id"))
+    blocked, reason = is_blocked(tool, preset, TargetSession(interface="nosuch0", lhost="10.9.9.9;id"))
     assert blocked and "local address has unsafe characters (;)" in reason
     assert is_blocked(tool, {"id": "i", "flags": "-I $IFACE"}, TargetSession(interface="nosuch0"))[0] is False
 
