@@ -38,6 +38,11 @@ recipes:
           timeout 30 sh -c 'for v in tls1 tls1_1 tls1_2 tls1_3; do printf "%-8s " $v;
           openssl s_client -connect $HOST:443 -servername $HOST -$v -cipher DEFAULT@SECLEVEL=0
           </dev/null >/dev/null 2>&1 && echo accepted || echo refused; done'
+      - id: selfsigned
+        name: "self-signed cert + key into $OUTDIR"
+        flags: >-
+          req -x509 -newkey rsa:2048 -nodes -days 1
+          -keyout $OUTDIR/key.pem -out $OUTDIR/cert.pem -subj /CN=${HOST:-localhost}
 
   - id: ss
     presets:
@@ -144,3 +149,37 @@ recipes:
           env ssh $TARGET "(tcpdump -i ${RIFACE:-eth0} -U -s0 -w - not port 22; kill 0) & cat >/dev/null; kill 0"
           | tee $OUTDIR/remote.pcap
           | wireshark -k -i -
+
+  # Throwaway HTTP / HTTPS servers. Every request streams to the run log, and a
+  # normal run record is written when you stop the server with Ctrl+C. Keep the
+  # SIGINT handler so the stop is a clean exit 0, and never set --timeout on a
+  # server (it would kill it), same as the Wireshark recipe above.
+  - id: http
+    name: "HTTP Server"
+    bin: python3
+    presets:
+      - id: serve
+        name: "serve cwd on :8000 · logs each request"
+        flags: >-
+          -c "import http.server,signal,sys;
+          signal.signal(signal.SIGINT, lambda *_: sys.exit(0));
+          print('Serving HTTP on :8000', flush=True);
+          http.server.HTTPServer(('0.0.0.0',8000), http.server.SimpleHTTPRequestHandler).serve_forever()"
+
+  # `https/serve` loads its cert from $OUTDIR, so run it through the `tls-serve`
+  # chain (see chains.yaml): openssl/selfsigned writes cert.pem + key.pem into the
+  # chain's shared $OUTDIR, and this step then serves TLS with them.
+  - id: https
+    name: "HTTPS Server"
+    bin: python3
+    presets:
+      - id: serve
+        name: "serve TLS on :8443 · cert from $OUTDIR"
+        flags: >-
+          -c "import http.server,ssl,signal,sys;
+          signal.signal(signal.SIGINT, lambda *_: sys.exit(0));
+          ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);
+          ctx.load_cert_chain('$OUTDIR/cert.pem','$OUTDIR/key.pem');
+          h=http.server.HTTPServer(('0.0.0.0',8443), http.server.SimpleHTTPRequestHandler);
+          h.socket=ctx.wrap_socket(h.socket, server_side=True);
+          print('Serving HTTPS on :8443', flush=True); h.serve_forever()"
