@@ -29,6 +29,7 @@ dependencies = [
 dev = [
     "pytest",
     "pytest-asyncio",
+    "ruff>=0.16,<0.17",
 ]
 
 [project.urls]
@@ -51,3 +52,14 @@ fieldlog = ["*.tcss", "*.yaml"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+# Correctness-focused. Pyflakes (F) plus the essential pycodestyle errors and
+# warnings. Deliberately not the opinionated stylistic sets: UP would rewrite the
+# List/Optional typing the code chooses, and BLE would fight the broad `except`
+# used on purpose for graceful degradation (a bad drop-in never crashes the app).
+select = ["E4", "E7", "E9", "F", "W"]

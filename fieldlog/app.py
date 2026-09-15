@@ -10,14 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import functools
 import re
-import shutil
 import socket
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from rich.text import Text
@@ -38,7 +35,6 @@ from textual.widgets import (
 from fieldlog import __version__
 from fieldlog import recipes as recipes_mod
 from fieldlog.recipes import (
-    KNOWN_INSTALL,
     RECIPES_PATH,
     Catalog,
     chain_blocked,
@@ -60,7 +56,6 @@ from fieldlog.state import (
     TargetSession,
     get_interface_ip,
     load_pinned_recent,
-    recipe_slug,
     resolve_flags,
     run_stamp,
     save_last_scope,
@@ -473,10 +468,10 @@ class HelpModal(ModalScreen):
                     with Vertical(classes="help-col"):
                         for title, keys in column:
                             yield Static(title.upper(), classes="help-group-title")
-                            for k, l in keys:
+                            for k, label in keys:
                                 with Horizontal(classes="help-row"):
                                     yield Static(k, classes="help-key")
-                                    yield Static(l, classes="help-label")
+                                    yield Static(label, classes="help-label")
             with Horizontal(id="help-footer"):
                 yield Static(display_path(RECIPES_PATH), id="help-catalog-path")
                 yield Static(
@@ -2573,7 +2568,7 @@ class FieldlogApp(App):
 
     def _fit_hotkey_bar(self) -> None:
         """Decide keys-only vs labelled before paint, from an estimated width."""
-        needed = sum(len(k) + len(l) + 5 for k, l, _ in HOTKEYS) + 4
+        needed = sum(len(k) + len(lbl) + 5 for k, lbl, _ in HOTKEYS) + 4
         tight = self.size.width < needed
         for idx in range(len(HOTKEYS)):
             try:

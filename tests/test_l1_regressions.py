@@ -93,7 +93,6 @@ def test_get_interface_ip_lifecycle_and_cache(monkeypatch):
     state._clear_ip_cache()
 
     ioctl_calls = 0
-    orig_ioctl = fcntl.ioctl
 
     def mock_ioctl(fd, req, arg):
         nonlocal ioctl_calls
@@ -181,7 +180,7 @@ async def test_action_copy_log_system_tab(tmp_path):
 
     session = TargetSession(workspace_dir=tmp_path)
     app = FieldlogApp(session=session)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         assert app.active_tab().id == "system"
         app.action_copy_log()
 
@@ -219,7 +218,7 @@ async def test_action_copy_log_job_tab(tmp_path, monkeypatch):
         artifact=str(log_file),
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app.jobs["01"] = job
         app.tabs.append(tab)
         app.active_tab_id = "job-01"
@@ -259,7 +258,7 @@ async def test_action_copy_log_truncated(tmp_path, monkeypatch):
         job_id="02",
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app.jobs["02"] = job
         app.tabs.append(tab)
         app.active_tab_id = "job-02"

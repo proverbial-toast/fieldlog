@@ -19,7 +19,6 @@ from typing import List, Optional, Tuple
 
 from rich.console import Console
 from rich.markup import escape
-from rich.text import Text
 
 from fieldlog import __version__
 from fieldlog.archive import load_target_history
@@ -640,7 +639,7 @@ def print_dry_run(plan: LaunchPlan, step: str = "") -> None:
     console.print(f"\n[bold yellow]{heading}[/bold yellow]")
     console.print(f"  [bold]Recipe:[/bold]      {escape(f'{job.recipe_id}/{job.variant_id}')} #{job.id}")
     console.print(f"  [bold]Command:[/bold]     {escape(plan.command)}")
-    console.print(f"  [bold]Environment:[/bold]")
+    console.print("  [bold]Environment:[/bold]")
     for k in ("TARGET", "TARGET_IP", "TARGET_HOST", "HOST", "LHOST", "IFACE", "OUT_DIR", "OUTDIR", "RUN_ID"):
         console.print(f"    {k}={escape(str(plan.env[k]))}")
     console.print(f"  [bold]Primary Log:[/bold] {escape(str(job.log_path))}")
