@@ -40,21 +40,6 @@ DROPIN_DIR = get_dropin_dir()
 # Editor leftovers that must never take effect silently.
 _SKIP_SUFFIXES = ("~", ".swp", ".swo", ".bak", ".orig", ".rej")
 
-KNOWN_INSTALL: Dict[str, str] = {
-    "mtr": "apt install mtr-tiny",
-    "dig": "apt install dnsutils",
-    "resolvectl": "systemd-resolved",
-    "wrk": "apt install wrk",
-    "ss": "apt install iproute2",
-    "tcpdump": "apt install tcpdump",
-    "iperf3": "apt install iperf3",
-    "ethtool": "apt install ethtool",
-    "traceroute": "apt install traceroute",
-    "ping": "apt install iputils-ping",
-    "curl": "apt install curl",
-    "openssl": "apt install openssl",
-}
-
 
 @functools.lru_cache(maxsize=256)
 def is_tool_installed(bin_name: str) -> bool:
@@ -76,35 +61,44 @@ def unsafe_scope_chars(value: str, pattern: re.Pattern = _UNSAFE_SCOPE) -> str:
     return "".join(dict.fromkeys(pattern.findall(value or "")))
 
 
-def is_blocked(tool: dict, preset: dict, session: TargetSession) -> Tuple[bool, str, str]:
-    """(blocked, reason, hint). Missing binary and missing dns name are
-    distinct reasons and must never be reported as each other."""
+def is_blocked(tool: dict, preset: dict, session: TargetSession) -> Tuple[bool, str]:
+    """(blocked, reason). Reasons are terse and surface-neutral — the caller
+    frames them (a CLI error, doctor's marks, the TUI's disabled button).
+    Missing binary and missing dns name are distinct reasons and must never be
+    reported as each other."""
     bin_name = preset.get("bin", tool.get("bin", tool.get("id", "")))
     if not is_tool_installed(bin_name):
-        return True, f"{bin_name}: not found in $PATH", KNOWN_INSTALL.get(bin_name, f"apt install {bin_name}")
+        return True, f"{bin_name}: not found in $PATH"
     used = template_vars(preset.get("flags", ""))
     if "TARGET" in used:
         if not (session.target or "").strip():
-            return True, "variant needs a target · set one in T → scope", "T → scope, then fill in target IP or subnet"
+            return True, "needs a target"
         bad = unsafe_scope_chars(session.target, _UNSAFE_TARGET)
         if bad:
-            return True, f"target has unsafe characters ({bad}) · fix it in T → scope", "targets are IPs, CIDRs, hostnames or user@host — no shell metacharacters"
+            return True, f"target has unsafe characters ({bad})"
     if "HOST" in used:
         if not session.dns_name:
-            return True, "variant needs a dns name · set one in T → scope", "T → scope, then fill in dns name"
+            return True, "needs a dns name"
         bad = unsafe_scope_chars(session.dns_name)
         if bad:
-            return True, f"dns name has unsafe characters ({bad}) · fix it in T → scope", "hostnames are letters, digits, dots and hyphens — no shell metacharacters"
+            return True, f"dns name has unsafe characters ({bad})"
     if "LHOST" in used:
         lhost = session.effective_lhost()
         if not lhost:
             # An interface with no IPv4 would turn `-B $LHOST` into a bare `-B`.
             iface = session.interface or "the interface"
-            return True, f"variant needs a local address · {iface} has no IPv4 address", "T → scope, then pick an interface that has an address or type iface / address · on the CLI, -i IFACE or -l ADDR"
+            return True, f"needs a local address · {iface} has no IPv4 address"
         bad = unsafe_scope_chars(lhost)
         if bad:
-            return True, f"local address has unsafe characters ({bad}) · fix it in T → scope", "local addresses are IPv4 or IPv6 — no shell metacharacters"
-    return False, f"{bin_name} · in $PATH", ""
+            return True, f"local address has unsafe characters ({bad})"
+    if "IFACE" in used:
+        # $IFACE is interpolated into the shell command like the scope above, so
+        # it takes the same allowlist. An empty interface stays allowed: the
+        # command just carries a blank, the same as before this check.
+        bad = unsafe_scope_chars(session.interface)
+        if bad:
+            return True, f"interface has unsafe characters ({bad})"
+    return False, f"{bin_name} · in $PATH"
 
 
 def writes_outdir(preset: dict, flags: Optional[str] = None) -> bool:
@@ -447,14 +441,14 @@ def chain_steps(catalog: Catalog, chain: dict) -> List[Tuple[dict, dict, bool]]:
     return out
 
 
-def chain_blocked(catalog: Catalog, chain: dict, session: TargetSession) -> Tuple[bool, str, str]:
-    """(blocked, reason, hint) for the first step that cannot run now."""
+def chain_blocked(catalog: Catalog, chain: dict, session: TargetSession) -> Tuple[bool, str]:
+    """(blocked, reason) for the first step that cannot run now."""
     steps = chain_steps(catalog, chain)
     for index, (tool, preset, _cont) in enumerate(steps, start=1):
-        blocked, reason, hint = is_blocked(tool, preset, session)
+        blocked, reason = is_blocked(tool, preset, session)
         if blocked:
-            return True, f"step {index} {tool['id']}/{preset['id']}: {reason}", hint
-    return False, f"{len(steps)} steps ready", ""
+            return True, f"step {index} {tool['id']}/{preset['id']}: {reason}"
+    return False, f"{len(steps)} steps ready"
 
 
 def chain_matches(chain: dict, q: str) -> bool:

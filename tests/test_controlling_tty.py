@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shlex
 import time
 from pathlib import Path
@@ -108,3 +109,34 @@ async def test_interrupt_still_stops_the_group(tmp_workspace: Path):
     code = await asyncio.wait_for(task, timeout=5)
     assert time.time() - started < 2.0
     assert code != 0
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_running_job_reaps_the_whole_group(tmp_workspace: Path):
+    """Quitting cancels the worker; run_job's finally must signal the group, not
+    just the leader. A pipeline leaves children a bare terminate() would orphan."""
+    session = _session(tmp_workspace)
+    plan = plan_launch(session, SH_TOOL, _preset("sleep 30 | sleep 30"))
+
+    task = asyncio.create_task(
+        run_job(plan.command, plan.job, session, lambda t, s: None, env=plan.env)
+    )
+    while plan.job.process is None:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.3)  # let the shell fork the pipeline children
+    pgid = os.getpgid(plan.job.process.pid)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The shell and both sleeps must be gone — not left running for 30s.
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("process group survived cancellation")

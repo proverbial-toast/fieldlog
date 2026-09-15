@@ -135,11 +135,10 @@ def test_chain_blocked_names_the_first_blocked_step(tmp_path: Path):
         """)
     session = TargetSession(target="10.0.0.1")
 
-    blocked, reason, hint = chain_blocked(cat, find_chain(cat, "broken"), session)
+    blocked, reason = chain_blocked(cat, find_chain(cat, "broken"), session)
     assert blocked and reason.startswith("step 2 gone/x: ") and "not found in $PATH" in reason
-    assert hint
 
-    assert chain_blocked(cat, find_chain(cat, "fine"), session) == (False, "2 steps ready", "")
+    assert chain_blocked(cat, find_chain(cat, "fine"), session) == (False, "2 steps ready")
 
 
 # ---- 3-5. CLI --------------------------------------------------------------

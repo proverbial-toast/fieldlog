@@ -11,13 +11,12 @@ def test_empty_target_blocked():
 
     tool = {"id": "ping", "bin": "ping"}
     preset_with_target = {"id": "quick", "flags": "-c 1 $TARGET"}
-    blocked, reason, hint = is_blocked(tool, preset_with_target, session)
+    blocked, reason = is_blocked(tool, preset_with_target, session)
     assert blocked is True
-    assert "variant needs a target" in reason
-    assert "T → scope" in hint
+    assert "needs a target" in reason
 
     preset_without_target = {"id": "localnet", "flags": "--interface=$IFACE"}
-    blocked_no_target, _, _ = is_blocked(tool, preset_without_target, session)
+    blocked_no_target, _ = is_blocked(tool, preset_without_target, session)
     # Ping without target in flags shouldn't block on target
     assert blocked_no_target is False
 
@@ -27,13 +26,12 @@ def test_empty_lhost_blocked():
     tool = {"id": "true", "bin": "true"}
     preset = {"id": "serve", "flags": "-s -1 -B ${LHOST}"}
 
-    blocked, reason, hint = is_blocked(tool, preset, TargetSession(interface="nosuch0"))
+    blocked, reason = is_blocked(tool, preset, TargetSession(interface="nosuch0"))
     assert blocked is True
     assert "needs a local address" in reason and "nosuch0" in reason
-    assert "T → scope" in hint
 
     assert is_blocked(tool, preset, TargetSession(interface="nosuch0", lhost="10.9.9.9"))[0] is False
-    blocked, reason, _ = is_blocked(tool, preset, TargetSession(interface="nosuch0", lhost="10.9.9.9;id"))
+    blocked, reason = is_blocked(tool, preset, TargetSession(interface="nosuch0", lhost="10.9.9.9;id"))
     assert blocked and "local address has unsafe characters (;)" in reason
     assert is_blocked(tool, {"id": "i", "flags": "-I $IFACE"}, TargetSession(interface="nosuch0"))[0] is False
 
@@ -93,7 +91,6 @@ def test_get_interface_ip_lifecycle_and_cache(monkeypatch):
     state._clear_ip_cache()
 
     ioctl_calls = 0
-    orig_ioctl = fcntl.ioctl
 
     def mock_ioctl(fd, req, arg):
         nonlocal ioctl_calls
@@ -181,7 +178,7 @@ async def test_action_copy_log_system_tab(tmp_path):
 
     session = TargetSession(workspace_dir=tmp_path)
     app = FieldlogApp(session=session)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         assert app.active_tab().id == "system"
         app.action_copy_log()
 
@@ -219,7 +216,7 @@ async def test_action_copy_log_job_tab(tmp_path, monkeypatch):
         artifact=str(log_file),
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app.jobs["01"] = job
         app.tabs.append(tab)
         app.active_tab_id = "job-01"
@@ -259,7 +256,7 @@ async def test_action_copy_log_truncated(tmp_path, monkeypatch):
         job_id="02",
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app.jobs["02"] = job
         app.tabs.append(tab)
         app.active_tab_id = "job-02"

@@ -9,15 +9,9 @@ directory captured onto the job at spawn.
 from __future__ import annotations
 
 import asyncio
-import base64
-import functools
 import re
-import shutil
 import socket
-import sys
 import time
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from rich.text import Text
@@ -38,7 +32,6 @@ from textual.widgets import (
 from fieldlog import __version__
 from fieldlog import recipes as recipes_mod
 from fieldlog.recipes import (
-    KNOWN_INSTALL,
     RECIPES_PATH,
     Catalog,
     chain_blocked,
@@ -60,84 +53,55 @@ from fieldlog.state import (
     TargetSession,
     get_interface_ip,
     load_pinned_recent,
-    recipe_slug,
     resolve_flags,
     run_stamp,
     save_last_scope,
     save_pinned_recent,
 )
+from fieldlog.tui.helpers import (
+    arg_groups,
+    copy_text_to_clipboard,
+    parse_iface_field,
+    truncate_right,
+)
+from fieldlog.tui.models import TabDescriptor, TreeRow
+from fieldlog.tui.modals import (
+    CloseJobModal,
+    HelpModal,
+    PaletteModal,
+    QuitConfirm,
+    RecipeManagerModal,
+)
+from fieldlog.tui.theme import (
+    ACCENT,
+    ARGS_BAND_MIN,
+    BG_BASE,
+    DIM,
+    ERR,
+    FAINT,
+    FG,
+    GUTTER,
+    HOTKEYS,
+    LEFT_COLUMN_CHROME,
+    MUTED,
+    SOFT,
+    STACKED_BREAKPOINT,
+    UNFOCUSED,
+    VARIANT_ROWS_VISIBLE,
+    WARN,
+)
+from fieldlog.tui.widgets import (
+    ArgsTextArea,
+    RecipeRowWidget,
+    StdinChip,
+    StdinInput,
+    TabItem,
+    VariantRowWidget,
+)
 
 VERSION = __version__
 
-# Exact hex color palette.
-ACCENT = "#6fd7bd"
-ACCENT_HOVER = "#9fe8d6"
-WARN = "#e0b25f"
-ERR = "#e0776a"
-FG = "#cfd8d4"
-SOFT = "#a8b4b0"
-DIM = "#7f8c88"
-UNFOCUSED = "#5a6764"
-FAINT = "#4e5d5a"
-MUTED = "#3f4c49"
-GUTTER = "#2c3634"
-BG_BASE = "#08090a"
-BG_PANEL = "#0b0d0e"
-BG_SIDEBAR = "#0a0c0d"
-BG_INPUT = "#06080a"
-BORDER = "#1e2725"
-BORDER_INPUT = "#2a3634"
-
-# VARIANTS shows this many rows and no more, in both layouts. Fixed rather
-# than content-sized: a list that grows and shrinks with the selected tool
-# moves the Run button between one Enter and the next. RECIPES takes the rest.
-VARIANT_ROWS_VISIBLE = 10
-
-# ARGS is content-sized up to this many token rows, then scrolls. The band
-# growing is what costs the VARIANTS list rows (see _anchor_tree_height): the
-# catalog is meant to fill up with long, specific commands, so reserving the
-# tall case as dead space would waste a band-height most of the time.
-ARGS_ROWS_MAX = 8
-
-# Rows the ARGS band occupies at its smallest: header + one token row + the
-# [H] chip + its top rule. The tree is anchored against this, so the VARIANTS
-# pane keeps its position and gives up rows as the band grows.
-ARGS_BAND_MIN = 4
-
-# Left-column chrome above and around the variant list: the VARIANTS top rule,
-# its header, its title row, and the RECIPES header.
-LEFT_COLUMN_CHROME = 6
-
-STACKED_BREAKPOINT = 120
-
-# (key, label, primary?) — the eight chips, in order.
-HOTKEYS = [
-    ("Ctrl+P", "Tasks", True),
-    ("/", "Filter", True),
-    ("T", "Scope & Logs", False),
-    ("E", "Edit Args", False),
-    ("M", "Recipes", False),
-    ("W", "Close Tab", False),
-    ("L", "Layout", False),
-    ("?", "All Keys", False),
-]
-
-META_COMMANDS = [
-    {"id": "mgr", "key": "M", "label": "Open recipe manager", "hint": "sources · counts · availability", "action": "recipe_manager"},
-    {"id": "reload", "key": "⇧R", "label": "Reload recipes from yaml", "hint": "keeps sessions", "action": "reload_recipes"},
-    {"id": "scope", "key": "T", "label": "Target scope & log destination", "hint": "", "action": "target_scope"},
-    {"id": "copypath", "key": "Y", "label": "Copy recipes yaml path", "hint": str(RECIPES_PATH), "action": "copy_catalog_path"},
-    {"id": "copytail", "key": "Y", "label": "Copy tail -f for active artifact", "hint": "read output in a pager", "action": "copy_tail"},
-    {"id": "layout", "key": "L", "label": "Toggle split / stacked layout", "hint": "stacked ≤ 120 cols", "action": "toggle_layout"},
-    {"id": "runnable", "key": "!", "label": "Toggle runnable-only filter", "hint": "", "action": "toggle_hide_missing"},
-    {"id": "closefin", "key": "⇧W", "label": "Close finished job tabs", "hint": "", "action": "close_finished_tabs"},
-    {"id": "copylog", "key": "Ctrl+Shift+C", "label": "Copy active log to clipboard", "hint": "whole buffer", "action": "copy_log"},
-    {"id": "keys", "key": "?", "label": "Key bindings", "hint": "", "action": "help"},
-]
-
-
 # ---- Helpers ---------------------------------------------------------------
-
 
 
 def list_box_interfaces() -> List[Tuple[str, str]]:
@@ -170,329 +134,7 @@ def default_interface() -> str:
     return next((name for name, ip in list_box_interfaces() if name != "lo" and ip), fallback)
 
 
-def parse_iface_field(raw: str, current: str) -> Tuple[str, str]:
-    """(interface, local address) from the scope form's interface field.
-
-    `tun0 / 10.8.0.2` sets both. A bare `tun0` leaves the address empty, so $LHOST
-    follows the interface. A blank name keeps `current`.
-    """
-    name, _, addr = (raw or "").partition("/")
-    return name.strip() or current, addr.strip()
-
-
-def tokenize(s: str) -> List[str]:
-    """Shell-tokenise an argument string, respecting quoted substrings."""
-    out: List[str] = []
-    cur = ""
-    q: Optional[str] = None
-    for ch in str(s):
-        if q:
-            cur += ch
-            if ch == q:
-                q = None
-            continue
-        if ch in ('"', "'"):
-            q = ch
-            cur += ch
-            continue
-        if ch.isspace():
-            if cur:
-                out.append(cur)
-                cur = ""
-            continue
-        cur += ch
-    if cur:
-        out.append(cur)
-    return out
-
-
-def arg_groups(s: str) -> dict:
-    """Group flags with their associated parameter values."""
-    toks = tokenize(s)
-    out: List[dict] = []
-    i = 0
-    while i < len(toks):
-        tk = toks[i]
-        if len(tk) > 1 and tk[0] in ("-", "+"):
-            vals: List[str] = []
-            while i + 1 < len(toks) and not re.match(r"^[-+]\S", toks[i + 1]):
-                vals.append(toks[i + 1])
-                i += 1
-            out.append({"flag": tk, "value": " ".join(vals)})
-        else:
-            out.append({"flag": "", "value": tk})
-        i += 1
-    return {"groups": out, "count": len(toks)}
-
-
-def truncate_right(text: str, width: int) -> str:
-    """Explicit right-side truncation. Never bidi — a reordered path is a wrong
-    value for something meant to be copied."""
-    return text if len(text) <= width else text[: max(1, width - 1)] + "…"
-
-
-def copy_text_to_clipboard(text: str, app: Optional[App] = None) -> bool:
-    """Copy via the Textual clipboard inside the TUI, or stdout OSC 52 outside."""
-    copied = False
-    if app is not None and hasattr(app, "copy_to_clipboard"):
-        try:
-            app.copy_to_clipboard(text)
-            return True
-        except Exception:
-            pass
-    else:
-        try:
-            encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
-            sys.stdout.write(f"\033]52;c;{encoded}\007")
-            sys.stdout.flush()
-            copied = True
-        except Exception:
-            pass
-    try:
-        import pyperclip  # type: ignore[import-not-found]
-        pyperclip.copy(text)
-        copied = True
-    except Exception:
-        pass
-    return copied
-
-
-@dataclass
-class TabDescriptor:
-    id: str                 # "system", "job-01", …
-    label: str              # "[System]", "ping/sweep #01"
-    status: str             # "system", "active", "done", "failed"
-    tool_id: str
-    job_id: Optional[str] = None
-    cmd: str = ""
-    artifact: str = ""      # captured at spawn; never re-derived from live state
-
-
-@dataclass
-class TreeRow:
-    """One line of the flattened RECIPES list."""
-
-    kind: str               # "header" | "tool" | "entry" | "chain"
-    label: str = ""
-    bin: str = ""
-    meta: str = ""
-    tool_id: str = ""
-    preset_id: str = ""
-    blocked: bool = False
-
-
-# ---- Widgets ---------------------------------------------------------------
-class TabClose(Static):
-    """A tab's ×. Stops propagation so closing never also selects."""
-
-    def on_click(self, event) -> None:
-        event.stop()
-        event.prevent_default()
-        parent = self.parent
-        while parent is not None and not isinstance(parent, TabItem):
-            parent = parent.parent
-        if parent is not None:
-            self.app.action_close_tab(parent.tab.id)
-
-
-class TabItem(Horizontal):
-    """One tab button in the closable tab strip."""
-
-    ICONS = {
-        "system": ("▪", FAINT),
-        "active": ("●", WARN),
-        "await": ("⌨", WARN),
-        "done": ("✓", ACCENT),
-        "failed": ("✗", ERR),
-    }
-
-    def __init__(self, tab: TabDescriptor, is_active: bool, awaiting: bool = False) -> None:
-        super().__init__(classes="tab-item-active" if is_active else "tab-item")
-        self.tab = tab
-        self.is_active = is_active
-        self.awaiting = awaiting
-
-    @property
-    def tab_id(self) -> str:
-        return self.tab.id
-
-    def _icon(self) -> Tuple[str, str]:
-        key = "await" if self.awaiting else self.tab.status
-        return self.ICONS.get(key, ("▪", FAINT))
-
-    def compose(self) -> ComposeResult:
-        icon, icon_color = self._icon()
-        yield Static(Text(icon, style=icon_color), classes="tab-icon")
-        yield Static(Text(self.tab.label, style=FG if self.is_active else DIM), classes="tab-label")
-        if self.tab.id == "system":
-            yield Static(Text("·", style="#232c2b"), classes="tab-locked tab-lock")
-        else:
-            yield TabClose(Text("×", style=DIM if self.is_active else MUTED), classes="tab-close")
-
-    def update_tab(self, tab: TabDescriptor, is_active: bool, awaiting: bool = False) -> None:
-        self.tab = tab
-        self.is_active = is_active
-        self.awaiting = awaiting
-        icon, icon_color = self._icon()
-        try:
-            self.query_one(".tab-icon", Static).update(Text(icon, style=icon_color))
-            self.query_one(".tab-label", Static).update(
-                Text(self.tab.label, style=FG if is_active else DIM)
-            )
-            self.query_one(".tab-close", Static).update(
-                Text("×", style=DIM if is_active else MUTED)
-            )
-        except Exception:
-            pass
-
-    def on_click(self, event) -> None:
-        target = getattr(event, "widget", None) or getattr(event, "target", None)
-        if isinstance(target, TabClose) or (
-            getattr(target, "has_class", None) and target.has_class("tab-close")
-        ):
-            event.stop()
-            self.app.action_close_tab(self.tab.id)
-        else:
-            self.app.action_select_tab(self.tab.id)
-
-
-class RecipeRowWidget(Static):
-    """One clickable row in the flattened RECIPES list."""
-
-    def __init__(self, index: int, renderable: Text, classes: str = "recipe-row") -> None:
-        super().__init__(renderable, classes=classes)
-        self.index = index
-
-    def on_click(self, event) -> None:
-        event.stop()
-        self.app.tree_row_clicked(self.index)
-
-
-class VariantRowWidget(Static):
-    """One variant row; clicking selects it and takes focus into VARIANTS."""
-
-    def __init__(self, preset_id: str, renderable: Text, classes: str = "variant-row") -> None:
-        super().__init__(renderable, classes=classes)
-        self.preset_id = preset_id
-
-    def on_click(self, event) -> None:
-        event.stop()
-        self.app.variant_row_clicked(self.preset_id)
-
-
-class StdinChip(Static):
-    """A quick-reply chip. Carries its reply, so a second prompt can mount a
-    fresh set without colliding with IDs the previous set still holds."""
-
-    def __init__(self, reply: str) -> None:
-        super().__init__(reply, classes="stdin-chip", markup=False)
-        self.reply = reply
-
-    def on_click(self, event) -> None:
-        event.stop()
-        self.app.send_stdin_reply(self.reply)
-
-
-class ArgsTextArea(TextArea):
-    """Raw flag editor. Esc and Ctrl+J commit, blur and return to token view."""
-
-    def on_key(self, event) -> None:
-        if event.key == "escape" or event.key in ("ctrl+enter", "ctrl+j", "super+enter"):
-            event.prevent_default()
-            event.stop()
-            self.app.action_toggle_args_mode(force_raw=False)
-
-
-class StdinInput(Input):
-    """The stdin field. Enter sends; Esc blurs without sending."""
-
-    def on_key(self, event) -> None:
-        if event.key == "escape":
-            event.prevent_default()
-            event.stop()
-            self.app.dismiss_stdin_focus()
-
-
 # ---- Modals ----------------------------------------------------------------
-class HelpModal(ModalScreen):
-    """[?] Key bindings overlay."""
-
-    BINDINGS = [
-        ("escape", "dismiss_help", "Dismiss"),
-        ("question_mark", "dismiss_help", "Dismiss"),
-        ("enter", "dismiss_help", "Dismiss"),
-    ]
-
-    GROUPS = [
-        ("navigate", [
-            ("↑ ↓ / j k", "Move cursor in focused pane"),
-            ("/", "Filter recipes"),
-            ("!", "Toggle runnable-only"),
-            ("Ctrl+P", "Task palette · ↵ loads args, ⇧↵ runs"),
-            ("Ctrl+P ›", "Harness commands only"),
-        ]),
-        ("task", [
-            ("Enter", "Recipes: select + jump to variants · Variants: run"),
-            ("1-9,0", "Select variant 1-10"),
-            (", / .", "Previous / next variant"),
-            ("Tab", "Move focus recipes / variants"),
-            ("E", "Edit args (raw / tokens)"),
-            ("R", "Reset args to variant"),
-            ("P", "Pin / unpin task"),
-        ]),
-        ("jobs", [
-            ("Esc", "Back to recipes (stacked)"),
-            ("[ / ]", "Previous / next tab"),
-            ("Ctrl+C", "Interrupt running job (SIGINT)"),
-            ("Y", "Copy tail -f for active artifact"),
-            ("Ctrl+Shift+C", "Copy whole log to clipboard"),
-            ("W", "Close active tab · running job asks kill / detach"),
-            ("⇧W", "Close all finished tabs"),
-        ]),
-        ("scope & config", [
-            ("T", "Target scope + log destination"),
-            ("M", "Recipe manager (sources + counts)"),
-            ("⇧R", "Reload recipes (keeps sessions)"),
-            ("Y", "Copy recipes yaml path (Ctrl+P)"),
-            ("L", "Split / stacked layout"),
-            ("H", "Show / hide the hotkey bar"),
-            ("?", "This list"),
-            ("Q Q", "Quit harness (double-tap)"),
-        ]),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="help-box"):
-            with Horizontal(id="help-header"):
-                yield Static("┤ KEY BINDINGS ├", id="help-title")
-                yield Static(f"fieldlog v{VERSION} · esc to dismiss", id="help-subhint")
-            # Two columns, two groups each. Four columns in a terminal leaves
-            # ~20 cells per label, which truncates every one of them.
-            with Horizontal(id="help-body"):
-                for column in (self.GROUPS[0::2], self.GROUPS[1::2]):
-                    with Vertical(classes="help-col"):
-                        for title, keys in column:
-                            yield Static(title.upper(), classes="help-group-title")
-                            for k, l in keys:
-                                with Horizontal(classes="help-row"):
-                                    yield Static(k, classes="help-key")
-                                    yield Static(l, classes="help-label")
-            with Horizontal(id="help-footer"):
-                yield Static(display_path(RECIPES_PATH), id="help-catalog-path")
-                yield Static(
-                    "defines every tool and variant · T → scope, then Y to copy",
-                    id="help-catalog-note",
-                )
-
-    def action_dismiss_help(self) -> None:
-        self.dismiss(None)
-
-    def on_click(self, event) -> None:
-        target = getattr(event, "widget", None) or getattr(event, "target", None)
-        if target is self:
-            event.stop()
-            self.dismiss(None)
-
 
 class TargetModal(ModalScreen[bool]):
     """[T] Target scope, interface, resolver sync and log destination.
@@ -667,450 +309,6 @@ class TargetModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class RecipeManagerModal(ModalScreen):
-    """[M] Recipe manager — stats, definition sources, indexed tools.
-
-    Swallows Y and ⇧R so neither reaches the global map.
-    """
-
-    BINDINGS = [
-        ("escape", "close", "Close"),
-        ("m", "close", "Close"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        app: "FieldlogApp" = self.app  # type: ignore[assignment]
-        with Vertical(id="mgr-box"):
-            with Horizontal(id="mgr-header"):
-                yield Static("┤ RECIPE MANAGER ├", id="mgr-title")
-                yield Static(f"rev {app.reload_revision} · esc to dismiss", id="mgr-subhint")
-
-            with Horizontal(id="mgr-stats"):
-                for label, value, color in app.manager_stats():
-                    with Horizontal(classes="mgr-stat"):
-                        yield Static(label, classes="mgr-stat-label")
-                        yield Static(Text(value, style=color), classes="mgr-stat-value")
-
-            with VerticalScroll(id="mgr-scroll"):
-                yield Static("definition sources", classes="mgr-section-label")
-                with Vertical(id="mgr-sources"):
-                    for src in app.manager_sources():
-                        with Horizontal(classes="mgr-source-row"):
-                            yield Static(Text(src["kind"], style=src["kind_color"]), classes="mgr-src-kind")
-                            yield Static(src["path"], classes="mgr-src-path", markup=False)
-                            yield Static(Text(src["count"], style=src["count_color"]), classes="mgr-src-count")
-                            if src["copyable"]:
-                                yield Static("[Y] copy path", id="btn-copy-catalog-path", markup=False)
-
-                yield Static("indexed tools", classes="mgr-section-label")
-                with Vertical(id="mgr-tools"):
-                    for t in app.manager_tools():
-                        row = Horizontal(classes="mgr-tool-row", id=f"mgrtool-{t['id']}")
-                        row.tooltip = t["state"]
-                        with row:
-                            yield Static(Text(t["bin"], style=t["bin_style"]), classes="mgr-tool-bin")
-                            yield Static(t["name"], classes="mgr-tool-name", markup=False)
-                            yield Static(t["variants"], classes="mgr-tool-variants")
-                            yield Static(Text(t["emits"], style=WARN), classes="mgr-tool-emits")
-                            yield Static(Text(t["state"], style=t["state_color"]), classes="mgr-tool-state")
-                            yield Static(Text(t["badge"], style=ACCENT), classes="mgr-tool-badge")
-
-            with Horizontal(id="mgr-footer"):
-                yield Static("[⇧R] Reload recipes", id="btn-mgr-reload", markup=False)
-                yield Static(app.reload_note(), id="mgr-reload-note")
-                yield Static("", id="mgr-footer-spacer")
-                yield Static("[T] scope & logs →", id="btn-mgr-scope", markup=False)
-
-    def on_click(self, event) -> None:
-        target = getattr(event, "widget", None) or getattr(event, "target", None)
-        target_id = getattr(target, "id", "") or ""
-        if target is self:
-            event.stop()
-            self.dismiss(None)
-            return
-        if target_id == "btn-copy-catalog-path":
-            self.action_copy_path()
-        elif target_id == "btn-mgr-reload":
-            self.action_reload()
-        elif target_id == "btn-mgr-scope":
-            self.action_scope()
-        else:
-            node = target
-            while node is not None and not (getattr(node, "id", "") or "").startswith("mgrtool-"):
-                node = node.parent
-            if node is not None:
-                self.app.select_tool(node.id[len("mgrtool-"):])
-                self.dismiss(None)
-
-    def on_key(self, event) -> None:
-        if event.key in ("y", "Y"):
-            event.prevent_default()
-            event.stop()
-            self.action_copy_path()
-        elif event.key == "R":
-            event.prevent_default()
-            event.stop()
-            self.action_reload()
-        elif event.key in ("t", "T"):
-            event.prevent_default()
-            event.stop()
-            self.action_scope()
-
-    def action_copy_path(self) -> None:
-        btn = self.query_one("#btn-copy-catalog-path", Static)
-        copy_text_to_clipboard(str(RECIPES_PATH), app=self.app)
-        btn.update("copied ✓")
-        btn.styles.color = ACCENT
-        self.app.write_system_log(f"[config] {RECIPES_PATH} copied to clipboard")
-        self.set_timer(1.6, lambda: (btn.update("[Y] copy path"), setattr(btn.styles, "color", DIM)))
-
-    def action_reload(self) -> None:
-        btn = self.query_one("#btn-mgr-reload", Static)
-        btn.update("↻ reloading…")
-        self.app.action_reload_recipes()
-        self.dismiss(None)
-        self.app.action_recipe_manager()
-
-    def action_scope(self) -> None:
-        self.dismiss(None)
-        self.app.action_target_scope()
-
-    def action_close(self) -> None:
-        self.dismiss(None)
-
-
-class CloseJobModal(ModalScreen[Optional[str]]):
-    """W on a running tab: kill or detach. Esc keeps the tab and the job."""
-
-    BINDINGS = [
-        ("escape", "keep", "Keep"),
-        ("k", "kill", "Kill"),
-        ("d", "detach", "Detach"),
-    ]
-
-    def __init__(self, label: str, artifact: str) -> None:
-        super().__init__()
-        self.label = label
-        self.artifact = artifact
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="closing-box"):
-            with Horizontal(id="closing-header"):
-                yield Static("┤ JOB STILL RUNNING ├", id="closing-title")
-                yield Static("esc to keep the tab", id="closing-subhint")
-            with Vertical(id="closing-body"):
-                yield Static(f"{self.label} has not exited.", id="closing-label", markup=False)
-                with Horizontal(classes="closing-choice", id="choice-kill"):
-                    yield Static(Text("[K]", style=f"bold {ERR}"), classes="closing-key")
-                    yield Static("Kill", classes="closing-name")
-                    yield Static("SIGINT, SIGKILL after 10s, close the tab", classes="closing-hint")
-                with Horizontal(classes="closing-choice", id="choice-detach"):
-                    yield Static(Text("[D]", style=f"bold {ACCENT}"), classes="closing-key")
-                    yield Static("Detach", classes="closing-name")
-                    yield Static("keep running, close the tab, keep writing to disk", classes="closing-hint")
-                # On screen at the moment of decision, so output stays findable.
-                yield Static(self.artifact, id="closing-path", markup=False)
-
-    def on_click(self, event) -> None:
-        target = getattr(event, "widget", None) or getattr(event, "target", None)
-        node = target
-        while node is not None and (getattr(node, "id", "") or "") not in ("choice-kill", "choice-detach"):
-            node = node.parent
-        if node is not None:
-            self.dismiss("kill" if node.id == "choice-kill" else "detach")
-        elif target is self:
-            self.dismiss(None)
-
-    def action_kill(self) -> None:
-        self.dismiss("kill")
-
-    def action_detach(self) -> None:
-        self.dismiss("detach")
-
-    def action_keep(self) -> None:
-        self.dismiss(None)
-
-
-class QuitConfirm(ModalScreen[bool]):
-    """Guard against a fat-fingered quit while scans are still running."""
-
-    BINDINGS = [
-        ("escape", "cancel", "Cancel"),
-        ("n", "cancel", "Cancel"),
-        ("enter", "confirm", "Quit"),
-        ("y", "confirm", "Quit"),
-    ]
-
-    def __init__(self, running: int) -> None:
-        super().__init__()
-        self.running = running
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="modal-box"):
-            yield Static("┤ CONFIRM QUIT ├", id="modal-title")
-            plural = "scan" if self.running == 1 else "scans"
-            yield Label(f"{self.running} {plural} still running — quitting kills them.")
-            yield Static("[Enter/Y] quit     [Esc/N] cancel", id="quit-hint")
-
-    def action_confirm(self) -> None:
-        self.dismiss(True)
-
-    def action_cancel(self) -> None:
-        self.dismiss(False)
-
-
-class PaletteRowItem(Static):
-    def __init__(self, index: int, text: Text, classes: str = "") -> None:
-        super().__init__(text, classes=classes)
-        self.index = index
-
-    def on_click(self, event) -> None:
-        if isinstance(self.screen, PaletteModal):
-            shift = bool(getattr(event, "shift", False))
-            self.screen.pick_index(self.index, run=shift)
-
-
-class PaletteModal(ModalScreen[Optional[Tuple]]):
-    """Ctrl+P palette. Enter loads the row's args; ⇧Enter loads and runs."""
-
-    BINDINGS = [
-        ("escape", "cancel", "Dismiss"),
-        ("up", "cursor_up", "Up"),
-        ("down", "cursor_down", "Down"),
-        ("enter", "load_selected", "Load"),
-        ("shift+enter", "run_selected", "Run"),
-    ]
-
-    def __init__(self, fieldlog_app: "FieldlogApp") -> None:
-        super().__init__()
-        self.fieldlog_app = fieldlog_app
-        self.query_text = ""
-        self.cursor = 0
-        self.flat_items: List[dict] = []
-        self.row_widgets: List[PaletteRowItem] = []
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="palette-box"):
-            with Horizontal(id="palette-input-row"):
-                yield Static("›", id="palette-prompt")
-                yield Input(placeholder="run a task", id="palette-input")
-                yield Static("tasks + harness · > for commands only", id="palette-hint")
-            with Vertical(id="palette-results"):
-                pass
-
-    def on_mount(self) -> None:
-        self.refresh_results()
-        self.query_one("#palette-input", Input).focus()
-
-    def get_groups(self) -> Tuple[List[dict], List[dict]]:
-        app = self.fieldlog_app
-        raw = self.query_text.strip()
-        meta_only = raw.startswith(">")
-        q = (raw[1:] if meta_only else raw).strip().lower()
-
-        groups: List[dict] = []
-        flat: List[dict] = []
-
-        if not meta_only:
-            chain_rows: List[dict] = []
-            if q:
-                hits = search(app.recipes, q, app.blocked_flag, app.hide_missing, limit=7)
-                rows = [
-                    {"kind": "task", "tool": t, "preset": p, "blocked": b}
-                    for t, p, b in hits
-                ]
-                chain_rows = [
-                    {"kind": "chain", "chain": c, "blocked": app.chain_blocked_flag(c)}
-                    for c in app.chains if chain_matches(c, q)
-                ]
-                title = "tasks"
-            else:
-                rows = []
-                seen = set()
-                for key in app.pinned + app.recent:
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    tool_id, _, preset_id = key.partition("/")
-                    if tool_id == "chain":
-                        c = app.get_chain(preset_id)
-                        if c is not None:
-                            rows.append({"kind": "chain", "chain": c, "blocked": app.chain_blocked_flag(c)})
-                    else:
-                        t = app.get_tool(tool_id)
-                        if not t:
-                            continue
-                        p = app.get_preset(t, preset_id)
-                        rows.append({"kind": "task", "tool": t, "preset": p, "blocked": app.blocked_flag(t, p)})
-                    if len(rows) >= 6:
-                        break
-                title = "pinned & recent"
-            if rows:
-                groups.append({"title": title, "items": rows})
-                flat.extend(rows)
-            if chain_rows:
-                groups.append({"title": "chains", "items": chain_rows})
-                flat.extend(chain_rows)
-
-        metas = [{"kind": "meta", "meta": m} for m in META_COMMANDS if self._meta_match(m, q)]
-        if metas:
-            groups.append({"title": "harness commands" if meta_only else "harness", "items": metas})
-            flat.extend(metas)
-        return groups, flat
-
-    @staticmethod
-    def _meta_match(meta: dict, q: str) -> bool:
-        if not q:
-            return True
-        hay = f"{meta['label']} {meta['id']} {meta['hint']}".lower()
-        i = 0
-        for ch in q:
-            i = hay.find(ch, i)
-            if i == -1:
-                return False
-            i += 1
-        return True
-
-    def _render_item(self, item: dict, is_on: bool) -> Tuple[Text, str]:
-        if item["kind"] == "meta":
-            m = item["meta"]
-            cells = (f"{m['key'][:12]:<12}", f"{m['label'][:34]:<35}", f"{m['hint'][:24]:>24}")
-            if is_on:
-                return (
-                    Text.assemble((cells[0] + " ", f"bold {BG_BASE}"), (cells[1] + " ", BG_BASE), (cells[2], BG_BASE)),
-                    "palette-row palette-row-cursor-ok",
-                )
-            return (
-                Text.assemble((cells[0] + " ", f"bold {ACCENT}"), (cells[1] + " ", SOFT), (cells[2], MUTED)),
-                "palette-row",
-            )
-
-        ok = not item["blocked"]
-        if item["kind"] == "chain":
-            c = item["chain"]
-            cells = (
-                f"{c['id'][:10]:<11}",
-                f"{c.get('name', c['id'])[:26]:<27}",
-                f"{('' if ok else 'step blocked'):<16}",
-                f"{('chain · ' + steps_label(c))[:16]:>16}",
-            )
-        else:
-            t, p = item["tool"], item["preset"]
-            t_bin = t.get("bin", t["id"])
-            state = "" if ok else ("needs dns name" if is_tool_installed(t_bin) else "not installed")
-            cells = (
-                f"{t_bin[:10]:<11}",
-                f"{p.get('name', p['id'])[:26]:<27}",
-                f"{state[:15]:<16}",
-                f"{truncate_right(t.get('name', ''), 16):>16}",
-            )
-        if is_on and ok:
-            return (
-                Text.assemble(
-                    (cells[0] + " ", f"bold {BG_BASE}"), (cells[1] + " ", BG_BASE),
-                    (cells[2] + " ", BG_BASE), (cells[3], BG_BASE),
-                ),
-                "palette-row palette-row-cursor-ok",
-            )
-        if is_on:
-            return (
-                Text.assemble(
-                    (cells[0] + " ", f"bold {DIM}"), (cells[1] + " ", DIM),
-                    (cells[2] + " ", WARN), (cells[3], FAINT),
-                ),
-                "palette-row palette-row-cursor-blocked",
-            )
-        if ok:
-            return (
-                Text.assemble(
-                    (cells[0] + " ", f"bold {FG}"), (cells[1] + " ", SOFT),
-                    (cells[2] + " ", FAINT), (cells[3], MUTED),
-                ),
-                "palette-row",
-            )
-        return (
-            Text.assemble(
-                (cells[0] + " ", UNFOCUSED), (cells[1] + " ", UNFOCUSED),
-                (cells[2] + " ", WARN), (cells[3], MUTED),
-            ),
-            "palette-row",
-        )
-
-    def refresh_results(self) -> None:
-        groups, self.flat_items = self.get_groups()
-        self.cursor = max(0, min(len(self.flat_items) - 1, self.cursor)) if self.flat_items else 0
-
-        hint = "↵ loads args · ⇧↵ runs" if self.query_text else "tasks + harness · > for commands only"
-        self.query_one("#palette-hint", Static).update(Text(hint, style=MUTED))
-
-        box = self.query_one("#palette-results", Vertical)
-        box.remove_children()
-        self.row_widgets = []
-        pos = 0
-        for g in groups:
-            box.mount(Static(g["title"].upper(), classes="palette-group-header"))
-            for item in g["items"]:
-                text, cls = self._render_item(item, pos == self.cursor)
-                widget = PaletteRowItem(pos, text, classes=cls)
-                self.row_widgets.append(widget)
-                box.mount(widget)
-                pos += 1
-
-    def _repaint(self, old: int, new: int) -> None:
-        if len(self.row_widgets) != len(self.flat_items):
-            self.refresh_results()
-            return
-        for idx, on in ((old, False), (new, True)):
-            if 0 <= idx < len(self.row_widgets):
-                text, cls = self._render_item(self.flat_items[idx], on)
-                self.row_widgets[idx].update(text)
-                self.row_widgets[idx].set_classes(cls)
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "palette-input":
-            self.query_text = event.value
-            self.cursor = 0
-            self.refresh_results()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.action_load_selected()
-
-    def action_cursor_up(self) -> None:
-        if self.flat_items and self.cursor > 0:
-            old, self.cursor = self.cursor, self.cursor - 1
-            self._repaint(old, self.cursor)
-
-    def action_cursor_down(self) -> None:
-        if self.flat_items and self.cursor < len(self.flat_items) - 1:
-            old, self.cursor = self.cursor, self.cursor + 1
-            self._repaint(old, self.cursor)
-
-    def _dismiss_with(self, run: bool) -> None:
-        if not (0 <= self.cursor < len(self.flat_items)):
-            self.dismiss(None)
-            return
-        item = self.flat_items[self.cursor]
-        if item["kind"] == "meta":
-            self.dismiss(("meta", item["meta"]["action"]))
-        elif item["kind"] == "chain":
-            self.dismiss(("chain", item["chain"]["id"], run))
-        else:
-            self.dismiss(("task", item["tool"]["id"], item["preset"]["id"], run))
-
-    def action_load_selected(self) -> None:
-        self._dismiss_with(False)
-
-    def action_run_selected(self) -> None:
-        self._dismiss_with(True)
-
-    def pick_index(self, index: int, run: bool = False) -> None:
-        self.cursor = index
-        self._dismiss_with(run)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
 # ---- App -------------------------------------------------------------------
 class FieldlogApp(App):
     DOUBLE_TAP_QUIT_TIMEOUT: float = 2.0
@@ -1236,8 +434,8 @@ class FieldlogApp(App):
     def selected_chain(self) -> Optional[dict]:
         return self.get_chain(self.selected_chain_id) if self.selected_chain_id else None
 
-    def is_blocked(self, tool: dict, preset: dict) -> Tuple[bool, str, str]:
-        """(blocked, reason, hint). Missing binary and missing dns name are
+    def is_blocked(self, tool: dict, preset: dict) -> Tuple[bool, str]:
+        """(blocked, reason). Missing binary and missing dns name are
         distinct reasons and must never be reported as each other."""
         return is_blocked(tool, preset, self.session)
 
@@ -1717,7 +915,7 @@ class FieldlogApp(App):
             self.selected_tool_id = tool["id"]
         preset = self.get_preset(tool, self.selected_preset_id)
         key = f"{tool['id']}/{preset['id']}"
-        blocked, _, _ = self.is_blocked(tool, preset)
+        blocked, _ = self.is_blocked(tool, preset)
 
         try:
             self.query_one("#variants-bin", Static).update(
@@ -1777,7 +975,7 @@ class FieldlogApp(App):
     def _refresh_chain_variants(self, var_list: Vertical, chain: dict) -> None:
         """The steps, numbered and read-only: a chain's order lives in its yaml.
         Plain Statics, not VariantRowWidgets — a click here selects nothing."""
-        blocked, _reason, _hint = chain_blocked(self.catalog, chain, self.session)
+        blocked, _reason = chain_blocked(self.catalog, chain, self.session)
         key = f"chain/{chain['id']}"
         try:
             self.query_one("#variants-bin", Static).update(Text("chain", style=f"bold {FG}"))
@@ -2573,7 +1771,7 @@ class FieldlogApp(App):
 
     def _fit_hotkey_bar(self) -> None:
         """Decide keys-only vs labelled before paint, from an estimated width."""
-        needed = sum(len(k) + len(l) + 5 for k, l, _ in HOTKEYS) + 4
+        needed = sum(len(k) + len(lbl) + 5 for k, lbl, _ in HOTKEYS) + 4
         tight = self.size.width < needed
         for idx in range(len(HOTKEYS)):
             try:

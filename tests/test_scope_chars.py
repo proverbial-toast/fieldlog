@@ -13,6 +13,7 @@ from fieldlog.state import TargetSession
 NOOP_TOOL = {"id": "true", "bin": "true"}
 TARGET_PRESET = {"id": "t", "flags": "$TARGET"}
 HOST_PRESET = {"id": "h", "flags": "$HOST"}
+IFACE_PRESET = {"id": "i", "flags": "-I $IFACE"}
 
 
 @pytest.mark.parametrize(
@@ -24,12 +25,25 @@ def test_safe_targets_are_runnable(target):
 
 @pytest.mark.parametrize("target", ["a;b", "a b", "a|b", "$(id)", "`id`", "@(x)"])
 def test_shell_metacharacters_block_a_target(target):
-    blocked, reason, _ = is_blocked(NOOP_TOOL, TARGET_PRESET, TargetSession(target=target))
+    blocked, reason = is_blocked(NOOP_TOOL, TARGET_PRESET, TargetSession(target=target))
     assert blocked and "target has unsafe characters" in reason
 
 
+@pytest.mark.parametrize("iface", ["eth0", "eth0:0", "eth0.100", "tun0", "wlan0", ""])
+def test_safe_interfaces_are_runnable(iface):
+    # An empty interface stays allowed — same command as before the check.
+    assert is_blocked(NOOP_TOOL, IFACE_PRESET, TargetSession(interface=iface))[0] is False
+
+
+@pytest.mark.parametrize("iface", ["eth0;id", "a b", "a|b", "$(id)", "`id`", "eth0&"])
+def test_shell_metacharacters_block_an_interface(iface):
+    # $IFACE reaches the shell like the scope above, so it takes the same allowlist.
+    blocked, reason = is_blocked(NOOP_TOOL, IFACE_PRESET, TargetSession(interface=iface))
+    assert blocked and "interface has unsafe characters" in reason
+
+
 def test_dns_name_still_refuses_at():
-    blocked, reason, _ = is_blocked(NOOP_TOOL, HOST_PRESET, TargetSession(hostname="chris@jump1"))
+    blocked, reason = is_blocked(NOOP_TOOL, HOST_PRESET, TargetSession(hostname="chris@jump1"))
     assert blocked and "dns name has unsafe characters (@)" in reason
 
 
@@ -37,7 +51,7 @@ def test_user_at_host_does_not_stand_in_for_a_dns_name():
     session = TargetSession(target="chris@jump1")
     assert session.target_kind == "user@host"
     assert session.dns_name == ""
-    blocked, reason, _ = is_blocked(NOOP_TOOL, HOST_PRESET, session)
+    blocked, reason = is_blocked(NOOP_TOOL, HOST_PRESET, session)
     assert blocked and "needs a dns name" in reason
 
 
