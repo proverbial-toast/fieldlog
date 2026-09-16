@@ -1133,25 +1133,28 @@ def tui_session(args: argparse.Namespace) -> TargetSession:
 
 
 def run_cli(argv: Optional[List[str]] = None) -> int:
-    catalog = load_catalog()
     action, normalized_argv = dispatch_argv(argv)
     if action == "tui":
         normalized_argv = ["tui"] + normalized_argv
 
     parser = build_parser()
     args = parser.parse_args(normalized_argv)
+    # Read only where it is read: `history` and `report` work off the archive
+    # and never look at a recipe, and the TUI loads its own in FieldlogApp —
+    # so an eager load here cost those three a parse of every yaml, twice over
+    # for the TUI, which is the command a bare `fieldlog` runs.
     if args.command in ("list", "recipes", "ls"):
-        return handle_list(args, catalog)
+        return handle_list(args, load_catalog())
     if args.command in ("show", "info"):
-        return handle_show(args, catalog)
+        return handle_show(args, load_catalog())
     if args.command in ("run", "exec"):
-        return handle_run(args, catalog)
+        return handle_run(args, load_catalog())
     if args.command in ("history", "log", "runs"):
         return handle_history(args)
     if args.command == "report":
         return handle_report(args)
     if args.command in ("doctor", "check"):
-        return handle_doctor(args, catalog)
+        return handle_doctor(args, load_catalog())
     if args.command == "tui":
         from fieldlog.app import FieldlogApp
 
