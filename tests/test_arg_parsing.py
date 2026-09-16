@@ -58,3 +58,30 @@ def test_arg_groups_treats_a_bare_word_as_a_positional():
 
 def test_arg_groups_of_empty_string_is_empty():
     assert arg_groups("") == {"groups": [], "count": 0}
+
+
+# ---- A fat-fingered subcommand looks like a recipe -------------------------
+
+
+def test_a_near_miss_subcommand_is_named():
+    """`fieldlog repot x` dispatches to `run repot` — the shorthand that makes
+    `fieldlog nmap` work. Once that lookup fails, say what was probably meant."""
+    from fieldlog.cli import subcommand_hint
+
+    assert subcommand_hint("repot") == " Did you mean `fieldlog report`?"
+    assert subcommand_hint("doctro") == " Did you mean `fieldlog doctor`?"
+    assert subcommand_hint("histroy") == " Did you mean `fieldlog history`?"
+    # A real tool name is not second-guessed.
+    assert subcommand_hint("nmap") == ""
+    assert subcommand_hint("traceroute") == ""
+    assert subcommand_hint("") == ""
+
+
+def test_the_hint_reaches_the_error(capsys):
+    from fieldlog.cli import build_parser, handle_run
+    from fieldlog.recipes import load_catalog
+
+    args = build_parser().parse_args(["run", "repot", "-t", "10.0.0.1"])
+    assert handle_run(args, load_catalog()) == 1
+    err = capsys.readouterr().err
+    assert "Unknown recipe or tool 'repot'" in err and "fieldlog report" in err

@@ -49,3 +49,37 @@ def test_override_outdir_resolves_to_the_reserved_run_dir(tmp_workspace: Path):
 
     assert plan.command == f"true -w {plan.job.out_dir}/a.txt"
     assert plan.job.out_dir.is_dir()
+
+
+# ---- The gate reads the edit, not the preset -------------------------------
+
+
+def test_an_edit_that_needs_a_scope_value_blocks_the_recipe():
+    """The preset's own flags name no `$HOST`; the edit does. Judging the preset
+    would let it launch with `$HOST` resolving to nothing."""
+    from fieldlog.recipes import is_blocked
+
+    tool = {"id": "true", "bin": "true"}
+    preset = {"id": "p", "flags": "-c 1"}
+    session = TargetSession(target="10.0.0.1")          # no dns name
+
+    assert is_blocked(tool, preset, session)[0] is False
+    blocked, reason = is_blocked(tool, preset, session, flags="-c 1 $HOST")
+    assert blocked and "needs a dns name" in reason
+    # And with one set it is runnable again.
+    assert is_blocked(tool, preset, TargetSession(target="10.0.0.1", hostname="box.htb"),
+                      flags="-c 1 $HOST")[0] is False
+
+
+def test_an_edit_cannot_smuggle_an_unchecked_scope_value():
+    """An unsafe target is refused once the edit is what brings `$TARGET` in."""
+    from fieldlog.recipes import is_blocked
+
+    tool = {"id": "true", "bin": "true"}
+    preset = {"id": "p", "flags": "-c 1"}
+    session = TargetSession(target="10.0.0.1; id")
+
+    assert is_blocked(tool, preset, session)[0] is False        # preset never uses $TARGET
+    blocked, reason = is_blocked(tool, preset, session, flags="-c 1 $TARGET")
+    # Every distinct offender is named — here the `;` and the space after it.
+    assert blocked and "target has unsafe characters (; )" in reason

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import difflib
 import fcntl
 import json
 import os
@@ -112,6 +113,18 @@ def dispatch_argv(argv: Optional[List[str]] = None) -> Tuple[str, List[str]]:
 
     # Any other bare token defaults to prepending 'run'
     return "cli", ["run"] + argv
+
+
+def subcommand_hint(spec: str) -> str:
+    """A nudge when an unknown recipe is really a fat-fingered subcommand.
+
+    Any unrecognised first token is dispatched to `run` — that is what makes
+    `fieldlog nmap` work, and it is also what turns `fieldlog repot` into a
+    lookup for a recipe named `repot`. Only reached once the lookup has already
+    failed, so a working shorthand never sees this.
+    """
+    near = difflib.get_close_matches(spec.strip().lower(), sorted(SUBCOMMANDS), n=1, cutoff=0.8)
+    return f" Did you mean `fieldlog {near[0]}`?" if near else ""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -549,7 +562,10 @@ async def execute_cli_job(
             pass
 
         run_task = asyncio.create_task(
-            run_job(command, job, session, sink, on_state=None, env=plan.env)
+            # echo on: nothing here renders the operator's reply, so the pty's
+            # own echo is what makes it visible and what puts it in the log.
+            # The tool keeps control of it, so a password prompt stays hidden.
+            run_job(command, job, session, sink, on_state=None, env=plan.env, echo=is_tty)
         )
 
         # Propagate real terminal dimensions to PTY slave
@@ -594,13 +610,14 @@ async def execute_cli_job(
 
     elapsed = round(time.time() - start_time, 2)
     delta = job.artifact_delta
-    # The recipe's verdict is fieldlog's exit status; the record keeps the
-    # tool's own code either way, so nothing in the archive is fabricated.
-    status = 0 if run_succeeded(code, job.success_codes) else code
+    # The verdict is for display here; what this returns is always the tool's
+    # own code, so a chain step's record and its own run record agree. The
+    # caller turns the code into fieldlog's exit status (see handle_run).
+    ok = run_succeeded(code, job.success_codes)
 
     if as_json:
         if not emit_json:
-            return status
+            return code
         manifest_record = {
             "id": job.id,
             "recipe": f"{job.recipe_id}/{job.variant_id}",
@@ -614,13 +631,13 @@ async def execute_cli_job(
             ],
         }
         print(json.dumps(manifest_record, indent=2))
-        return status
+        return code
 
     if not quiet:
         console = Console()
         console.print(f"[dim]{'─' * 80}[/dim]")
-        status_style = "green" if status == 0 else "red"
-        status_label = f"[DONE:{code}]" if status == 0 else f"[FAIL:{code}]"
+        status_style = "green" if ok else "red"
+        status_label = f"[DONE:{code}]" if ok else f"[FAIL:{code}]"
         if job.interrupted:
             status_label += " (interrupted)"
         art_count = delta.total_files if delta else 1
@@ -636,7 +653,7 @@ async def execute_cli_job(
             for a in delta.artifacts:
                 console.print(f"    - {escape(a.path)} ({a.lines or 0} lines, {a.bytes} B)")
 
-    return status
+    return code
 
 
 def run_session(args: argparse.Namespace) -> TargetSession:
@@ -742,7 +759,7 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
 
     tool, preset, err = find_recipe(catalog, args.recipe)
     if err or not tool or not preset:
-        sys.stderr.write(f"Error: {err}\n")
+        sys.stderr.write(f"Error: {err}{subcommand_hint(args.recipe)}\n")
         return 1
 
     session = run_session(args)
@@ -769,7 +786,7 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
     for warning in plan.warnings:
         sys.stderr.write(f"Warning: {warning}\n")
 
-    return asyncio.run(
+    code = asyncio.run(
         execute_cli_job(
             plan,
             session,
@@ -777,6 +794,58 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
             as_json=getattr(args, "json", False),
         )
     )
+    # The recipe's verdict is fieldlog's exit status; the archive keeps the
+    # tool's own code either way, so nothing in it is fabricated.
+    return 0 if run_succeeded(code, plan.job.success_codes) else code
+
+
+def target_folders(workspace: Path) -> List[Path]:
+    """Every target folder in a workspace, in name order."""
+    if not workspace.is_dir():
+        return []
+    return sorted(
+        (d for d in workspace.iterdir() if d.is_dir() and not d.name.startswith(".")),
+        key=lambda p: p.name,
+    )
+
+
+def find_target_dir(workspace: Path, name: str) -> Optional[Path]:
+    """The archive folder for `name`, which may be the folder itself or the
+    target its runs were made against.
+
+    A folder is named for the dns name when one was set, so an operator who ran
+    `-t 10.10.11.50 -H box.htb` and later asks for the address would otherwise
+    be told there is nothing there. The folder name is tried first and answers
+    without reading anything; only a miss goes looking through the manifests.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    direct = workspace / scope_dir(name)
+    if (direct / "session.json").is_file():
+        return direct
+    for folder in target_folders(workspace):
+        for record in reversed(load_runs(folder)):
+            env = record.get("environment")
+            if isinstance(env, dict) and name in (env.get("TARGET", ""), env.get("TARGET_HOST", "")):
+                return folder
+    return None
+
+
+def no_such_target(workspace: Path, name: str) -> str:
+    """The message for a target nothing in the workspace matches.
+
+    A folder that exists but holds no manifest is its own case: the operator
+    named the right place, there is just nothing recorded in it yet.
+    """
+    direct = workspace / scope_dir(name)
+    if direct.is_dir():
+        return f"No runs recorded in {direct} (no session.json)\n"
+    known = [d.name for d in target_folders(workspace) if (d / "session.json").is_file()]
+    if not known:
+        return f"No target folders with runs under {workspace}\n"
+    listed = ", ".join(known[:6]) + (" …" if len(known) > 6 else "")
+    return f"No runs for '{name}' in {workspace}. Target folders: {listed}\n"
 
 
 def handle_history(args: argparse.Namespace) -> int:
@@ -798,11 +867,11 @@ def handle_history(args: argparse.Namespace) -> int:
             console.print(f"  [bold]{escape(d.name)}[/bold] ({hist.total_runs} runs)")
         return 0
 
-    target_dir = workspace / scope_dir(target)
-    manifest = target_dir / "session.json"
-    if not manifest.exists():
-        sys.stderr.write(f"No session.json found at {manifest}\n")
+    target_dir = find_target_dir(workspace, target)
+    if target_dir is None:
+        sys.stderr.write(no_such_target(workspace, target))
         return 1
+    manifest = target_dir / "session.json"
 
     try:
         raw_manifest = json.loads(manifest.read_text(encoding="utf-8"))
@@ -853,12 +922,9 @@ def handle_report(args: argparse.Namespace) -> int:
         sys.stderr.write("Error: report needs a target folder. Try `fieldlog history` to list them.\n")
         return 1
 
-    target_dir = workspace / scope_dir(target)
-    if not target_dir.is_dir():
-        sys.stderr.write(f"No target folder at {target_dir}\n")
-        return 1
-    if not (target_dir / "session.json").exists():
-        sys.stderr.write(f"No session.json found at {target_dir / 'session.json'}\n")
+    target_dir = find_target_dir(workspace, target)
+    if target_dir is None:
+        sys.stderr.write(no_such_target(workspace, target))
         return 1
 
     runs = load_runs(target_dir)

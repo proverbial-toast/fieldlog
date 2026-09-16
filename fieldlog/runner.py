@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
-import json
 import os
 import pty
 import re
@@ -23,7 +22,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
-from fieldlog.archive import ArtifactDelta, detect_artifact_deltas, manifest_lock, snapshot_workspace
+from fieldlog.archive import (
+    ArtifactDelta,
+    append_record,
+    collect_job_artifacts,
+    detect_artifact_deltas,
+    manifest_environment,
+    snapshot_workspace,
+)
 from fieldlog.recipes import parse_summary
 from fieldlog.state import ActiveJob, TargetSession
 
@@ -164,16 +170,26 @@ def send_stdin(job: ActiveJob, text: str) -> bool:
     return True
 
 
-def _open_pty() -> tuple[int, int]:
+def _open_pty(echo: bool = False) -> tuple[int, int]:
+    """The pty handed to the child. `echo` decides who shows the reply.
+
+    Off (the TUI): the operator's reply appears once, from the explicit
+    `› reply` note. With echo on it lands twice and the second copy is raw,
+    un-prefixed, and indistinguishable from tool output.
+
+    On (the CLI): there is no note to render it, so echo off means typing
+    blind and an artifact that reads as a question nobody answered. Leaving it
+    on also hands the choice back to the tool, which is where it belongs — sudo
+    turns echo off itself for a password, ssh leaves it on for a yes/no — so a
+    secret stays hidden and a confirmation is visible, exactly as in a terminal.
+    """
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", PTY_ROWS, PTY_COLS, 0, 0))
-        attrs = termios.tcgetattr(slave)
-        # ponytail: echo off so the operator's reply appears once, from the
-        # explicit `› reply` note. With echo on it lands twice and the second
-        # copy is raw, un-prefixed, and indistinguishable from tool output.
-        attrs[3] &= ~termios.ECHO
-        termios.tcsetattr(slave, termios.TCSANOW, attrs)
+        if not echo:
+            attrs = termios.tcgetattr(slave)
+            attrs[3] &= ~termios.ECHO
+            termios.tcsetattr(slave, termios.TCSANOW, attrs)
     except (OSError, termios.error):
         pass
     return master, slave
@@ -230,29 +246,40 @@ async def run_job(
     sink: LineSink,
     on_state: Optional[Callable[[], None]] = None,
     env: Optional[Dict[str, str]] = None,
+    echo: bool = False,
 ) -> int:
     """Run `command` on a pty, stream lines to `sink`, tee raw output to
     job.log_path, and append a manifest record to session.json.
 
     `on_state` is called whenever the blocked/unblocked state changes, so the
     UI can raise and drop the stdin bar. `env` is the launch plan's env; it is
-    built from the session when omitted. Returns the exit code.
+    built from the session when omitted. `echo` leaves the pty's own echo on,
+    which is what a front-end without a reply note wants (see `_open_pty`).
+    Returns the exit code.
     """
     work_dir = session.ensure_dirs()
-    pre_snap = snapshot_workspace(session.target_dir)
-    # With a log destination set, the log and $OUTDIR live outside the archive;
-    # without their own snapshot the run would record no artifacts at all.
-    log_root = Path(job.log_path).parent
+    # Only a `scan: true` recipe needs the before-and-after picture; the default
+    # reads this run's own log and $OUTDIR at the end and never walks the
+    # archive, which is both exact under concurrency and two fewer tree walks.
+    pre_snap: Dict[str, Tuple[int, int]] = {}
     extra_roots: Dict[Path, Dict[str, Tuple[int, int]]] = {}
-    try:
-        log_root.resolve().relative_to(session.target_dir.resolve())
-    except ValueError:
-        extra_roots[log_root] = snapshot_workspace(log_root)
+    # One directory, and usually an empty one — but a chain's steps share an
+    # $OUTDIR, so this is what keeps step 2 from claiming step 1's files.
+    out_snap = snapshot_workspace(job.out_dir) if job.out_dir else {}
+    if job.scan_workspace:
+        pre_snap = snapshot_workspace(session.target_dir)
+        # With a log destination set, the log and $OUTDIR live outside the
+        # archive; without their own snapshot the run would record nothing.
+        log_root = Path(job.log_path).parent
+        try:
+            log_root.resolve().relative_to(session.target_dir.resolve())
+        except ValueError:
+            extra_roots[log_root] = snapshot_workspace(log_root)
     if env is None:
         env = build_env(session, job.out_dir or work_dir, job.id)
     start = time.time()
 
-    master, slave = _open_pty()
+    master, slave = _open_pty(echo=echo)
     try:
         proc = await asyncio.create_subprocess_shell(
             exec_form(command),
@@ -347,9 +374,15 @@ async def run_job(
         job.await_prompt = None
         job.await_since = None
         job.summary = parse_summary(job.parse_rule, log_tail(job.log_path))
-        delta = detect_artifact_deltas(
-            session.target_dir, pre_snap, primary_log=job.log_path, extra_roots=extra_roots
-        )
+        if job.scan_workspace:
+            delta = detect_artifact_deltas(
+                session.target_dir, pre_snap, primary_log=job.log_path, extra_roots=extra_roots
+            )
+        else:
+            delta = collect_job_artifacts(
+                session.target_dir, primary_log=job.log_path, out_dir=job.out_dir,
+                out_snap=out_snap,
+            )
         job.artifact_delta = delta
         _append_manifest(session, job, command, env, start, job.end_time, code, delta)
         return code
@@ -432,34 +465,4 @@ def _append_manifest(
     if job.chain:
         record["chain"] = job.chain
 
-    _write_record(session, record)
-
-
-# The scope a record pins down, and the only env keys worth archiving.
-MANIFEST_ENV_KEYS = ("TARGET", "TARGET_IP", "TARGET_HOST", "LHOST", "IFACE", "OUT_DIR", "RUN_ID")
-
-
-def manifest_environment(env: Dict[str, str]) -> Dict[str, str]:
-    """The environment block of a record. One definition, so a chain summary
-    and its steps cannot drift apart on which keys they carry."""
-    return {k: env.get(k, "") for k in MANIFEST_ENV_KEYS}
-
-
-def _write_record(session: TargetSession, record: dict) -> None:
-    """Append one record to session.json, read-append-replace under the
-    manifest lock, so a CLI run and the TUI finishing together cannot drop
-    each other's."""
-    manifest = session.target_dir / "session.json"
-    with manifest_lock(session.target_dir):
-        runs = []
-        if manifest.exists():
-            try:
-                parsed = json.loads(manifest.read_text(encoding="utf-8", errors="replace"))
-                if isinstance(parsed, list):
-                    runs = parsed
-            except (json.JSONDecodeError, OSError):
-                runs = []
-        runs.append(record)
-        tmp_manifest = session.target_dir / f".session_{record.get('id', 'x')}.json.tmp"
-        tmp_manifest.write_text(json.dumps(runs, indent=2), encoding="utf-8")
-        os.replace(tmp_manifest, manifest)
+    append_record(session.target_dir, record)

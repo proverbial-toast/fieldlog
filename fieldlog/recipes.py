@@ -124,15 +124,23 @@ def unsafe_scope_chars(value: str, pattern: re.Pattern = _UNSAFE_SCOPE) -> str:
     return "".join(dict.fromkeys(pattern.findall(value or "")))
 
 
-def is_blocked(tool: dict, preset: dict, session: TargetSession) -> Tuple[bool, str]:
+def is_blocked(
+    tool: dict, preset: dict, session: TargetSession, flags: Optional[str] = None
+) -> Tuple[bool, str]:
     """(blocked, reason). Reasons are terse and surface-neutral — the caller
     frames them (a CLI error, doctor's marks, the TUI's disabled button).
     Missing binary and missing dns name are distinct reasons and must never be
-    reported as each other."""
+    reported as each other.
+
+    `flags` is the template that will actually run, when that is not the
+    preset's own — a TUI args edit. The gate has to read what launches, not what
+    the catalog says: an edit can introduce a `$VAR` the preset never used, and
+    checking the preset would pass it through unvalidated.
+    """
     bin_name = preset.get("bin", tool.get("bin", tool.get("id", "")))
     if not is_tool_installed(bin_name):
         return True, f"{bin_name}: not found in $PATH"
-    used = template_vars(preset.get("flags", ""))
+    used = template_vars(preset.get("flags", "") if flags is None else flags)
     if "TARGET" in used:
         if not (session.target or "").strip():
             return True, "needs a target"
@@ -173,6 +181,20 @@ def writes_outdir(preset: dict, flags: Optional[str] = None) -> bool:
     """
     text = preset.get("flags", "") if flags is None else flags
     return preset.get("outdir") is True or "OUTDIR" in template_vars(str(text))
+
+
+def scans_workspace(preset: dict) -> bool:
+    """Whether this recipe's artifacts have to be found by scanning the target
+    folder, rather than read from the `$OUTDIR` it owns.
+
+    Off by default: a run records its primary log and whatever it wrote into
+    `$OUTDIR`, both of which belong to it alone. A recipe that writes somewhere
+    else under the target folder — a tool with a fixed output name, or one
+    writing into the working directory — declares `scan: true` and gets every
+    file that appeared or changed while it ran instead. That is only accurate
+    when nothing else is running against the same target.
+    """
+    return preset.get("scan") is True
 
 
 # A summary sits on one line of `history` beside the exit code, so it is capped
@@ -576,11 +598,22 @@ def chain_steps(catalog: Catalog, chain: dict) -> List[Tuple[dict, dict, bool]]:
     return out
 
 
-def chain_blocked(catalog: Catalog, chain: dict, session: TargetSession) -> Tuple[bool, str]:
-    """(blocked, reason) for the first step that cannot run now."""
+def chain_blocked(
+    catalog: Catalog,
+    chain: dict,
+    session: TargetSession,
+    flags_overrides: Optional[Dict[str, str]] = None,
+) -> Tuple[bool, str]:
+    """(blocked, reason) for the first step that cannot run now.
+
+    `flags_overrides` maps a recipe key to the template that step will run with,
+    so the gate sees the same args `run_chain` will hand it.
+    """
     steps = chain_steps(catalog, chain)
+    overrides = flags_overrides or {}
     for index, (tool, preset, _cont) in enumerate(steps, start=1):
-        blocked, reason = is_blocked(tool, preset, session)
+        key = f"{tool['id']}/{preset['id']}"
+        blocked, reason = is_blocked(tool, preset, session, flags=overrides.get(key))
         if blocked:
             return True, f"step {index} {tool['id']}/{preset['id']}: {reason}"
     return False, f"{len(steps)} steps ready"

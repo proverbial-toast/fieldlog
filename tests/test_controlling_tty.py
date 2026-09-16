@@ -12,7 +12,7 @@ import pytest
 
 from fieldlog.launch import plan_launch
 from fieldlog.runner import BLOCK_GRACE, interrupt_job, loggable_reply, run_job, send_stdin
-from fieldlog.state import TargetSession
+from fieldlog.state import ActiveJob, TargetSession
 
 SH_TOOL = {"id": "sh", "bin": "sh"}
 
@@ -140,3 +140,63 @@ async def test_cancelling_a_running_job_reaps_the_whole_group(tmp_workspace: Pat
         await asyncio.sleep(0.05)
     else:
         pytest.fail("process group survived cancellation")
+
+
+# ---- Who shows the operator's reply ----------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("echo", [False, True], ids=["tui", "cli"])
+async def test_echo_is_the_front_ends_choice(tmp_workspace: Path, echo: bool):
+    """The TUI renders its own `› reply` note, so the pty must not echo. The CLI
+    renders nothing, so the pty's echo is what makes a reply visible and what
+    puts it in the log."""
+    session = TargetSession(target="10.0.0.1", workspace_dir=tmp_workspace)
+    job = ActiveJob(id="01", recipe_id="sh", name="sh #01",
+                    log_path=tmp_workspace / "echo.log")
+
+    lines: list[str] = []
+    task = asyncio.create_task(
+        run_job("""sh -c 'read answer < /dev/tty; echo "got:$answer"'""",
+                job, session, lambda t, _s: lines.append(t), echo=echo)
+    )
+    for _ in range(100):                       # wait for the pty to exist
+        await asyncio.sleep(0.02)
+        if job.pty_fd is not None:
+            break
+    await asyncio.sleep(BLOCK_GRACE + 0.2)
+    os.write(job.pty_fd, b"yes\n")
+    assert await task == 0
+
+    text = "\n".join(lines)
+    assert "got:yes" in text                   # the tool read it either way
+    typed = [ln for ln in lines if ln.strip() == "yes"]
+    assert bool(typed) is echo                 # only an echoing pty shows it back
+
+
+@pytest.mark.asyncio
+async def test_a_tool_that_hides_its_prompt_still_hides_it_under_echo(tmp_workspace: Path):
+    """Echo on hands the choice back to the tool, it does not force it. A tool
+    that turns echo off for a secret — as sudo does — still gets its way."""
+    session = TargetSession(target="10.0.0.1", workspace_dir=tmp_workspace)
+    job = ActiveJob(id="01", recipe_id="sh", name="sh #01",
+                    log_path=tmp_workspace / "secret.log")
+
+    lines: list[str] = []
+    # `read -s`-alike: stty turns echo off on the controlling tty first.
+    command = """sh -c 'stty -echo < /dev/tty; read pw < /dev/tty; stty echo < /dev/tty; echo "len:${#pw}"'"""
+    task = asyncio.create_task(
+        run_job(command, job, session, lambda t, _s: lines.append(t), echo=True)
+    )
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if job.pty_fd is not None:
+            break
+    await asyncio.sleep(BLOCK_GRACE + 0.2)
+    os.write(job.pty_fd, b"hunter2\n")
+    assert await task == 0
+
+    text = "\n".join(lines)
+    assert "len:7" in text                     # the tool got the whole secret
+    assert "hunter2" not in text               # and it never reached the log
+    assert "hunter2" not in job.log_path.read_text(encoding="utf-8")

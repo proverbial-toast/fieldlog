@@ -146,12 +146,20 @@ def test_output_file_keeps_stdout_clean(target_dir: Path, tmp_workspace: Path, t
 def test_missing_target_and_manifest_exit_1(tmp_workspace: Path, capsys):
     args = build_parser().parse_args(["report", "nope", "-w", str(tmp_workspace)])
     assert handle_report(args) == 1
-    assert "No target folder at" in capsys.readouterr().err
+    assert "No target folders with runs" in capsys.readouterr().err
 
     (tmp_workspace / "bare").mkdir()
     args = build_parser().parse_args(["report", "bare", "-w", str(tmp_workspace)])
     assert handle_report(args) == 1
-    assert "No session.json found at" in capsys.readouterr().err
+    # The folder is the right one; it just has nothing in it yet.
+    assert "No runs recorded in" in capsys.readouterr().err
+
+    # With a real target present, a miss says what is there instead.
+    (tmp_workspace / "10.0.0.9").mkdir()
+    (tmp_workspace / "10.0.0.9" / "session.json").write_text("[]", encoding="utf-8")
+    args = build_parser().parse_args(["report", "nope", "-w", str(tmp_workspace)])
+    assert handle_report(args) == 1
+    assert "Target folders: 10.0.0.9" in capsys.readouterr().err
 
 
 def test_corrupt_manifest_renders_an_empty_report(tmp_workspace: Path, capsys):

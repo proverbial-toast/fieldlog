@@ -292,7 +292,7 @@ def _step_table(record: dict, steps: List[dict]) -> List[str]:
             continue
         lines.append(
             f"| {index} | {escape_cell(step.get('recipe', 'unknown'))} "
-            f"| {exit_cell(step.get('exit_code', 0))} |"
+            f"| {exit_cell(step.get('exit_code', 0), ok=record_ok(step))} |"
         )
     stopped = str(record.get("stopped_at") or "").strip()
     if stopped:

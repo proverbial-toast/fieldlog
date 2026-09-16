@@ -333,6 +333,9 @@ class ActiveJob:
     summary: str = ""
     # The preset's `success:` codes. None means the default, 0 alone.
     success_codes: Optional[list] = None
+    # The preset's `scan:` flag — find this run's artifacts by scanning the
+    # target folder instead of reading the $OUTDIR it owns. See recipes.py.
+    scan_workspace: bool = False
     log_lines: list[str] = field(default_factory=list)
     artifact_delta: Optional[ArtifactDelta] = None
 

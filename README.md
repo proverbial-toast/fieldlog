@@ -280,6 +280,7 @@ recipes:
 | `parse` | preset | no | Regex run over the finished log; what it finds becomes the run's `summary` (see below) |
 | `summary` | preset | no | Template filled from `parse`'s named groups. Without it the whole match is used |
 | `success` | preset | no | Exit codes this recipe calls a success (see below). Default: `0` alone |
+| `scan` | preset | no | `true` records every file that changed under the target folder, not just `$OUTDIR` (see below) |
 
 ### How the command is built
 
@@ -539,14 +540,35 @@ job, but they always equal `TARGET_HOST` and `OUT_DIR`.
   `192.168.1.0/24` gets the folder `192.168.1.0_24`. Then any character still
   outside `[A-Za-z0-9._-]` becomes `-`: `fe80::1` gets `fe80--1` and
   `chris@jump1` gets `chris-jump1`.
-- `fieldlog history <name>` and `report <name>` take the folder name: the DNS
-  name if you set one, else the target.
+- `fieldlog history <name>` and `report <name>` take either the folder name or
+  the target the runs were made against. A run made with `-t 10.10.11.50 -H
+  box.htb` lands in `targets/box.htb/`, and both spellings find it. An
+  unrecognised name lists the folders that do have runs.
 - The exit code is the tool's own, never fabricated. `ping` catches SIGINT,
   prints its statistics and exits 0; the record says `exit_code: 0` and
   `interrupted: true`. A tool that does not handle SIGINT is killed by it and
   shows 130, the shell's 128 + signal.
-- `artifacts` lists every file that appeared or changed under the target folder
-  during the run, primary log first.
+- `artifacts` lists the files the run owns: its primary log, then what it wrote
+  into `$OUTDIR`. The list stays right however many runs are in flight — which a
+  scan of the target folder could not, since "changed while this ran" and "this
+  run wrote it" are only the same thing when runs are serialised.
+- A chain's steps share one `$OUTDIR`, which is how a step uses what the step
+  before it produced. Each step still records only the files it wrote or changed
+  itself, so the shared folder does not make every step claim all of them.
+- A recipe that writes somewhere else under the target folder — a tool with a
+  fixed output name, or one writing into the working directory (`cwd` is the
+  target folder) — sets `scan: true` on its preset and gets the folder-wide
+  before-and-after comparison instead:
+
+  ```yaml
+  - id: report
+    scan: true                        # writes ./report.html, not into $OUTDIR
+    flags: "--output report.html $TARGET"
+  ```
+
+  Only accurate when nothing else runs against that target at the same time: a
+  scan cannot tell which of two overlapping runs produced a file, and will list
+  it for both. Prefer `$OUTDIR` where the tool lets you choose.
 - `--artifact-root DIR` (or the *log destination* in `T`) moves logs and
   `$OUTDIR` to `DIR/<name>/`. `session.json` stays in the workspace and records
   those files with absolute paths, since they sit outside the target folder.

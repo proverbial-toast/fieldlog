@@ -15,9 +15,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional
 
+from fieldlog.archive import append_record, manifest_environment
 from fieldlog.launch import LaunchPlan, next_run_id, plan_launch
 from fieldlog.recipes import Catalog, chain_arrow, chain_steps, run_succeeded
-from fieldlog.runner import _write_record, build_env, manifest_environment
+from fieldlog.runner import build_env
 from fieldlog.state import TargetSession, run_stamp
 
 # Given a planned step, run it and come back with its exit code.
@@ -66,7 +67,15 @@ async def run_chain(
         )
         out_dir = str(plan.job.out_dir)
         code = await run_step(plan)
-        records.append({"id": plan.job.id, "recipe": key, "exit_code": code})
+        # The step's own code, never a verdict — the same rule the per-run
+        # record follows. `success` rides along so a reader of the summary can
+        # tell a declared success from a failure without opening the step.
+        records.append({
+            "id": plan.job.id,
+            "recipe": key,
+            "exit_code": code,
+            **({"success": plan.job.success_codes} if plan.job.success_codes else {}),
+        })
 
         if plan.job.interrupted:
             # Ctrl+C is about the chain, not just the step it landed on.
@@ -97,5 +106,5 @@ async def run_chain(
         "duration_sec": round(end - start, 2),
         "artifacts": [],
     }
-    _write_record(session, record)
+    append_record(session.target_dir, record)
     return ChainResult(record=record, exit_code=exit_code)

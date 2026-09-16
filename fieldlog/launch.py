@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from fieldlog.archive import next_run_number, reserve_run_number
-from fieldlog.recipes import format_command, parse_rule, success_codes, writes_outdir
+from fieldlog.recipes import format_command, parse_rule, scans_workspace, success_codes, writes_outdir
 from fieldlog.runner import build_env, exec_form
 from fieldlog.state import ActiveJob, TargetSession, prepare_job_paths, resolve_flags
 
@@ -103,5 +103,6 @@ def plan_launch(
         chain=chain,
         parse_rule=parse_rule(preset),
         success_codes=success_codes(preset),
+        scan_workspace=scans_workspace(preset),
     )
     return LaunchPlan(job, command, build_env(session, out_dir, run_id), timeout, warnings)

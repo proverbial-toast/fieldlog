@@ -143,6 +143,37 @@ def test_a_chain_walks_past_a_declared_success(tmp_path: Path, tmp_workspace: Pa
     assert chain["exit_code"] == 0
 
 
+def test_a_chain_step_records_the_code_its_own_record_does(tmp_path: Path, tmp_workspace: Path):
+    """The summary and the step's own record are the same archive; they must not
+    disagree about the same run. The summary carries `success` so a reader can
+    tell a declared success from a failure without opening the step."""
+    cat = _catalog(tmp_path, CATALOG)
+    assert _run(cat, "c1", tmp_workspace) == 0
+
+    runs = _runs(tmp_workspace)
+    chain = next(r for r in runs if r["recipe"] == "chain/c1")
+    own = next(r for r in runs if r["recipe"] == "nomatch/ok")
+
+    step = chain["steps"][0]
+    assert step["exit_code"] == own["exit_code"] == 1     # the tool's own code, not the verdict
+    assert step["success"] == own["success"] == [0, 1]
+    # A step with no declaration carries no key, exactly as its own record does.
+    assert "success" not in chain["steps"][1]
+
+
+def test_the_report_does_not_flag_a_declared_success_in_a_chain(tmp_workspace: Path):
+    from fieldlog.report import render_report
+
+    out = render_report(tmp_workspace / "10.0.0.1", [
+        {"id": "03", "recipe": "chain/c1", "exit_code": 0, "artifacts": [], "steps": [
+            {"id": "01", "recipe": "nomatch/ok", "exit_code": 1, "success": [0, 1]},
+            {"id": "02", "recipe": "boom/x", "exit_code": 2},
+        ]},
+    ])
+    assert "| 1 | nomatch/ok | 1 (ok) |" in out      # inside the rule: not a failure
+    assert "| 2 | boom/x | **2** |" in out           # outside it: still bold
+
+
 # ---- 4. The readers --------------------------------------------------------
 
 
