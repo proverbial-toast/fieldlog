@@ -27,6 +27,17 @@ if TYPE_CHECKING:
 
 RECIPES_PATH = Path(__file__).parent / "recipes.yaml"
 
+# libyaml when the wheel was built with it, which is 8x the pure-Python parser
+# and the difference between a 12 ms and a 1.5 ms catalog load — paid by every
+# CLI invocation and every TUI reload. Same safe subset either way; a build
+# without libyaml falls back rather than failing.
+_YamlLoader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+def _parse_yaml(text: str):
+    """`yaml.safe_load` by another name, so the loader is chosen in one place."""
+    return yaml.load(text, Loader=_YamlLoader)
+
 
 def get_dropin_dir() -> Path:
     """Return user drop-in directory, respecting $XDG_CONFIG_HOME."""
@@ -42,10 +53,61 @@ DROPIN_DIR = get_dropin_dir()
 _SKIP_SUFFIXES = ("~", ".swp", ".swo", ".bak", ".orig", ".rej")
 
 
+# One listing per $PATH directory, reused across lookups. shutil.which stats
+# <binary> in every directory, so a catalog of 20 tools restats the whole of
+# $PATH 20 times; a miss is the expensive case, because it reaches the end.
+# That is 646 stat calls and 226 ms of a `fieldlog list` on a WSL $PATH, where
+# half the entries are Windows directories behind a 9p mount. Listing each
+# directory once instead answers every lookup from memory.
+_PATH_DIR_NAMES: Dict[str, frozenset] = {}
+
+
+def _names_in(directory: str) -> frozenset:
+    """Every filename in a $PATH directory; empty for one we cannot read."""
+    names = _PATH_DIR_NAMES.get(directory)
+    if names is None:
+        try:
+            with os.scandir(directory) as entries:
+                names = frozenset(entry.name for entry in entries)
+        except OSError:
+            names = frozenset()
+        _PATH_DIR_NAMES[directory] = names
+    return names
+
+
 @functools.lru_cache(maxsize=256)
 def is_tool_installed(bin_name: str) -> bool:
-    """Whether a binary exists in $PATH (cached; this runs on every keypress)."""
-    return shutil.which(bin_name) is not None
+    """Whether a binary exists in $PATH (cached; this runs on every keypress).
+
+    The directory listing is only a filter: a name that is present still has to
+    pass the same executable-and-not-a-directory test shutil.which applies, and
+    the directories are walked in $PATH order, so the answer is the one
+    shutil.which would give. A name with a separator in it is not a $PATH
+    lookup at all, and is handed straight back to shutil.which.
+    """
+    if not bin_name or os.path.dirname(bin_name):
+        return shutil.which(bin_name) is not None
+    seen = set()
+    for directory in os.environ.get("PATH", os.defpath).split(os.pathsep):
+        # A $PATH with the same directory six times over is normal; so is an
+        # empty entry, which shutil.which skips rather than reading as cwd.
+        if not directory or directory in seen:
+            continue
+        seen.add(directory)
+        if bin_name not in _names_in(directory):
+            continue
+        candidate = os.path.join(directory, bin_name)
+        if os.access(candidate, os.X_OK) and not os.path.isdir(candidate):
+            return True
+    return False
+
+
+def clear_tool_cache() -> None:
+    """Forget what is installed and where, so a reload sees a tool added since
+    boot. Both caches go together: a stale listing would outlive the verdict
+    built from it."""
+    _PATH_DIR_NAMES.clear()
+    is_tool_installed.cache_clear()
 
 
 # A scope value is interpolated into a shell command line (runner runs it via
@@ -358,7 +420,7 @@ class Catalog:
 
 def _read_file(path: Path) -> Tuple[List[dict], List[dict]]:
     """(tools, chains) from one yaml file. A list-form file is tools only."""
-    data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    data = _parse_yaml(path.read_text(encoding="utf-8", errors="replace")) or {}
     raw_chains: List[dict] = []
     if isinstance(data, list):
         raw = data

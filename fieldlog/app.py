@@ -39,6 +39,7 @@ from fieldlog.recipes import (
     chain_steps,
     display_path,
     is_blocked,
+    clear_tool_cache,
     is_tool_installed,
     load_catalog,
     run_succeeded,
@@ -1566,7 +1567,7 @@ class FieldlogApp(App):
             f"[recipes] reloading {display_path(RECIPES_PATH)} + "
             f"{display_path(recipes_mod.DROPIN_DIR)}/*.yaml + ./recipes.d/*.yaml …"
         )
-        is_tool_installed.cache_clear()
+        clear_tool_cache()
 
         old_keys = {f"{t['id']}/{p['id']}" for t in self._recipes for p in t.get("presets", [])}
         self.catalog = load_catalog()
