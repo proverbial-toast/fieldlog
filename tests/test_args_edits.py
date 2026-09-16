@@ -83,3 +83,24 @@ def test_an_edit_cannot_smuggle_an_unchecked_scope_value():
     blocked, reason = is_blocked(tool, preset, session, flags="-c 1 $TARGET")
     # Every distinct offender is named — here the `;` and the space after it.
     assert blocked and "target has unsafe characters (; )" in reason
+
+
+@pytest.mark.asyncio
+async def test_the_tui_will_not_run_an_edit_its_scope_cannot_fill(tmp_workspace: Path):
+    from fieldlog.app import FieldlogApp
+
+    app = FieldlogApp(TargetSession(target="10.0.0.1", workspace_dir=tmp_workspace))
+    async with app.run_test():
+        tool = {"id": "true", "bin": "true", "presets": [{"id": "p", "flags": "-c 1"}]}
+        app._recipes = app.catalog.tools = [tool]
+        app.selected_chain_id = None
+        app.selected_tool_id, app.selected_preset_id = "true", "p"
+
+        preset = tool["presets"][0]
+        assert app.is_blocked(tool, preset)[0] is False
+
+        app.flag_edits["true/p"] = "-c 1 $HOST"          # no dns name in scope
+        assert app.is_blocked(tool, preset)[0] is True
+
+        app.action_run_task()                            # gate holds: no tab opens
+        assert [t.id for t in app.tabs] == ["system"]

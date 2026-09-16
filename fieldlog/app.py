@@ -1,23 +1,42 @@
-"""fieldlog main Textual app & layout.
+"""fieldlog main Textual app: composition, lifecycle and key bindings.
 
 Two columns: RECIPES over VARIANTS on the left, RESULTS on the right, with a
 full-width ARGS band beneath and an optional hotkey bar under that. Scope is
 two independent bindings ($TARGET / $HOST); artifacts live in a per-run
 directory captured onto the job at spawn.
+
+Each pane's behaviour lives in its own mixin, so this file holds the widget
+tree and the wiring rather than all of them at once:
+
+    tui/catalog.py    CatalogMixin       lookups, blocked verdicts, reload, manager
+    tui/tree.py       RecipeTreeMixin    the flattened RECIPES list and its cursor
+    tui/variants.py   VariantsPaneMixin  the VARIANTS pane
+    tui/args.py       ArgsBandMixin      substitution, token view, raw editor
+    tui/jobs.py       JobsMixin          tabs, status band, stdin bar, the workers
+    tui/layout.py     LayoutMixin        split / stacked, pane focus, hotkey bar
+
+They are mixins rather than widgets on purpose: every one of them reads and
+writes the app's own state and queries its widget tree, so `self` has to stay
+the app. The split buys navigability, not isolation — see the review notes on
+a repaint model, which is what isolation would actually need.
+
+TargetModal and the interface helpers stay here: the interface tests reach them
+through this module (`monkeypatch.setattr(app_mod, "get_interface_ip", ...)`),
+which only works while the code that calls them resolves them here too.
 """
 
 from __future__ import annotations
 
-import asyncio
-import re
 import socket
 import time
+from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple
 
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches, WrongType
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -30,75 +49,50 @@ from textual.widgets import (
 )
 
 from fieldlog import __version__
-from fieldlog import recipes as recipes_mod
 from fieldlog.recipes import (
     Catalog,
     RECIPES_PATH,
-    chain_blocked,
-    chain_matches,
-    chain_steps,
     display_path,
-    is_blocked,
-    clear_tool_cache,
     is_tool_installed,
     load_catalog,
-    run_succeeded,
-    search,
-    steps_label,
-    writes_outdir,
 )
-from fieldlog.chain import run_chain
-from fieldlog.launch import LaunchPlan, plan_launch
-from fieldlog.runner import HIDDEN_REPLY, interrupt_job, kill_job, loggable_reply, run_job, send_stdin
 from fieldlog.state import (
     ActiveJob,
     TargetSession,
     get_interface_ip,
     load_pinned_recent,
-    resolve_flags,
-    run_stamp,
     save_last_scope,
-    save_pinned_recent,
 )
 from fieldlog.tui.helpers import (
-    arg_groups,
-    copy_text_to_clipboard,
     parse_iface_field,
     truncate_right,
 )
+from fieldlog.tui.args import ArgsBandMixin
+from fieldlog.tui.catalog import CatalogMixin
+from fieldlog.tui.jobs import JobsMixin
+from fieldlog.tui.layout import LayoutMixin
+from fieldlog.tui.tree import RecipeTreeMixin
+from fieldlog.tui.variants import VariantsPaneMixin
 from fieldlog.tui.models import TabDescriptor, TreeRow
 from fieldlog.tui.modals import (
-    CloseJobModal,
     HelpModal,
     PaletteModal,
     QuitConfirm,
-    RecipeManagerModal,
 )
 from fieldlog.tui.theme import (
     ACCENT,
-    ARGS_BAND_MIN,
-    BG_BASE,
     DIM,
     ERR,
     FAINT,
     FG,
-    GUTTER,
     HOTKEYS,
-    LEFT_COLUMN_CHROME,
     MUTED,
     SOFT,
-    STACKED_BREAKPOINT,
-    UNFOCUSED,
-    VARIANT_ROWS_VISIBLE,
     WARN,
 )
 from fieldlog.tui.widgets import (
     ArgsTextArea,
-    RecipeRowWidget,
-    StdinChip,
     StdinInput,
-    TabItem,
-    VariantRowWidget,
 )
 
 VERSION = __version__
@@ -312,7 +306,17 @@ class TargetModal(ModalScreen[bool]):
 
 
 # ---- App -------------------------------------------------------------------
-class FieldlogApp(App):
+class FieldlogApp(
+    # No two mixins define the same name, so this order carries no meaning
+    # beyond reading order.
+    CatalogMixin,
+    RecipeTreeMixin,
+    VariantsPaneMixin,
+    ArgsBandMixin,
+    JobsMixin,
+    LayoutMixin,
+    App,
+):
     DOUBLE_TAP_QUIT_TIMEOUT: float = 2.0
     CSS_PATH = "app.tcss"
     # Nothing is focused at rest: the filter is reached with `/`, so every
@@ -408,82 +412,17 @@ class FieldlogApp(App):
         self._start = time.time()
         self._stdin_dismissed: Dict[str, Optional[float]] = {}
 
-    # ---- Catalog ---------------------------------------------------------
-    @property
-    def recipes(self) -> List[dict]:
-        return self._recipes
-
-    def _total_variants(self) -> int:
-        return sum(len(t.get("presets", [])) for t in self.recipes)
-
-    def get_tool(self, tool_id: str) -> Optional[dict]:
-        return next((t for t in self.recipes if t["id"] == tool_id), None)
-
-    def get_preset(self, tool: dict, preset_id: str) -> dict:
-        presets = tool.get("presets", [])
-        return next(
-            (p for p in presets if p["id"] == preset_id),
-            presets[0] if presets else {"id": "default", "name": "default", "flags": ""},
-        )
-
-    @property
-    def chains(self) -> List[dict]:
-        return self.catalog.chains
-
-    def get_chain(self, chain_id: str) -> Optional[dict]:
-        return next((c for c in self.chains if c["id"] == chain_id), None)
-
-    def selected_chain(self) -> Optional[dict]:
-        return self.get_chain(self.selected_chain_id) if self.selected_chain_id else None
-
-    def is_blocked(self, tool: dict, preset: dict) -> Tuple[bool, str]:
-        """(blocked, reason). Missing binary and missing dns name are
-        distinct reasons and must never be reported as each other."""
-        return is_blocked(tool, preset, self.session)
-
-    def blocked_flag(self, tool: dict, preset: dict) -> bool:
-        return self.is_blocked(tool, preset)[0]
-
-    def chain_blocked_flag(self, chain: dict) -> bool:
-        return chain_blocked(self.catalog, chain, self.session)[0]
-
-    def _chain_row(self, chain: dict) -> TreeRow:
-        return TreeRow(
-            "chain", label=chain.get("name", chain["id"]), bin=chain["id"],
-            meta=steps_label(chain),
-            blocked=self.chain_blocked_flag(chain),
-        )
-
-    # ---- Substitution ----------------------------------------------------
-    def resolve_flags(self, flags: str, out_dir: Optional[str] = None) -> str:
-        """Straight string replacement of the bindings, every occurrence."""
-        return resolve_flags(self.session, flags, out_dir=out_dir if out_dir is not None else self.pending_out_dir())
-
-    def pending_out_dir(self) -> str:
-        """$OUTDIR as it would resolve for a job started now (preview only)."""
-        return self.session.log_dir() + run_stamp()
-
-    def bound_values(self) -> List[str]:
-        """Substituted values that should render amber in the token view."""
-        s = self.session
-        root = (s.artifact_root or "").strip().rstrip("/")
-        return [v for v in (s.target, s.dns_name, s.interface, s.effective_lhost(), root) if v]
 
     # ---- Logging ---------------------------------------------------------
-    def _log_width(self) -> Optional[int]:
-        """Width a hidden RichLog should wrap to.
 
-        A RichLog inside a ContentSwitcher has a zero-width content region while
-        it is not the visible child, so an unwidthed write collapses to
-        `min_width`. Borrow the switcher's width instead.
-        """
-        try:
-            return self.query_one("#tab-content", ContentSwitcher).content_size.width or None
-        except Exception:
-            return None
+    # The harness transcript is kept for [Ctrl+Shift+C]; the RichLog does its own
+    # scrollback. A session left open for a day should not grow a list forever.
+    SYSTEM_LOG_MAX = 5000
 
     def write_system_log(self, text: str, style: str = DIM) -> None:
         self.system_log_lines.append(text)
+        if len(self.system_log_lines) > self.SYSTEM_LOG_MAX:
+            del self.system_log_lines[: len(self.system_log_lines) - self.SYSTEM_LOG_MAX]
         try:
             log = self.query_one("#log-system", RichLog)
             width = log.scrollable_content_region.width or self._log_width()
@@ -495,6 +434,23 @@ class FieldlogApp(App):
                 self._refresh_status_band()
             except Exception:
                 pass
+
+    @contextmanager
+    def _repaint(self, what: str):
+        """Keep one pane's repaint from taking the harness down — but not quietly.
+
+        A widget that is not there is ordinary: a pane not mounted yet, a log
+        removed with its tab, a query run before the first layout. Anything else
+        is a bug, and a repaint that silently does nothing is the one that costs
+        an operator a scan — the ARGS band would go on showing the previous
+        recipe's flags with Enter still armed.
+        """
+        try:
+            yield
+        except (NoMatches, WrongType):
+            pass
+        except Exception as exc:  # noqa: BLE001 — degrade the pane, keep the app
+            self.write_system_log(f"[ui] {what} failed · {type(exc).__name__}: {exc}", style=ERR)
 
     def _get_clock_str(self) -> str:
         elapsed = int(time.time() - self._start)
@@ -515,7 +471,7 @@ class FieldlogApp(App):
         if self.is_running:
             self._refresh_variants()
 
-    # ---- Layout ----------------------------------------------------------
+    # ---- Composition -----------------------------------------------------
     def compose(self) -> ComposeResult:
         with Horizontal(id="topbar"):
             yield Static(id="cell-target", classes="cell")
@@ -698,629 +654,6 @@ class FieldlogApp(App):
         except Exception:
             pass
 
-    # ---- RECIPES tree (flattened) ----------------------------------------
-    def visible_rows(self) -> List[TreeRow]:
-        """Pinned / Recent / All Recipes — or ranked results while filtering.
-
-        `All Recipes` is one row per *tool*, not per variant.
-        """
-        q = self.filter_text.strip().lower()
-        if q:
-            hits = search(self.recipes, q, self.blocked_flag, self.hide_missing, limit=40)
-            rows = [TreeRow("header", label="Results")]
-            for t, p, blocked in hits:
-                rows.append(TreeRow(
-                    "entry", label=p.get("name", p["id"]), bin=t.get("bin", t["id"]),
-                    tool_id=t["id"], preset_id=p["id"], blocked=blocked,
-                ))
-            rows.extend(self._chain_rows(q))
-            return rows
-
-        rows = [TreeRow("header", label="Pinned")]
-        rows.extend(self._entry_rows(self.pinned))
-        rows.append(TreeRow("header", label="Recent"))
-        rows.extend(self._entry_rows(self.recent))
-        rows.append(TreeRow("header", label="All Recipes"))
-        for t in sorted(
-            self.recipes,
-            key=lambda t: (0 if is_tool_installed(t.get("bin", "")) else 1, t.get("bin", t["id"])),
-        ):
-            ok = is_tool_installed(t.get("bin", ""))
-            if self.hide_missing and not ok:
-                continue        # `[!] all` is what reveals the n/a tools
-            rows.append(TreeRow(
-                "tool", label="", bin=t.get("bin", t["id"]), tool_id=t["id"],
-                meta=f"{len(t.get('presets', []))}v" if ok else "n/a", blocked=not ok,
-            ))
-        chain_rows = self._chain_rows("")
-        if chain_rows:
-            rows.append(TreeRow("header", label="Chains"))
-            rows.extend(chain_rows)
-        return rows
-
-    def _chain_rows(self, q: str) -> List[TreeRow]:
-        """Chain rows matching `q`, hidden while blocked if runnable-only is on."""
-        rows = []
-        for chain in self.chains:
-            if q and not chain_matches(chain, q):
-                continue
-            row = self._chain_row(chain)
-            if self.hide_missing and row.blocked:
-                continue
-            rows.append(row)
-        return rows
-
-    def _entry_rows(self, keys: List[str]) -> List[TreeRow]:
-        out = []
-        for key in keys:
-            tool_id, _, preset_id = key.partition("/")
-            if tool_id == "chain":
-                chain = self.get_chain(preset_id)
-                if chain is None:
-                    continue
-                row = self._chain_row(chain)
-                if self.hide_missing and row.blocked:
-                    continue
-                out.append(row)
-                continue
-            t = self.get_tool(tool_id)
-            if not t:
-                continue
-            p = self.get_preset(t, preset_id)
-            blocked = self.blocked_flag(t, p)
-            if self.hide_missing and blocked:
-                continue
-            out.append(TreeRow(
-                "entry", label=p.get("name", p["id"]), bin=t.get("bin", t["id"]),
-                tool_id=t["id"], preset_id=p["id"], blocked=blocked,
-            ))
-        return out
-
-    def _row_text(self, row: TreeRow, selected: bool, width: int = 34) -> Text:
-        if row.kind == "header":
-            return Text(f"  {row.label.upper()}", style=f"bold {MUTED}")
-        if selected and not row.blocked:
-            bin_style, label_style, meta_style = f"bold {BG_BASE} on {ACCENT}", f"{BG_BASE} on {ACCENT}", f"{BG_BASE} on {ACCENT}"
-        elif selected:
-            bin_style, label_style, meta_style = f"bold {DIM} on #161c1b", f"{UNFOCUSED} on #161c1b", f"{MUTED} on #161c1b"
-        elif row.blocked:
-            bin_style, label_style, meta_style = "#4a5754", UNFOCUSED, MUTED
-        else:
-            bin_style, label_style, meta_style = f"bold {FG}", DIM, MUTED
-
-        label = truncate_right(row.label, width)
-        text = Text.assemble(("  ", bin_style), (row.bin, bin_style), (" ", label_style), (label, label_style))
-        if row.meta:
-            text.append("  " + row.meta, style=meta_style)
-        return text
-
-    def _rebuild_tree(self) -> None:
-        try:
-            tree = self.query_one("#recipe-tree", VerticalScroll)
-        except Exception:
-            return
-        self._rows = self.visible_rows()
-        if self.cursor >= len(self._rows) or (
-            self._rows and self._rows[min(self.cursor, len(self._rows) - 1)].kind == "header"
-        ):
-            self.cursor = self._first_selectable()
-        tree.remove_children()
-        widgets = [
-            RecipeRowWidget(i, self._row_text(r, i == self.cursor),
-                            classes="recipe-row-header" if r.kind == "header" else "recipe-row")
-            for i, r in enumerate(self._rows)
-        ]
-        if widgets:
-            tree.mount_all(widgets)
-
-    def _paint_rows(self) -> None:
-        try:
-            tree = self.query_one("#recipe-tree", VerticalScroll)
-        except Exception:
-            return
-        for widget in tree.query(RecipeRowWidget):
-            if widget.index < len(self._rows):
-                widget.update(self._row_text(self._rows[widget.index], widget.index == self.cursor))
-                if widget.index == self.cursor:
-                    widget.scroll_visible(animate=False)
-
-    def _first_selectable(self) -> int:
-        return next((i for i, r in enumerate(self._rows) if r.kind != "header"), 0)
-
-    def move_cursor(self, delta: int) -> None:
-        if not self._rows:
-            return
-        i = self.cursor
-        for _ in range(len(self._rows)):
-            nxt = i + delta
-            if nxt < 0 or nxt >= len(self._rows):
-                break
-            i = nxt
-            if self._rows[i].kind != "header":
-                break
-        if self._rows[i].kind == "header":
-            return
-        self.cursor = i
-        self._select_row(self._rows[i])
-        self._paint_rows()
-
-    def _select_row(self, row: TreeRow) -> None:
-        """A tool row selects that tool's first variant; an entry row is exact.
-        A chain row selects the chain, and any other row clears it."""
-        if row.kind == "chain":
-            self.selected_chain_id = row.bin
-        elif row.kind == "tool":
-            self.selected_chain_id = None
-            tool = self.get_tool(row.tool_id)
-            if tool and tool.get("presets"):
-                self.selected_tool_id = row.tool_id
-                self.selected_preset_id = tool["presets"][0]["id"]
-        elif row.kind == "entry":
-            self.selected_chain_id = None
-            self.selected_tool_id = row.tool_id
-            self.selected_preset_id = row.preset_id
-        self._refresh_variants()
-        self._refresh_args_band()
-
-    def tree_row_clicked(self, index: int) -> None:
-        """Clicking selects and moves focus — it never runs."""
-        if not (0 <= index < len(self._rows)) or self._rows[index].kind == "header":
-            return
-        self.cursor = index
-        self._select_row(self._rows[index])
-        self._paint_rows()
-        self._focus_variants()
-
-    def variant_row_clicked(self, preset_id: str) -> None:
-        self.selected_preset_id = preset_id
-        self.kbd_pane = "variants"
-        self._refresh_variants()
-        self._refresh_args_band()
-        self._paint_pane_focus()
-
-    def select_chain(self, chain_id: str) -> None:
-        tool = self.get_chain(chain_id)
-        if tool is None:
-            return
-        self.selected_chain_id = chain_id
-        self._rebuild_tree()
-        self._refresh_variants()
-        self._refresh_args_band()
-
-    def select_tool(self, tool_id: str) -> None:
-        tool = self.get_tool(tool_id)
-        if not tool:
-            return
-        self.selected_chain_id = None
-        self.selected_tool_id = tool_id
-        if tool.get("presets"):
-            self.selected_preset_id = tool["presets"][0]["id"]
-        self._rebuild_tree()
-        self._refresh_variants()
-        self._refresh_args_band()
-
-    # ---- VARIANTS pane ---------------------------------------------------
-    def _refresh_variants(self) -> None:
-        try:
-            var_list = self.query_one("#variant-list", Vertical)
-        except Exception:
-            return
-        chain = self.selected_chain()
-        if chain is not None:
-            self._refresh_chain_variants(var_list, chain)
-            return
-        tool = self.get_tool(self.selected_tool_id)
-        if not tool:
-            if not self.recipes:
-                return
-            tool = self.recipes[0]
-            self.selected_tool_id = tool["id"]
-        preset = self.get_preset(tool, self.selected_preset_id)
-        key = f"{tool['id']}/{preset['id']}"
-        blocked, _ = self.is_blocked(tool, preset)
-
-        try:
-            self.query_one("#variants-bin", Static).update(
-                Text(tool.get("bin", tool["id"]), style=f"bold {FG}")
-            )
-            self.query_one("#variants-variant", Static).update(
-                Text(f"variant {preset['id']}", style=DIM)
-            )
-
-            var_list.remove_children()
-            try:
-                # minus the row's border-left and padding-left, and the
-                # scrollbar column — which only appears once the list
-                # overflows, i.e. after this width would have been measured.
-                avail = self.query_one("#variants-scroll", VerticalScroll).size.width - 3
-            except Exception:
-                avail = 37
-            avail = max(24, avail)
-            rows = []
-            for i, p in enumerate(tool.get("presets", [])):
-                is_active = (p["id"] == preset["id"])
-                num = str(i + 1) if i < 9 else ("0" if i == 9 else "·")
-                # Cap the label so a wordy variant name cannot squeeze out the
-                # argument string, which is what this pane exists to show.
-                label = truncate_right(p.get("name", p["id"]), max(10, avail * 3 // 5))
-                text = Text.assemble((f"{num} ", MUTED), (label, ACCENT if is_active else SOFT))
-                if p.get("src"):
-                    text.append(f"  {p['src']}", style=ACCENT)
-                if self._writes_outdir(p):
-                    text.append("  ⇩", style=WARN)
-                # The argument string itself — the reason this column is wide.
-                flags = " ".join(str(p.get("flags", "")).split())
-                budget = avail - len(text.plain) - 2       # 2 for the separator
-                if flags and budget >= 4:
-                    text.append("  " + truncate_right(flags, budget), style=DIM)
-                row = VariantRowWidget(
-                    p["id"], text, classes="variant-row variant-active" if is_active else "variant-row"
-                )
-                if self._writes_outdir(p):
-                    row.tooltip = "writes its own file into $OUTDIR"
-                elif p.get("src"):
-                    row.tooltip = "from a drop-in file"
-                rows.append(row)
-            if rows:
-                var_list.mount_all(rows)
-
-            btn_run = self.query_one("#btn-run", Static)
-            btn_run.update("Not runnable" if blocked else "[Enter] Run")
-            btn_run.set_class(blocked, "-disabled")
-            self.query_one("#btn-pin", Static).update(
-                "[P] Unpin" if key in self.pinned else "[P] Pin"
-            )
-            self.query_one("#variants-crumb", Static).update(self._variants_crumb(tool, preset))
-        except Exception:
-            pass
-
-    def _refresh_chain_variants(self, var_list: Vertical, chain: dict) -> None:
-        """The steps, numbered and read-only: a chain's order lives in its yaml.
-        Plain Statics, not VariantRowWidgets — a click here selects nothing."""
-        blocked, _reason = chain_blocked(self.catalog, chain, self.session)
-        key = f"chain/{chain['id']}"
-        try:
-            self.query_one("#variants-bin", Static).update(Text("chain", style=f"bold {FG}"))
-            self.query_one("#variants-variant", Static).update(Text(chain["id"], style=DIM))
-
-            var_list.remove_children()
-            rows = []
-            for index, (tool, preset, keep_going) in enumerate(chain_steps(self.catalog, chain), start=1):
-                step_blocked = self.blocked_flag(tool, preset)
-                label = f"{tool['id']}/{preset['id']}" + ("?" if keep_going else "")
-                text = Text.assemble(
-                    (f"{index} ", MUTED),
-                    (label, UNFOCUSED if step_blocked else SOFT),
-                )
-                flags = " ".join(str(preset.get("flags", "")).split())
-                if flags:
-                    text.append("  " + flags, style=MUTED if step_blocked else DIM)
-                rows.append(Static(text, classes="variant-row"))
-            if rows:
-                var_list.mount_all(rows)
-
-            btn_run = self.query_one("#btn-run", Static)
-            btn_run.update("Not runnable" if blocked else "[Enter] Run chain")
-            btn_run.set_class(blocked, "-disabled")
-            self.query_one("#btn-pin", Static).update(
-                "[P] Unpin" if key in self.pinned else "[P] Pin"
-            )
-            self.query_one("#variants-crumb", Static).update(
-                "" if self._current_layout != "stacked" else f"chain · {chain['id']}"
-            )
-        except Exception:
-            pass
-
-    def _variants_crumb(self, tool: dict, preset: dict) -> str:
-        if self._current_layout != "stacked":
-            return ""
-        if self.stacked_pane == "task":
-            return "esc · back to recipes"
-        return f"{tool.get('bin', tool['id'])} · {preset.get('name', preset['id'])}"
-
-    # ---- ARGS band -------------------------------------------------------
-    def current_flags(self) -> Tuple[dict, dict, str, str]:
-        """(tool, preset, key, template). The template is unresolved, edit or
-        not: baking today's scope into an edit is how a job ends up aimed at
-        the target the operator has since moved off. Use `resolve_flags` for a
-        preview.
-
-        With a chain selected there is no single recipe to edit: the key is
-        `chain/<id>` (so pins work) and tool, preset and template are empty.
-        """
-        if self.selected_chain_id:
-            return {}, {}, f"chain/{self.selected_chain_id}", ""
-        tool = self.get_tool(self.selected_tool_id) or (self.recipes[0] if self.recipes else {})
-        preset = self.get_preset(tool, self.selected_preset_id) if tool else {}
-        key = f"{tool.get('id', '')}/{preset.get('id', '')}"
-        return tool, preset, key, self.flag_edits.get(key, preset.get("flags", ""))
-
-    def _refresh_args_band(self) -> None:
-        try:
-            tokens_wrap = self.query_one("#args-tokens-wrap", Vertical)
-        except Exception:
-            return
-        chain = self.selected_chain()
-        if chain is not None:
-            self._refresh_chain_args_band(tokens_wrap, chain)
-            return
-        tool, preset, key, template = self.current_flags()
-        if not tool:
-            return
-        # Tokens show the command as it would run; the raw editor holds the template.
-        resolved = self.resolve_flags(template)
-        is_dirty = key in self.flag_edits
-
-        try:
-            self.query_one("#args-header-title", Static).update("ARGS *" if is_dirty else "ARGS")
-            btn_reset = self.query_one("#args-btn-reset", Static)
-            btn_reset.set_class(is_dirty, "-dirty")
-            btn_reset.styles.color = WARN if is_dirty else MUTED
-            self.query_one("#args-btn-mode", Static).update(
-                "[E] token view" if self.args_raw_mode else "[E] edit raw"
-            )
-            self.query_one("#args-bin-label", Static).update(
-                Text.assemble(("$ ", ACCENT), (tool.get("bin", tool["id"]), f"bold {FG}"))
-            )
-
-            tokens_wrap.remove_children()
-            bound = self.bound_values()
-            max_row_width = 70 if self._current_layout == "split" else 40
-            current: List[Static] = []
-            width = 0
-
-            def flush() -> None:
-                nonlocal current, width
-                if current:
-                    row = Horizontal(classes="arg-pairs-row")
-                    tokens_wrap.mount(row)
-                    row.mount_all(current)
-                    current, width = [], 0
-
-            for g in arg_groups(resolved)["groups"]:
-                flag, value = g["flag"], g["value"]
-                is_bound = bool(value) and any(v in value for v in bound)
-                if flag and value:
-                    text = Text.assemble((flag + " ", ACCENT), (value, WARN if is_bound else SOFT))
-                elif flag:
-                    text = Text(flag, style=ACCENT)
-                else:
-                    text = Text(value, style=WARN if is_bound else FG)
-
-                group_len = len(flag) + (len(value) + 1 if value else 0)
-                if group_len > 36:
-                    flush()
-                    row = Horizontal(classes="arg-pairs-row-wide")
-                    tokens_wrap.mount(row)
-                    row.mount(Static(text, classes="arg-pair arg-pair-wide"))
-                    continue
-                if width + group_len + 4 > max_row_width and current:
-                    flush()
-                current.append(Static(text, classes="arg-pair"))
-                width += group_len + 4
-            flush()
-
-            raw_area = self.query_one("#args-raw-area", ArgsTextArea)
-            if raw_area.text != template:
-                raw_area.text = template
-        except Exception:
-            pass
-
-    def _refresh_chain_args_band(self, tokens_wrap: Vertical, chain: dict) -> None:
-        """`$ chain reach` and its steps as tokens. There is nothing to edit
-        here: a step's own args edit still applies when the chain runs it."""
-        try:
-            self.query_one("#args-header-title", Static).update("ARGS")
-            btn_reset = self.query_one("#args-btn-reset", Static)
-            btn_reset.set_class(False, "-dirty")
-            btn_reset.styles.color = MUTED
-            self.query_one("#args-btn-mode", Static).update("[E] edit raw")
-            self.query_one("#args-bin-label", Static).update(
-                Text.assemble(("$ ", ACCENT), ("chain ", f"bold {FG}"), (chain["id"], f"bold {ACCENT}"))
-            )
-            tokens_wrap.remove_children()
-            row = Horizontal(classes="arg-pairs-row")
-            tokens_wrap.mount(row)
-            row.mount_all([
-                Static(Text(step["recipe"] + ("?" if step.get("continue") else ""), style=SOFT),
-                       classes="arg-pair")
-                for step in chain.get("steps", [])
-            ])
-        except Exception:
-            pass
-
-    # ---- RESULTS chrome --------------------------------------------------
-    def active_tab(self) -> Optional[TabDescriptor]:
-        return next((t for t in self.tabs if t.id == self.active_tab_id), None)
-
-    def active_job(self) -> Optional[ActiveJob]:
-        tab = self.active_tab()
-        return self.jobs.get(tab.job_id) if tab and tab.job_id else None
-
-    def _refresh_results_chrome(self) -> None:
-        self._refresh_status_band()
-        self._refresh_pinned_block()
-        self._refresh_stdin_bar()
-
-    def _status_items(self) -> List[Tuple[str, str, str]]:
-        tab = self.active_tab()
-        if tab is None or tab.id == "system":
-            return [
-                ("state", "harness", ACCENT),
-                ("recipes", f"rev {self.reload_revision}", SOFT),
-                ("lines", str(len(self.system_log_lines)), SOFT),
-            ]
-        job = self.jobs.get(tab.job_id or "")
-        if job is None:
-            return [("state", "gone", FAINT)]
-        finished = not job.running
-        if finished:
-            state, state_color = "finished", ACCENT
-        elif job.awaiting:
-            state, state_color = "awaiting input", WARN
-        else:
-            state, state_color = "running", WARN
-        # EXIT is never fabricated: an unrecorded code is —, never 0.
-        if job.exit_code is None:
-            exit_val, exit_color = "—", FAINT
-        else:
-            exit_val = str(job.exit_code)
-            exit_color = ACCENT if job.exit_code == 0 else ERR
-        items = [
-            ("state", state, state_color),
-            ("exit", exit_val, exit_color),
-            ("elapsed", job.elapsed_str(), SOFT),
-            ("lines", str(job.lines_count), SOFT),
-            ("bytes", f"{job.bytes_count / 1024:.1f} KiB", SOFT),
-        ]
-        # What the preset's `parse:` rule made of the log. The band is the only
-        # place the TUI can say it: a tab strip has room for a label, not a finding.
-        if job.summary:
-            items.append(("summary", truncate_right(job.summary, 60), ACCENT))
-        return items
-
-    def _refresh_status_band(self) -> None:
-        try:
-            box = self.query_one("#status-items", Horizontal)
-        except Exception:
-            return
-        items = self._status_items()
-        # Must not wrap to a second row: drop items rather than wrap.
-        avail = max(20, self.size.width - 26)
-        budget, keep = 0, []
-        for label, value, color in items:
-            cost = max(len(label), len(value)) + 4
-            if budget + cost > avail:
-                break
-            budget += cost
-            keep.append((label, value, color))
-        box.remove_children()
-        cells = []
-        for label, value, color in keep:
-            cells.append(Static(
-                Text.assemble((label.upper() + "\n", FAINT), (value, color)),
-                classes="status-item",
-            ))
-        if cells:
-            box.mount_all(cells)
-
-    def _refresh_pinned_block(self) -> None:
-        try:
-            cmd_widget = self.query_one("#pinned-cmd", Static)
-            art_widget = self.query_one("#pinned-art", Static)
-        except Exception:
-            return
-        tab = self.active_tab()
-        if tab is None or tab.id == "system":
-            cmd_widget.update(Text(f"fieldlog {VERSION} · harness event log", style=FG))
-            art_widget.update(Text("harness log · not written to disk", style=DIM))
-            art_widget.tooltip = "harness log · not written to disk"
-            return
-        cmd_widget.update(Text(tab.cmd or "—", style=FG))
-        width = max(20, self.size.width - 30)
-        art_widget.update(Text(truncate_right(tab.artifact, width), style=DIM))
-        art_widget.tooltip = tab.artifact
-
-    def _refresh_stdin_bar(self) -> None:
-        try:
-            bar = self.query_one("#stdin-bar", Vertical)
-        except Exception:
-            return
-        job = self.active_job()
-        tab = self.active_tab()
-        show = bool(job and job.awaiting and tab and tab.id != "system")
-        if not show:
-            bar.add_class("hidden")
-            return
-        bar.remove_class("hidden")
-        prompt = job.await_prompt or ""
-        self.query_one("#stdin-prompt-text", Static).update(Text(prompt, style=FG))
-        waited = max(1, int(time.time() - (job.await_since or time.time())))
-        self.query_one("#stdin-waiting", Static).update(Text(f"blocked {waited}s", style=DIM))
-
-        replies = self._quick_replies(prompt)
-        if replies != getattr(self, "_stdin_replies", None):
-            chips = self.query_one("#stdin-chips", Horizontal)
-            chips.remove_children()
-            if replies:
-                chips.mount_all([StdinChip(r) for r in replies])
-        self._stdin_replies = replies
-
-        # The one place automatic focus-stealing is correct: the process waits.
-        if self._stdin_dismissed.get(job.id) != job.await_since:
-            field = self.query_one("#stdin-input", StdinInput)
-            if self.focused is not field:
-                field.focus()
-
-    @staticmethod
-    def _quick_replies(prompt: str) -> List[str]:
-        """Chips from an unambiguous bracketed hint (`[y/N]`), else nothing."""
-        m = re.search(r"\[([A-Za-z](?:/[A-Za-z])+)\]\s*$", prompt.strip())
-        if not m:
-            return []
-        parts = m.group(1).split("/")
-        return parts if 2 <= len(parts) <= 4 else []
-
-    def dismiss_stdin_focus(self) -> None:
-        """Esc in the stdin field: blur, keys return to the harness, job stays blocked."""
-        job = self.active_job()
-        if job:
-            self._stdin_dismissed[job.id] = job.await_since
-        self.set_focus(None)
-
-    def send_stdin_reply(self, text: Optional[str] = None) -> None:
-        job = self.active_job()
-        if not job or not job.awaiting:
-            return
-        field = self.query_one("#stdin-input", StdinInput)
-        reply = field.value if text is None else text
-        prompt = job.await_prompt or ""
-        # An empty line is a legitimate reply only when a default is advertised.
-        if not reply.strip() and not self._quick_replies(prompt):
-            return
-        if send_stdin(job, reply):
-            field.value = ""
-            shown = loggable_reply(prompt, reply)
-            said = f'"{shown}"' if shown is not None else HIDDEN_REPLY
-            self.write_system_log(f"[runner] stdin → {said} · resuming")
-            self._refresh_stdin_bar()
-            self._refresh_status_band()
-
-    # ---- Tab strip -------------------------------------------------------
-    def _refresh_tab_strip(self) -> None:
-        try:
-            tabs_list = self.query_one("#tabs-list", Horizontal)
-        except Exception:
-            return
-        existing = {item.tab.id: item for item in tabs_list.query(TabItem)}
-        current_ids = [t.id for t in self.tabs]
-        for tid, item in list(existing.items()):
-            if tid not in current_ids:
-                item.remove()
-                del existing[tid]
-
-        for tab in self.tabs:
-            is_active = (tab.id == self.active_tab_id)
-            job = self.jobs.get(tab.job_id or "")
-            awaiting = bool(job and job.awaiting)
-            if tab.id in existing:
-                item = existing[tab.id]
-                item.set_class(is_active, "tab-item-active")
-                item.set_class(not is_active, "tab-item")
-                item.update_tab(tab, is_active, awaiting)
-            else:
-                tabs_list.mount(TabItem(tab, is_active=is_active, awaiting=awaiting))
-
-        try:
-            finished = sum(1 for t in self.tabs if t.id != "system" and t.status != "active")
-            btn = self.query_one("#btn-close-finished", Static)
-            if finished >= 2:
-                btn.update(f"× close {finished} finished  [⇧W]")
-                btn.remove_class("hidden")
-            else:
-                btn.add_class("hidden")
-        except Exception:
-            pass
 
     # ---- Events ----------------------------------------------------------
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -1345,14 +678,6 @@ class FieldlogApp(App):
                 self.flag_edits[key] = event.text_area.text
                 self._refresh_args_band()
 
-    @property
-    def args_dirty(self) -> bool:
-        _, _, key, _ = self.current_flags()
-        return key in self.flag_edits
-
-    @property
-    def active_jobs_count(self) -> int:
-        return sum(1 for j in self.jobs.values() if j.running)
 
     def on_click(self, event) -> None:
         target = getattr(event, "widget", None) or getattr(event, "target", None)
@@ -1395,396 +720,6 @@ class FieldlogApp(App):
                 self.action_toggle_layout, self.action_help,
             ][idx]()
 
-    # ---- Focus -----------------------------------------------------------
-    def focus_pane(self) -> str:
-        if self._current_layout == "stacked":
-            return "variants" if self.stacked_pane == "task" else "recipes"
-        return self.kbd_pane
-
-    def _focus_recipes(self) -> None:
-        self.kbd_pane = "recipes"
-        self.stacked_pane = "recipes"
-        self._apply_stacked_classes()
-        self._paint_pane_focus()
-
-    def _focus_variants(self) -> None:
-        self.kbd_pane = "variants"
-        if self._current_layout == "stacked":
-            self.stacked_pane = "task"
-            self._apply_stacked_classes()
-        self._paint_pane_focus()
-
-    def _paint_pane_focus(self) -> None:
-        """The focused pane gets an accent rule on its header and a brighter label."""
-        try:
-            recipes_pane = self.query_one("#recipes-pane")
-            variants_pane = self.query_one("#variants-pane")
-            r_title = self.query_one("#recipes-title", Static)
-            v_title = self.query_one("#variants-title", Static)
-        except Exception:
-            return
-        on_recipes = self.focus_pane() == "recipes"
-        recipes_pane.set_class(on_recipes, "-focused")
-        variants_pane.set_class(not on_recipes, "-focused")
-        stacked = self._current_layout == "stacked"
-        r_title.update("RECIPES ›" if stacked and not on_recipes else "RECIPES")
-        r_title.styles.color = FG if on_recipes else UNFOCUSED
-        v_title.update("VARIANTS")
-        v_title.styles.color = FG if not on_recipes else UNFOCUSED
-        if self.selected_chain_id:
-            return          # the chain branch of _refresh_variants owns the crumb
-        tool = self.get_tool(self.selected_tool_id)
-        if tool:
-            preset = self.get_preset(tool, self.selected_preset_id)
-            self.query_one("#variants-crumb", Static).update(self._variants_crumb(tool, preset))
-
-    # ---- Actions: navigation ---------------------------------------------
-    def action_cursor_up(self) -> None:
-        if self.focus_pane() == "variants":
-            self.action_prev_variant()
-        else:
-            self.move_cursor(-1)
-
-    def action_cursor_down(self) -> None:
-        if self.focus_pane() == "variants":
-            self.action_next_variant()
-        else:
-            self.move_cursor(1)
-
-    def action_swap_pane(self) -> None:
-        if self.focus_pane() == "recipes":
-            self._focus_variants()
-        else:
-            self._focus_recipes()
-
-    def action_activate(self) -> None:
-        """Enter in RECIPES selects and jumps to VARIANTS; Enter in VARIANTS runs."""
-        if self.focus_pane() == "recipes":
-            if 0 <= self.cursor < len(self._rows) and self._rows[self.cursor].kind != "header":
-                self._select_row(self._rows[self.cursor])
-            self._focus_variants()
-            return
-        self.action_run_task()
-
-    def action_focus_filter(self) -> None:
-        self.query_one("#filter-input", Input).focus()
-
-    def action_toggle_hide_missing(self) -> None:
-        self.hide_missing = not self.hide_missing
-        toggle = self.query_one("#avail-toggle", Static)
-        toggle.update("[!] runnable" if self.hide_missing else "[!] all")
-        toggle.styles.color = ACCENT if self.hide_missing else MUTED
-        self.cursor = 0
-        self._rebuild_tree()
-
-    def action_toggle_pin(self) -> None:
-        _, _, key, _ = self.current_flags()
-        if key in self.pinned:
-            self.pinned.remove(key)
-        else:
-            self.pinned.append(key)
-        save_pinned_recent(self.session.workspace_dir, self.pinned, self.recent)
-        self._refresh_variants()
-        self._rebuild_tree()
-
-    def _select_variant_by_index(self, index: int) -> None:
-        if self.selected_chain_id:
-            return          # a chain's steps are fixed; there is nothing to pick
-        tool = self.get_tool(self.selected_tool_id)
-        presets = tool.get("presets", []) if tool else []
-        if 0 <= index < len(presets):
-            self.selected_preset_id = presets[index]["id"]
-            self._refresh_variants()
-            self._refresh_args_band()
-
-    def _step_variant(self, delta: int) -> None:
-        if self.selected_chain_id:
-            return
-        tool = self.get_tool(self.selected_tool_id)
-        presets = tool.get("presets", []) if tool else []
-        if not presets:
-            return
-        idx = next((i for i, p in enumerate(presets) if p["id"] == self.selected_preset_id), 0)
-        self.selected_preset_id = presets[(idx + delta) % len(presets)]["id"]
-        self._refresh_variants()
-        self._refresh_args_band()
-
-    def action_prev_variant(self) -> None:
-        self._step_variant(-1)
-
-    def action_next_variant(self) -> None:
-        self._step_variant(1)
-
-    # ---- Actions: args ---------------------------------------------------
-    CHAIN_ARGS_NOTE = "[args] edit a chain's steps in its yaml · per-recipe edits still apply"
-
-    def action_toggle_args_mode(self, force_raw: Optional[bool] = None) -> None:
-        if self.selected_chain_id:
-            self.write_system_log(self.CHAIN_ARGS_NOTE, style=WARN)
-            return
-        self.args_raw_mode = (not self.args_raw_mode) if force_raw is None else force_raw
-        tokens = self.query_one("#args-tokens-scroll", VerticalScroll)
-        raw_wrap = self.query_one("#args-raw-wrap", Vertical)
-        raw_area = self.query_one("#args-raw-area", ArgsTextArea)
-        btn_mode = self.query_one("#args-btn-mode", Static)
-
-        if self.args_raw_mode:
-            tokens.add_class("hidden")
-            raw_wrap.remove_class("hidden")
-            btn_mode.update("[E] token view")
-            raw_area.focus()
-        else:
-            _, _, key, _ = self.current_flags()
-            self.flag_edits[key] = raw_area.text  # edits apply live; there is no cancel
-            raw_wrap.add_class("hidden")
-            tokens.remove_class("hidden")
-            btn_mode.update("[E] edit raw")
-            self.set_focus(None)
-            self._refresh_args_band()
-            self._refresh_variants()
-
-    def action_reset_args(self) -> None:
-        if self.selected_chain_id:
-            self.write_system_log(self.CHAIN_ARGS_NOTE, style=WARN)
-            return
-        tool, preset, key, _ = self.current_flags()
-        self.flag_edits.pop(key, None)
-        self.query_one("#args-raw-area", ArgsTextArea).text = preset.get("flags", "")
-        self._refresh_args_band()
-        self._refresh_variants()
-        self.write_system_log(f"[args] reset {key} to variant default")
-
-    # ---- Actions: catalog ------------------------------------------------
-    def action_reload_recipes(self) -> None:
-        if self._reloading:
-            return
-        self._reloading = True
-        chip = self.query_one("#mgr-chip", Static)
-        chip.update("↻ …")
-        chip.styles.color = WARN
-
-        self.write_system_log(
-            f"[recipes] reloading {display_path(RECIPES_PATH)} + "
-            f"{display_path(recipes_mod.DROPIN_DIR)}/*.yaml + ./recipes.d/*.yaml …"
-        )
-        clear_tool_cache()
-
-        old_keys = {f"{t['id']}/{p['id']}" for t in self._recipes for p in t.get("presets", [])}
-        self.catalog = load_catalog()
-        self._recipes = self.catalog.tools
-        new_keys = {f"{t['id']}/{p['id']}" for t in self._recipes for p in t.get("presets", [])}
-
-        if self.selected_chain_id and self.get_chain(self.selected_chain_id) is None:
-            self.selected_chain_id = None   # a chain the reloaded yaml no longer defines
-        if f"{self.selected_tool_id}/{self.selected_preset_id}" not in new_keys and self._recipes:
-            self.selected_tool_id = self._recipes[0]["id"]
-            if self._recipes[0].get("presets"):
-                self.selected_preset_id = self._recipes[0]["presets"][0]["id"]
-
-        added = sorted(new_keys - old_keys)
-        self.added_variants = added
-        self.reload_revision += 1
-        self.last_reload_time = time.strftime("%H:%M:%S")
-
-        self._log_catalog_sources()
-        total = self._total_variants()
-        change = f" · +{len(added)} new ({', '.join(added)})" if added else " · no changes"
-        self.write_system_log(
-            f"[recipes] {len(self.recipes)} tools · {total} variants{change}",
-            style=ACCENT if added else DIM,
-        )
-        sessions = len([j for j in self.jobs.values() if j.running])
-        self.write_system_log(
-            f"[runner] {sessions} session{'' if sessions == 1 else 's'} preserved · no jobs interrupted"
-        )
-
-        self._rebuild_tree()
-        self._refresh_variants()
-        self._refresh_args_band()
-        self._refresh_status_band()
-
-        if added:
-            chip.update(f"↻ +{len(added)}")
-            chip.styles.color = ACCENT
-            self.set_timer(4.0, self._settle_mgr_chip)
-        else:
-            self._settle_mgr_chip()
-        self._reloading = False
-
-    def _settle_mgr_chip(self) -> None:
-        try:
-            chip = self.query_one("#mgr-chip", Static)
-            chip.update("[M]")
-            chip.styles.color = MUTED
-        except Exception:
-            pass
-        self.added_variants = []
-
-    def reload_note(self) -> str:
-        return f"rev {self.reload_revision} · last {self.last_reload_time} · open sessions keep streaming"
-
-    def manager_stats(self) -> List[Tuple[str, str, str]]:
-        runnable = sum(1 for t in self.recipes if is_tool_installed(t.get("bin", "")))
-        missing = len(self.recipes) - runnable
-        drop_ins = len(self.catalog.files)
-        return [
-            ("tools", str(len(self.recipes)), FG),
-            ("variants", str(self._total_variants()), FG),
-            ("runnable", f"{runnable}/{len(self.recipes)}", ACCENT),
-            ("missing", str(missing), WARN if missing else DIM),
-            ("drop-ins", str(drop_ins), ACCENT if drop_ins else DIM),
-            ("reloaded", self.last_reload_time, DIM),
-        ]
-
-    def manager_sources(self) -> List[dict]:
-        rows = [{
-            "kind": "base", "kind_color": ACCENT, "path": display_path(RECIPES_PATH),
-            "count": f"{self.catalog.base_variant_count} variants", "count_color": DIM, "copyable": True,
-        }]
-        for name in self.catalog.files:
-            rows.append({
-                "kind": "drop-in", "kind_color": ACCENT,
-                "path": display_path(self.catalog.file_paths.get(name, recipes_mod.DROPIN_DIR / name)),
-                "count": f"{self.catalog.dropin_variant_count(name)} variants",
-                "count_color": ACCENT, "copyable": False,
-            })
-        if not self.catalog.files:
-            # Never an empty list — say what is being watched and where.
-            rows.append({
-                "kind": "watch", "kind_color": FAINT,
-                "path": f"{display_path(recipes_mod.DROPIN_DIR)}/*.yaml + ./recipes.d/*.yaml",
-                "count": "nothing loaded", "count_color": FAINT, "copyable": False,
-            })
-        return rows
-
-    @staticmethod
-    def _writes_outdir(preset: dict) -> bool:
-        """True if the preset writes into $OUTDIR (so its dir must be created)."""
-        return writes_outdir(preset)
-
-    def manager_tools(self) -> List[dict]:
-        out = []
-        for t in sorted(self.recipes, key=lambda t: t.get("bin", t["id"])):
-            ok = is_tool_installed(t.get("bin", ""))
-            emitting = sum(1 for p in t.get("presets", []) if self._writes_outdir(p))
-            fresh = sum(1 for k in self.added_variants if k.split("/")[0] == t["id"])
-            out.append({
-                "id": t["id"],
-                "bin": t.get("bin", t["id"]),
-                "bin_style": f"bold {FG}" if ok else UNFOCUSED,
-                "name": t.get("name", ""),
-                "variants": f"{len(t.get('presets', []))}v",
-                "emits": f"⇩ {emitting}" if emitting else "",
-                "state": (t.get("version") or "available") if ok else "not on $PATH",
-                "state_color": DIM if ok else WARN,
-                "badge": f"+{fresh}" if fresh else "",
-            })
-        return out
-
-    def action_recipe_manager(self) -> None:
-        self.push_screen(RecipeManagerModal())
-
-    def action_copy_catalog_path(self) -> None:
-        copy_text_to_clipboard(str(RECIPES_PATH), app=self)
-        self.write_system_log(f"[config] {RECIPES_PATH} copied to clipboard")
-
-    # ---- Actions: layout -------------------------------------------------
-    def on_resize(self, event) -> None:
-        self._update_responsive_layout(event.size.width)
-        self._refresh_status_band()
-        self._refresh_pinned_block()
-        self._anchor_tree_height()
-        if self.show_hotkey_bar:
-            self._fit_hotkey_bar()
-
-    def _update_responsive_layout(self, width: Optional[int] = None) -> None:
-        if width is None:
-            width = self.size.width or STACKED_BREAKPOINT
-        if self.layout_override in ("split", "stacked"):
-            mode = self.layout_override
-        else:
-            mode = "stacked" if width < STACKED_BREAKPOINT else "split"
-        self._apply_layout_mode(mode)
-
-    def _apply_layout_mode(self, mode: str) -> None:
-        self._current_layout = mode
-        try:
-            body = self.query_one("#body")
-            self.query_one("#cell-layout", Static).update(f"[L] {mode}")
-        except Exception:
-            return
-        body.set_class(mode == "stacked", "-stacked")
-        self._apply_stacked_classes()
-        self._anchor_tree_height()
-        self._paint_pane_focus()
-
-    def _anchor_tree_height(self) -> None:
-        """Pin the tree to a fixed row count in split mode.
-
-        The ARGS band is content-sized, so it grows when a variant with a long
-        argument string is selected. With the tree flexible that growth came
-        out of the tree and slid the VARIANTS pane up the screen, moving the
-        list out from under the cursor. Anchoring the tree instead means the
-        band grows into the variant list: VARIANTS keeps its position and shows
-        fewer rows, which is the cheaper thing to lose.
-        """
-        try:
-            tree = self.query_one("#recipe-tree")
-        except Exception:
-            return
-        if self._current_layout != "stacked":
-            rows = self.size.height or 40
-            anchored = rows - 3 - ARGS_BAND_MIN - LEFT_COLUMN_CHROME - VARIANT_ROWS_VISIBLE
-            tree.styles.height = max(4, anchored)
-        else:
-            tree.styles.height = None   # back to the stylesheet's 1fr
-
-    def _apply_stacked_classes(self) -> None:
-        """Exactly one pane expanded in stacked mode; both headers stay mounted."""
-        try:
-            recipes_pane = self.query_one("#recipes-pane")
-            variants_pane = self.query_one("#variants-pane")
-        except Exception:
-            return
-        if self._current_layout != "stacked":
-            recipes_pane.remove_class("-collapsed")
-            variants_pane.remove_class("-collapsed")
-            return
-        on_task = self.stacked_pane == "task"
-        recipes_pane.set_class(on_task, "-collapsed")
-        variants_pane.set_class(not on_task, "-collapsed")
-        assert recipes_pane.has_class("-collapsed") != variants_pane.has_class("-collapsed"), (
-            "stacked accordion must have exactly one expanded pane"
-        )
-
-    def action_toggle_layout(self) -> None:
-        self.layout_override = "stacked" if self._current_layout == "split" else "split"
-        self._update_responsive_layout()
-        self.write_system_log(
-            "[layout] stacked · recipes/variants accordion"
-            if self._current_layout == "stacked"
-            else "[layout] split · recipes over variants · results as monitor"
-        )
-
-    def action_toggle_hotkey_bar(self) -> None:
-        self.show_hotkey_bar = not self.show_hotkey_bar
-        bar = self.query_one("#footer-keys", Horizontal)
-        bar.set_class(not self.show_hotkey_bar, "hidden")
-        chip = self.query_one("#btn-bar-toggle", Static)
-        chip.update("[H] hide keys" if self.show_hotkey_bar else "[H] keys")
-        chip.styles.color = ACCENT if self.show_hotkey_bar else DIM
-        if self.show_hotkey_bar:
-            self._fit_hotkey_bar()
-
-    def _fit_hotkey_bar(self) -> None:
-        """Decide keys-only vs labelled before paint, from an estimated width."""
-        needed = sum(len(k) + len(lbl) + 5 for k, lbl, _ in HOTKEYS) + 4
-        tight = self.size.width < needed
-        for idx in range(len(HOTKEYS)):
-            try:
-                self.query_one(f"#footer-label-{idx}", Static).set_class(tight, "hidden")
-            except Exception:
-                pass
 
     # ---- Actions: escape chain -------------------------------------------
     def action_escape(self) -> None:
@@ -1820,324 +755,7 @@ class FieldlogApp(App):
             self._focus_recipes()
             return
 
-    # ---- Actions: tabs ---------------------------------------------------
-    def action_select_tab(self, tab_id: str) -> None:
-        self.active_tab_id = tab_id
-        try:
-            self.query_one("#tab-content", ContentSwitcher).current = f"log-{tab_id}"
-        except Exception:
-            pass
-        self._refresh_tab_strip()
-        self._refresh_results_chrome()
 
-    def action_close_tab(self, tab_id: str) -> None:
-        if tab_id == "system":
-            return
-        tab = next((t for t in self.tabs if t.id == tab_id), None)
-        if tab is None:
-            return
-        job = self.jobs.get(tab.job_id or "")
-        if job is not None and job.running:
-            def resolved(choice: Optional[str]) -> None:
-                if choice == "kill":
-                    kill_job(job)
-                    self.write_system_log(
-                        f"[runner] {tab.label} killed by operator · SIGINT sent, "
-                        f"SIGKILL in 10s if still running · partial output at {tab.artifact}",
-                        style=WARN,
-                    )
-                    self._drop_tab(tab_id)
-                elif choice == "detach":
-                    # The process keeps running and keeps writing; only the tab goes.
-                    self.write_system_log(
-                        f"[runner] {tab.label} detached · still running · "
-                        f"output continues at {tab.artifact}"
-                    )
-                    self._drop_tab(tab_id)
-
-            self.push_screen(CloseJobModal(tab.label, tab.artifact), resolved)
-            return
-        self._drop_tab(tab_id)
-
-    def _drop_tab(self, tab_id: str) -> None:
-        idx = next((i for i, t in enumerate(self.tabs) if t.id == tab_id), -1)
-        if idx == -1:
-            return
-        was_active = (self.active_tab_id == tab_id)
-        self.tabs.pop(idx)
-        if was_active:
-            new_idx = max(0, min(idx, len(self.tabs) - 1))
-            self.active_tab_id = self.tabs[new_idx].id
-            try:
-                self.query_one("#tab-content", ContentSwitcher).current = f"log-{self.active_tab_id}"
-            except Exception:
-                pass
-        try:
-            self.query_one(f"#log-{tab_id}", RichLog).remove()
-        except Exception:
-            pass
-        self._refresh_tab_strip()
-        self._refresh_results_chrome()
-
-    def action_close_active_tab(self) -> None:
-        if self.active_tab_id != "system":
-            self.action_close_tab(self.active_tab_id)
-
-    def action_close_finished_tabs(self) -> None:
-        """Never prompts, and never touches a running job."""
-        for tid in [t.id for t in self.tabs if t.id != "system" and t.status in ("done", "failed")]:
-            self._drop_tab(tid)
-        self.write_system_log("[runner] closed finished job tabs")
-
-    def action_prev_tab(self) -> None:
-        self._switch_tab(-1)
-
-    def action_next_tab(self) -> None:
-        self._switch_tab(1)
-
-    def _switch_tab(self, delta: int) -> None:
-        if not self.tabs:
-            return
-        idx = next((i for i, t in enumerate(self.tabs) if t.id == self.active_tab_id), 0)
-        self.action_select_tab(self.tabs[(idx + delta) % len(self.tabs)].id)
-
-    # ---- Actions: copy ---------------------------------------------------
-    def action_copy_log(self) -> None:
-        tab = self.active_tab()
-        if not tab:
-            return
-        clock = self._get_clock_str()
-        truncated = False
-        if tab.id == "system":
-            stamp = [f"# fieldlog {VERSION} · [System] · {clock}"]
-            lines = list(self.system_log_lines)
-        else:
-            job = self.jobs.get(tab.job_id or "")
-            running = " · still running" if job and job.running else ""
-            stamp = [f"# fieldlog {VERSION} · {tab.label} · {clock}{running}"]
-            if tab.cmd:
-                stamp.append(f"# $ {tab.cmd}")
-            if tab.artifact:
-                stamp.append(f"# artifact: {tab.artifact}")
-            lines = []
-            if job:
-                if job.log_path and job.log_path.exists():
-                    try:
-                        # Cap at 500 KB to avoid blocking UI thread or overflowing OSC 52
-                        MAX_COPY_BYTES = 500 * 1024
-                        file_size = job.log_path.stat().st_size
-                        with job.log_path.open("rb") as f:
-                            if file_size > MAX_COPY_BYTES:
-                                f.seek(file_size - MAX_COPY_BYTES)
-                                raw = f.read().decode("utf-8", errors="replace")
-                                lines = raw.splitlines()
-                                if len(lines) > 1:
-                                    lines = lines[1:]
-                                truncated = True
-                            else:
-                                raw = f.read().decode("utf-8", errors="replace")
-                                lines = raw.splitlines()
-                    except OSError:
-                        lines = list(job.log_lines)
-                else:
-                    lines = list(job.log_lines)
-
-        copy_text_to_clipboard("\n".join(stamp + [""] + lines) + "\n", app=self)
-        status_lines = f"last {len(lines)} lines (capped at 500 KB)" if truncated else f"{len(lines)} lines"
-        self.write_system_log(f"[clip] active log copied ({status_lines})")
-        btn = self.query_one("#btn-copy-log", Static)
-        btn.update(f"copied {len(lines)} lines ✓")
-        btn.styles.color = ACCENT
-        self.set_timer(1.8, lambda: (btn.update("⧉ copy log  [Ctrl+Shift+C]"), setattr(btn.styles, "color", DIM)))
-
-    def action_copy_tail(self) -> None:
-        tab = self.active_tab()
-        if not tab or tab.id == "system" or not tab.artifact:
-            self.write_system_log("[clip] harness log is not written to disk", style=WARN)
-            return
-        cmd = f"tail -f {tab.artifact}"
-        copy_text_to_clipboard(cmd, app=self)
-        self.write_system_log(f"[clip] {cmd}")
-
-    def action_sigint(self) -> None:
-        tab = self.active_tab()
-        job = self.jobs.get(tab.job_id or "") if tab else None
-        if job and job.running:
-            interrupt_job(job)
-            self.write_system_log(f"[runner] job #{job.id} interrupted by operator (SIGINT)", style=WARN)
-            self._refresh_status_band()
-            return
-        self.notify("No running job · Ctrl+Shift+C copies the log", timeout=2.5)
-
-    # ---- Actions: run ----------------------------------------------------
-    def action_run_task(self) -> None:
-        chain = self.selected_chain()
-        if chain is not None:
-            if not self.chain_blocked_flag(chain):
-                self.run_worker(
-                    self._run_chain_worker(chain), name=f"chain {chain['id']}", exclusive=False
-                )
-            return
-        tool, preset, key, _ = self.current_flags()
-        if not tool or self.is_blocked(tool, preset)[0]:
-            return
-        self._spawn_job(tool, preset, key)
-
-    def select_and_run(self, tool_id: str, preset_id: str) -> None:
-        self.selected_chain_id = None
-        self.selected_tool_id = tool_id
-        self.selected_preset_id = preset_id
-        self._refresh_variants()
-        self._refresh_args_band()
-        self.action_run_task()
-
-    def _remember(self, key: str) -> None:
-        """Keep the last six things launched, recipe keys and `chain/<id>` alike."""
-        if key not in self.recent:
-            self.recent.insert(0, key)
-            del self.recent[6:]
-            save_pinned_recent(self.session.workspace_dir, self.pinned, self.recent)
-
-    def _open_job_tab(self, plan: LaunchPlan, tool: dict, preset: dict) -> Tuple[RichLog, str]:
-        """Tab, RichLog and transcript lines for a planned job. The caller starts
-        the worker — a chain awaits its step rather than firing it and moving on."""
-        job = plan.job
-        for warning in plan.warnings:
-            self.write_system_log(f"[artifact] {warning}", style=WARN)
-        # job.id is the per-target run number, for display and the archive only.
-        self._job_seq += 1
-        job_key = str(self._job_seq)
-        self.jobs[job_key] = job
-        artifact = str(job.log_path)
-
-        tab_id = f"job-{job_key}"
-        self.tabs.append(TabDescriptor(
-            id=tab_id, label=job.name, status="active", tool_id=tool["id"],
-            job_id=job_key, cmd=plan.command, artifact=artifact,
-        ))
-        self.active_tab_id = tab_id
-
-        rlog = RichLog(id=f"log-{tab_id}", wrap=True, markup=False, min_width=20)
-        switcher = self.query_one("#tab-content", ContentSwitcher)
-        switcher.mount(rlog)
-        switcher.current = f"log-{tab_id}"
-
-        self.write_system_log(f"[runner] spawn {tool.get('bin', tool['id'])}/{preset.get('id')} #{job.id}", style=ACCENT)
-        self.write_system_log(f"[artifact] {artifact}")
-
-        self._refresh_tab_strip()
-        self._refresh_header()
-        self._refresh_results_chrome()
-        return rlog, tab_id
-
-    def _spawn_job(self, tool: dict, preset: dict, key: str) -> None:
-        """plan_launch captures root, scope and stamp onto the job; every
-        displayed path renders from those captured fields, never from live state."""
-        plan = plan_launch(self.session, tool, preset, flags_override=self.flag_edits.get(key))
-        rlog, tab_id = self._open_job_tab(plan, tool, preset)
-        self._remember(key)
-        self.run_worker(self._run(plan, rlog, tab_id), name=plan.job.name, exclusive=False)
-
-    async def _run_chain_worker(self, chain: dict) -> None:
-        """Drive a chain, opening a tab per step as the driver reaches it."""
-        cid = chain["id"]
-        planned = len(chain.get("steps", []))
-        self.write_system_log(f"[chain] {cid} · start · {planned} steps", style=ACCENT)
-        self._remember(f"chain/{cid}")
-
-        async def run_step(plan: LaunchPlan) -> int:
-            tool = self.get_tool(plan.job.recipe_id) or {"id": plan.job.recipe_id}
-            preset = {"id": plan.job.variant_id}
-            rlog, tab_id = self._open_job_tab(plan, tool, preset)
-            await self._run(plan, rlog, tab_id)
-            return plan.job.exit_code if plan.job.exit_code is not None else 1
-
-        result = await run_chain(
-            self.session, self.catalog, chain,
-            run_step=run_step, flags_overrides=self.flag_edits,
-        )
-        record = result.record
-        ran = len(record["steps"])
-        if record["stopped_at"]:
-            last = record["steps"][-1]["exit_code"] if record["steps"] else result.exit_code
-            self.write_system_log(
-                f"[chain] {cid} · stopped at step {ran} {record['stopped_at']} (exit {last})",
-                style=ERR,
-            )
-        else:
-            self.write_system_log(
-                f"[chain] {cid} · {ran}/{planned} steps · exit {result.exit_code}",
-                style=ACCENT if result.exit_code == 0 else WARN,
-            )
-
-    async def _run(self, plan: LaunchPlan, rlog: RichLog, tab_id: str) -> None:
-        job = plan.job
-        UI_LINE_CAP = 500
-        capped = False
-        line_num = 0
-
-        def _safe_write(renderable) -> None:
-            if rlog.is_mounted:
-                try:
-                    width = rlog.scrollable_content_region.width or self._log_width()
-                    rlog.write(renderable, width=width)
-                except Exception:
-                    pass
-
-        def sink(text: str, _stream: str) -> None:
-            nonlocal line_num, capped
-            line_num += 1
-            if line_num <= UI_LINE_CAP:
-                _safe_write(Text.assemble((f"{line_num:3d}  ", GUTTER), (text, FG)))
-                job.log_lines.append(text)
-            elif not capped:
-                capped = True
-                msg = f"[Preview capped at {UI_LINE_CAP} lines · full output streaming to {job.log_path}]"
-                _safe_write(Text(msg, style=WARN))
-                job.log_lines.append(msg)
-
-        code = 130 if job.interrupted else 1
-        try:
-            code = await run_job(plan.command, job, self.session, sink, on_state=self._on_job_block, env=plan.env)
-            if line_num > UI_LINE_CAP:
-                msg = f"[UI omitted {line_num - UI_LINE_CAP} lines · see {job.log_path}]"
-                _safe_write(Text(msg, style=DIM))
-                job.log_lines.append(msg)
-            exit_line = f"[Runner] exit {code} in {job.elapsed:.2f}s"
-            if job.interrupted:
-                exit_line += " · interrupted"
-            _safe_write(Text(exit_line, style=ACCENT if code == 0 else ERR))
-            job.log_lines.append(exit_line)
-        except asyncio.CancelledError:
-            job.exit_code = code = 130 if job.interrupted else 1
-            job.end_time = time.time()
-        except Exception as exc:  # noqa: BLE001
-            job.exit_code = code = 127
-            job.end_time = time.time()
-            err = f"[Runner] failed: {exc}"
-            _safe_write(Text(err, style=ERR))
-            job.log_lines.append(err)
-        finally:
-            if job.end_time is None:
-                job.end_time = time.time()
-            for t in self.tabs:
-                if t.id == tab_id:
-                    t.status = "done" if run_succeeded(code, job.success_codes) else "failed"
-                    break
-            self._refresh_tab_strip()
-            self._refresh_header()
-            self._refresh_results_chrome()
-
-    def _on_job_block(self) -> None:
-        """Raise or drop the stdin bar when a job blocks or resumes."""
-        try:
-            self._refresh_stdin_bar()
-            self._refresh_status_band()
-            self._refresh_tab_strip()
-        except Exception:
-            pass
-
-    # ---- Workers ---------------------------------------------------------
     # ---- Actions: misc ---------------------------------------------------
     def action_help(self) -> None:
         self.push_screen(HelpModal())

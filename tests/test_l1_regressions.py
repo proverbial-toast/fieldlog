@@ -158,7 +158,7 @@ def test_pinned_recent_persistence(tmp_workspace: Path):
 
 def test_clipboard_deduplication(monkeypatch):
     import sys
-    from fieldlog.app import copy_text_to_clipboard
+    from fieldlog.tui.helpers import copy_text_to_clipboard
 
     stdout_writes = []
     monkeypatch.setattr(sys.stdout, "write", lambda s: stdout_writes.append(s))
