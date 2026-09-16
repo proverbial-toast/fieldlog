@@ -277,6 +277,8 @@ recipes:
 | `name` | preset | no | Display name |
 | `bin` | preset | no | Overrides the tool's `bin` for this preset |
 | `outdir` | preset | no | `true` creates `$OUTDIR` even when `flags` don't mention it (see below) |
+| `parse` | preset | no | Regex run over the finished log; what it finds becomes the run's `summary` (see below) |
+| `summary` | preset | no | Template filled from `parse`'s named groups. Without it the whole match is used |
 
 ### How the command is built
 
@@ -308,6 +310,30 @@ recipes:
     flags: "env bash /home/chris/bin/capture.sh $TARGET"
     outdir: true
   ```
+
+### Summaries
+
+A preset can say what to pull out of its own output. `parse` is a regex run over
+the finished log, and `summary` is a template filled from its named groups:
+
+```yaml
+- id: quick
+  flags: "-c 4 -W 1 $TARGET"
+  parse: '(?P<rx>\d+) received, (?P<loss>[\d.]+)% packet loss'
+  summary: "{rx} replies · {loss}% loss"
+```
+
+`history`, `report` and the TUI's status band then show `4 replies · 0% loss`
+beside that run, and the record carries it as `summary`.
+
+- The last match wins, so a rule can name a tool's closing statistics without
+  anchoring to them.
+- Without `summary` the whole match is used. A template may only reference
+  groups the regex names.
+- The last 64 KB of the log is scanned, so a server recipe that ran for hours
+  still summarises at the same cost.
+- A regex that does not compile, or a template naming a group that does not
+  exist, is reported at load; the preset still runs, without a summary.
 
 ### Variables
 
@@ -479,10 +505,11 @@ A run record:
 }
 ```
 
-Optional keys: `"interrupted": true` when the operator sent SIGINT, `"chain":
-{"id", "step", "of"}` on a chain step, `"binary": true` on an artifact that is
-not text. The `environment` block leaves out `HOST` and `OUTDIR`: both are
-exported to the job, but they always equal `TARGET_HOST` and `OUT_DIR`.
+Optional keys: `"interrupted": true` when the operator sent SIGINT, `"summary"`
+when the preset has a `parse` rule that matched, `"chain": {"id", "step", "of"}`
+on a chain step, `"binary": true` on an artifact that is not text. The
+`environment` block leaves out `HOST` and `OUTDIR`: both are exported to the
+job, but they always equal `TARGET_HOST` and `OUT_DIR`.
 
 - The folder name is built in two steps. First `/` becomes `_`, so the subnet
   `192.168.1.0/24` gets the folder `192.168.1.0_24`. Then any character still
@@ -510,8 +537,9 @@ Built for tools that run to completion and write to stdout or files: ping,
 curl, dig, traceroute, iperf3 and similar. Answering a one-line prompt works;
 long interactive sessions are out of scope.
 
-Planned: parsers that turn tool output into structured findings, so a ping run
-can be read as "4 of 4 replies, 0.02 ms" without opening the log.
+A preset's `parse` rule turns its own output into one line on the run record, so
+a ping run reads as `4 replies · 0% loss` without opening the log. Everything
+else stays a log you read yourself.
 
 ## License
 

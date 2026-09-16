@@ -15,6 +15,7 @@ from pathlib import Path
 import os
 import re
 import shutil
+from string import Formatter
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
 import yaml
@@ -110,6 +111,54 @@ def writes_outdir(preset: dict, flags: Optional[str] = None) -> bool:
     """
     text = preset.get("flags", "") if flags is None else flags
     return preset.get("outdir") is True or "OUTDIR" in template_vars(str(text))
+
+
+# A summary sits on one line of `history` beside the exit code, so it is capped
+# rather than allowed to push the columns off the terminal.
+PARSE_SUMMARY_MAX = 120
+
+
+def parse_rule(preset: dict) -> Optional[dict]:
+    """The preset's `parse:`/`summary:` pair, or None when it has no rule.
+
+    Carried on the job so the runner can summarise the log it just wrote without
+    reaching back into the catalog the run was planned from — the same reason
+    the scope and paths are captured at spawn.
+    """
+    pattern = str(preset.get("parse", "") or "")
+    if not pattern:
+        return None
+    return {"parse": pattern, "summary": str(preset.get("summary", "") or "")}
+
+
+def parse_summary(rule: Optional[dict], text: str) -> str:
+    """The one-line summary `rule` finds in `text`: '' when there is no rule, or
+    it does not match.
+
+    The last match wins, because the numbers worth keeping are a tool's closing
+    stats and a `-c 4` ping writes four lines that look much like them. A rule
+    that survived the load has a compiling regex and a template naming only
+    groups that regex defines, so an operator's file cannot fail here — the
+    guards are for a rule handed in from somewhere else.
+    """
+    if not rule:
+        return ""
+    try:
+        matches = list(re.finditer(rule["parse"], text, re.MULTILINE))
+    except re.error:
+        return ""
+    if not matches:
+        return ""
+    last = matches[-1]
+    template = rule.get("summary", "")
+    try:
+        if template:
+            found = template.format_map({k: v or "" for k, v in last.groupdict().items()})
+        else:
+            found = last.group(0)
+    except (KeyError, IndexError, ValueError):
+        return ""
+    return " ".join(found.split())[:PARSE_SUMMARY_MAX]
 
 
 def find_recipe(catalog: Catalog, spec: str) -> Tuple[Optional[dict], Optional[dict], Optional[str]]:
@@ -480,6 +529,43 @@ def _where(exc: Exception) -> str:
     return f":{mark.line + 1}" if mark is not None else ""
 
 
+def _validate_parsers(cat: Catalog) -> None:
+    """Drop a `parse:` rule that could never produce a summary, and say why.
+
+    The preset itself survives: a typo in an operator's regex costs the summary,
+    not the recipe. Checking the template against the regex's group names here
+    is what lets parse_summary treat a loaded rule as sound.
+    """
+    for tool in cat.tools:
+        for preset in tool.get("presets", []):
+            pattern = preset.get("parse")
+            if not pattern:
+                continue
+            src = f"recipes.d/{preset['src']}: " if preset.get("src") else ""
+            where = f"{src}{tool['id']}/{preset.get('id', 'default')}"
+            try:
+                names = set(re.compile(str(pattern)).groupindex)
+            except re.error as exc:
+                cat.errors.append(f"{where} parse: invalid regex · {exc.msg} · no summary")
+                preset.pop("parse", None)
+                continue
+
+            template = str(preset.get("summary", "") or "")
+            try:
+                fields = [f for _, f, _, _ in Formatter().parse(template) if f]
+            except ValueError as exc:
+                cat.errors.append(f"{where} summary: {exc} · no summary")
+                preset.pop("parse", None)
+                continue
+
+            unknown = [f for f in fields if f not in names]
+            if unknown:
+                cat.errors.append(
+                    f"{where} summary: parse: has no group named {unknown[0]} · no summary"
+                )
+                preset.pop("parse", None)
+
+
 def load_catalog(
     base: Optional[Path] = None,
     dropin_dir: Optional[Path] = None,
@@ -515,6 +601,7 @@ def load_catalog(
 
     # Only now can a step be resolved: a base chain may name a drop-in's preset.
     _validate_chains(cat)
+    _validate_parsers(cat)
 
     # Never fail closed on one bad operator file: say what survived.
     n = len(cat.files)

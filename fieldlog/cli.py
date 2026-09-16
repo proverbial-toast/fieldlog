@@ -829,6 +829,9 @@ def handle_history(args: argparse.Namespace) -> int:
             f"  [bold]#{escape(str(rid))}[/bold] [{status_col}]{escape(str(recipe))}[/{status_col}] "
             f"| exit {code}{flag} | {dur}s | {escape(str(start))}"
         )
+        summary = str(r.get("summary", "") or "")
+        if summary:
+            console.print(f"      [cyan]{escape(summary)}[/cyan]")
         if artifacts:
             for a in artifacts:
                 console.print(f"      ↳ {escape(str(a.get('path')))} ({a.get('bytes', 0)} B)")

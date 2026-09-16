@@ -1164,13 +1164,18 @@ class FieldlogApp(App):
         else:
             exit_val = str(job.exit_code)
             exit_color = ACCENT if job.exit_code == 0 else ERR
-        return [
+        items = [
             ("state", state, state_color),
             ("exit", exit_val, exit_color),
             ("elapsed", job.elapsed_str(), SOFT),
             ("lines", str(job.lines_count), SOFT),
             ("bytes", f"{job.bytes_count / 1024:.1f} KiB", SOFT),
         ]
+        # What the preset's `parse:` rule made of the log. The band is the only
+        # place the TUI can say it: a tab strip has room for a label, not a finding.
+        if job.summary:
+            items.append(("summary", truncate_right(job.summary, 60), ACCENT))
+        return items
 
     def _refresh_status_band(self) -> None:
         try:

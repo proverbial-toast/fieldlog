@@ -41,6 +41,7 @@ def target_dir(tmp_workspace: Path) -> Path:
             "end_time": "2026-09-12T12:00:49.745039",
             "duration_sec": 0.01,
             "exit_code": 0,
+            "summary": "4 replies · 0% loss",
             "artifacts": [
                 {"path": "raw/20260912T120049_ping_quick_01.log", "lines": 122, "bytes": 4422}
             ],
@@ -160,3 +161,10 @@ def test_corrupt_manifest_renders_an_empty_report(tmp_workspace: Path, capsys):
     args = build_parser().parse_args(["report", "broken", "-w", str(tmp_workspace)])
     assert handle_report(args) == 0
     assert "No runs recorded." in capsys.readouterr().out
+
+
+def test_a_summary_is_shown_only_for_the_run_that_has_one(target_dir: Path, tmp_workspace: Path, capsys):
+    out = _report(tmp_workspace, capsys)
+    assert "Summary: `4 replies · 0% loss`" in out
+    # Run #02 has no parse rule, so it gets no summary line rather than an empty one.
+    assert out.count("Summary: `") == 1

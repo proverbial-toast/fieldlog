@@ -327,6 +327,10 @@ class ActiveJob:
     interrupted: bool = False
     # `{"id": "reach", "step": 2, "of": 3}` when this run is a chain's step.
     chain: Optional[dict] = None
+    # The preset's parse rule (see recipes.parse_rule), and the one-line summary
+    # it found in the finished log. Both stay empty for a preset without one.
+    parse_rule: Optional[dict] = None
+    summary: str = ""
     log_lines: list[str] = field(default_factory=list)
     artifact_delta: Optional[ArtifactDelta] = None
 

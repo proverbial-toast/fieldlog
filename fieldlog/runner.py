@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 from fieldlog.archive import ArtifactDelta, detect_artifact_deltas, manifest_lock, snapshot_workspace
+from fieldlog.recipes import parse_summary
 from fieldlog.state import ActiveJob, TargetSession
 
 # Called for each output line: (text, stream) where stream is "out" or "err".
@@ -40,6 +41,26 @@ PTY_ROWS, PTY_COLS = 24, 200
 # CSI escapes (colors, cursor moves) and OSC escapes (title sets), the two a
 # terminal-aware CLI emits under a pty.
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+# How much of a finished log a `parse:` rule is shown. A server recipe can write
+# for hours; the closing stats a summary is after are in the last few KB.
+PARSE_TAIL_BYTES = 64 * 1024
+
+
+def log_tail(path: Path, limit: int = PARSE_TAIL_BYTES) -> str:
+    """The last `limit` bytes of a log, escapes stripped, '' if unreadable.
+
+    Bounded on purpose: it caps both the read and the text an operator-supplied
+    regex is run over.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - limit))
+            raw = fh.read()
+    except OSError:
+        return ""
+    return _ANSI.sub("", raw.decode("utf-8", errors="replace"))
 
 
 def build_env(session: TargetSession, out_dir: Path, run_id: str) -> Dict[str, str]:
@@ -325,6 +346,7 @@ async def run_job(
         job.end_time = time.time()
         job.await_prompt = None
         job.await_since = None
+        job.summary = parse_summary(job.parse_rule, log_tail(job.log_path))
         delta = detect_artifact_deltas(
             session.target_dir, pre_snap, primary_log=job.log_path, extra_roots=extra_roots
         )
@@ -400,6 +422,8 @@ def _append_manifest(
         "exit_code": code,
         # The code is the tool's own; this says the operator asked it to stop.
         **({"interrupted": True} if job.interrupted else {}),
+        # What the preset's `parse:` rule made of the log, when it has one.
+        **({"summary": job.summary} if job.summary else {}),
         "artifacts": artifact_entries,
     }
     if job.chain:

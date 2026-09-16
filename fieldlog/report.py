@@ -310,6 +310,12 @@ def render_report(
             meta += f" · log `{shown_log}`"
         lines += [meta, ""]
 
+        summary = str(record.get("summary", "") or "")
+        if summary:
+            # Inline code with the backticks dropped: a summary is tool output,
+            # and tool output never becomes markup in this file.
+            lines += [f"Summary: `{summary.replace('`', '')}`", ""]
+
         artifacts = [a for a in (record.get("artifacts") or []) if isinstance(a, dict)]
         if artifacts:
             lines.append("Artifacts:")
