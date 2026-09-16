@@ -32,8 +32,8 @@ from textual.widgets import (
 from fieldlog import __version__
 from fieldlog import recipes as recipes_mod
 from fieldlog.recipes import (
-    RECIPES_PATH,
     Catalog,
+    RECIPES_PATH,
     chain_blocked,
     chain_matches,
     chain_steps,
@@ -41,6 +41,7 @@ from fieldlog.recipes import (
     is_blocked,
     is_tool_installed,
     load_catalog,
+    run_succeeded,
     search,
     steps_label,
     writes_outdir,
@@ -2120,7 +2121,7 @@ class FieldlogApp(App):
                 job.end_time = time.time()
             for t in self.tabs:
                 if t.id == tab_id:
-                    t.status = "done" if code == 0 else "failed"
+                    t.status = "done" if run_succeeded(code, job.success_codes) else "failed"
                     break
             self._refresh_tab_strip()
             self._refresh_header()

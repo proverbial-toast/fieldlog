@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional
 
 from fieldlog.launch import LaunchPlan, next_run_id, plan_launch
-from fieldlog.recipes import Catalog, chain_arrow, chain_steps
+from fieldlog.recipes import Catalog, chain_arrow, chain_steps, run_succeeded
 from fieldlog.runner import _write_record, build_env, manifest_environment
 from fieldlog.state import TargetSession, run_stamp
 
@@ -72,7 +72,7 @@ async def run_chain(
             # Ctrl+C is about the chain, not just the step it landed on.
             exit_code, stopped_at = 130, key
             break
-        if code != 0:
+        if not run_succeeded(code, plan.job.success_codes):
             if exit_code == 0:
                 exit_code = code
             if not keep_going:

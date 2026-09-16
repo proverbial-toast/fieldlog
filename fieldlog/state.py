@@ -331,6 +331,8 @@ class ActiveJob:
     # it found in the finished log. Both stay empty for a preset without one.
     parse_rule: Optional[dict] = None
     summary: str = ""
+    # The preset's `success:` codes. None means the default, 0 alone.
+    success_codes: Optional[list] = None
     log_lines: list[str] = field(default_factory=list)
     artifact_delta: Optional[ArtifactDelta] = None
 

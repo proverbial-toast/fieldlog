@@ -279,6 +279,7 @@ recipes:
 | `outdir` | preset | no | `true` creates `$OUTDIR` even when `flags` don't mention it (see below) |
 | `parse` | preset | no | Regex run over the finished log; what it finds becomes the run's `summary` (see below) |
 | `summary` | preset | no | Template filled from `parse`'s named groups. Without it the whole match is used |
+| `success` | preset | no | Exit codes this recipe calls a success (see below). Default: `0` alone |
 
 ### How the command is built
 
@@ -334,6 +335,28 @@ beside that run, and the record carries it as `summary`.
   still summarises at the same cost.
 - A regex that does not compile, or a template naming a group that does not
   exist, is reported at load; the preset still runs, without a summary.
+
+### Exit codes
+
+A run succeeded if the tool exited 0. `success:` says otherwise for the recipes
+where that is wrong — `grep` reports "nothing found" as 1, and plenty of tools
+print their usage and exit 2:
+
+```yaml
+- id: find
+  flags: "-rl $TARGET /etc"
+  success: [0, 1]                   # 1 is "no match", not a failure
+```
+
+- List every code that counts, `0` included. A preset saying `success: [1]` has
+  said only 1, and a run exiting 0 is then a failure. Nothing is implied.
+- The record always keeps the tool's own `exit_code`. The codes are stored
+  beside it, so a report rendered next year still knows why 1 was fine.
+- One rule, four readers: `fieldlog run` exits 0, `history` and `report` read
+  `1 (ok)` instead of a failure, a chain carries on to its next step, and the
+  TUI's tab shows done.
+- Usage text and errors usually go to stderr. fieldlog merges stderr into the
+  run log, so it is captured whatever the exit code turns out to be.
 
 ### Variables
 
@@ -506,7 +529,8 @@ A run record:
 ```
 
 Optional keys: `"interrupted": true` when the operator sent SIGINT, `"summary"`
-when the preset has a `parse` rule that matched, `"chain": {"id", "step", "of"}`
+when the preset has a `parse` rule that matched, `"success"` listing the exit
+codes its preset calls a success, `"chain": {"id", "step", "of"}`
 on a chain step, `"binary": true` on an artifact that is not text. The
 `environment` block leaves out `HOST` and `OUTDIR`: both are exported to the
 job, but they always equal `TARGET_HOST` and `OUT_DIR`.

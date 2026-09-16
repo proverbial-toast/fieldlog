@@ -424,6 +424,9 @@ def _append_manifest(
         **({"interrupted": True} if job.interrupted else {}),
         # What the preset's `parse:` rule made of the log, when it has one.
         **({"summary": job.summary} if job.summary else {}),
+        # The codes this recipe calls success, so a reader of the archive can
+        # see why a non-zero exit was not a failure. The code itself stays raw.
+        **({"success": job.success_codes} if job.success_codes else {}),
         "artifacts": artifact_entries,
     }
     if job.chain:

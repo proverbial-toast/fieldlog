@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from fieldlog.recipes import run_succeeded
+
 DEFAULT_TAIL = 40
 
 # Exit codes the runner assigns a meaning to; everything else is just a number.
@@ -50,22 +52,36 @@ def human_size(num_bytes: object) -> str:
     return f"{size / (1024 * 1024):.1f} MB"
 
 
-def exit_label(code: object, interrupted: bool = False) -> str:
+def exit_label(code: object, interrupted: bool = False, ok: Optional[bool] = None) -> str:
     """Plain reading of an exit code, for headings. `interrupted` is the
-    operator's SIGINT, which the code itself no longer implies."""
+    operator's SIGINT, which the code itself no longer implies; `ok` is the
+    recipe's own verdict, so a declared success does not read as a failure."""
     try:
         value = int(code)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return str(code)
     note = "interrupted" if interrupted else EXIT_NOTES.get(value)
+    if note is None and ok and value != 0:
+        note = "ok"
     return f"{value} ({note})" if note else str(value)
 
 
-def exit_cell(code: object, interrupted: bool = False) -> str:
-    """Table form: a clean run stays quiet, a failure is bold. An interrupt
+def exit_cell(code: object, interrupted: bool = False, ok: Optional[bool] = None) -> str:
+    """Table form: a successful run stays quiet, a failure is bold. An interrupt
     annotates the code without making a 0 read as a failure."""
-    label = exit_label(code, interrupted)
-    return label if exit_label(code) == "0" else f"**{label}**"
+    label = exit_label(code, interrupted, ok)
+    good = ok if ok is not None else exit_label(code) == "0"
+    return label if good else f"**{label}**"
+
+
+def record_ok(record: dict) -> bool:
+    """Whether a run succeeded, by the rule its own recipe declared.
+
+    A record carries `success:` only when its preset set one, so a record from
+    before the field existed — or from a preset without it — reads as exit 0.
+    """
+    codes = record.get("success")
+    return run_succeeded(record.get("exit_code", 0), codes if isinstance(codes, list) else None)
 
 
 def record_interrupted(record: dict) -> bool:
@@ -287,7 +303,7 @@ def render_report(
             f"| {escape_cell(record.get('recipe', 'unknown'))} "
             f"| {format_time(record.get('start_time'))} "
             f"| {format_duration(record.get('duration_sec'))} "
-            f"| {exit_cell(record.get('exit_code', 0), record_interrupted(record))} "
+            f"| {exit_cell(record.get('exit_code', 0), record_interrupted(record), record_ok(record))} "
             f"| {len(artifacts)} |"
         )
     lines.append("")
@@ -295,7 +311,7 @@ def render_report(
     for record in runs:
         rid = record.get("id", "??")
         recipe = record.get("recipe", "unknown")
-        label = exit_label(record.get("exit_code", 0), record_interrupted(record))
+        label = exit_label(record.get("exit_code", 0), record_interrupted(record), record_ok(record))
         lines += [f"## #{rid} · {recipe} · exit {label}", ""]
         lines += _code_block(str(record.get("command", "") or ""))
         lines.append("")

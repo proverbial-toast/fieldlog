@@ -161,6 +161,30 @@ def parse_summary(rule: Optional[dict], text: str) -> str:
     return " ".join(found.split())[:PARSE_SUMMARY_MAX]
 
 
+def success_codes(preset: dict) -> Optional[List[int]]:
+    """The exit codes this preset calls a success, or None to mean 0 alone.
+
+    A tool that reports "nothing found" as 1, or a `--help` that exits 2, has
+    not failed. Saying so on the recipe keeps that judgement with the thing that
+    knows it, instead of in every reader of the archive.
+    """
+    codes = preset.get("success")
+    return list(codes) if isinstance(codes, list) and codes else None
+
+
+def run_succeeded(code: object, codes: Optional[List[int]] = None) -> bool:
+    """Whether `code` counts as success under `codes` (default: 0 alone).
+
+    The one definition of a good exit, so the CLI's status, the TUI's tab, a
+    chain's stop policy and the report cannot disagree about a run.
+    """
+    try:
+        value = int(code)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return False
+    return value in codes if codes else value == 0
+
+
 def find_recipe(catalog: Catalog, spec: str) -> Tuple[Optional[dict], Optional[dict], Optional[str]]:
     """Look up a recipe by '<tool>/<preset>' or '<tool>'.
     Returns (tool, preset, error_message). If tool only, uses first preset.
@@ -566,6 +590,41 @@ def _validate_parsers(cat: Catalog) -> None:
                 preset.pop("parse", None)
 
 
+def _validate_success(cat: Catalog) -> None:
+    """Normalise `success:` to a list of exit codes, dropping what cannot be one.
+
+    Same bargain as a parse rule: an unusable value costs the declaration and is
+    reported, never the recipe. The default — 0 alone — is what it falls back to.
+    """
+    for tool in cat.tools:
+        for preset in tool.get("presets", []):
+            raw = preset.get("success")
+            if raw is None:
+                continue
+            src = f"recipes.d/{preset['src']}: " if preset.get("src") else ""
+            where = f"{src}{tool['id']}/{preset.get('id', 'default')}"
+
+            values = raw if isinstance(raw, list) else [raw]
+            codes: List[int] = []
+            bad: object = None
+            for value in values:
+                # bool is an int in Python; `success: true` is a mistake, not 1.
+                if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 255:
+                    bad = value
+                    break
+                codes.append(value)
+
+            if bad is not None:
+                cat.errors.append(f"{where} success: {bad!r} is not an exit code · ignored")
+                preset.pop("success", None)
+                continue
+            if not codes:
+                cat.errors.append(f"{where} success: lists no exit code · ignored")
+                preset.pop("success", None)
+                continue
+            preset["success"] = codes
+
+
 def load_catalog(
     base: Optional[Path] = None,
     dropin_dir: Optional[Path] = None,
@@ -602,6 +661,7 @@ def load_catalog(
     # Only now can a step be resolved: a base chain may name a drop-in's preset.
     _validate_chains(cat)
     _validate_parsers(cat)
+    _validate_success(cat)
 
     # Never fail closed on one bad operator file: say what survived.
     n = len(cat.files)

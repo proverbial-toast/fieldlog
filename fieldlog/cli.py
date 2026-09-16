@@ -22,7 +22,7 @@ from rich.markup import escape
 
 from fieldlog import __version__
 from fieldlog.archive import load_target_history
-from fieldlog.report import DEFAULT_TAIL, load_runs, render_report, run_number
+from fieldlog.report import DEFAULT_TAIL, load_runs, record_ok, render_report, run_number
 from fieldlog.recipes import (
     Catalog,
     chain_arrow,
@@ -35,6 +35,7 @@ from fieldlog.recipes import (
     format_command,
     is_tool_installed,
     load_catalog,
+    run_succeeded,
     score,
     search,
     steps_label,
@@ -593,10 +594,13 @@ async def execute_cli_job(
 
     elapsed = round(time.time() - start_time, 2)
     delta = job.artifact_delta
+    # The recipe's verdict is fieldlog's exit status; the record keeps the
+    # tool's own code either way, so nothing in the archive is fabricated.
+    status = 0 if run_succeeded(code, job.success_codes) else code
 
     if as_json:
         if not emit_json:
-            return code
+            return status
         manifest_record = {
             "id": job.id,
             "recipe": f"{job.recipe_id}/{job.variant_id}",
@@ -610,13 +614,13 @@ async def execute_cli_job(
             ],
         }
         print(json.dumps(manifest_record, indent=2))
-        return code
+        return status
 
     if not quiet:
         console = Console()
         console.print(f"[dim]{'─' * 80}[/dim]")
-        status_style = "green" if code == 0 else "red"
-        status_label = f"[DONE:{code}]" if code == 0 else f"[FAIL:{code}]"
+        status_style = "green" if status == 0 else "red"
+        status_label = f"[DONE:{code}]" if status == 0 else f"[FAIL:{code}]"
         if job.interrupted:
             status_label += " (interrupted)"
         art_count = delta.total_files if delta else 1
@@ -632,7 +636,7 @@ async def execute_cli_job(
             for a in delta.artifacts:
                 console.print(f"    - {escape(a.path)} ({a.lines or 0} lines, {a.bytes} B)")
 
-    return code
+    return status
 
 
 def run_session(args: argparse.Namespace) -> TargetSession:
@@ -823,11 +827,14 @@ def handle_history(args: argparse.Namespace) -> int:
         dur = r.get("duration_sec", 0)
         start = r.get("start_time", "")
         artifacts = r.get("artifacts", [])
-        status_col = "green" if code == 0 else "red"
+        ok = record_ok(r)
+        status_col = "green" if ok else "red"
+        # Said in words as well as colour: history is piped and redirected.
+        verdict = " (ok)" if ok and code != 0 else ""
         flag = " interrupted" if r.get("interrupted") else ""
         console.print(
             f"  [bold]#{escape(str(rid))}[/bold] [{status_col}]{escape(str(recipe))}[/{status_col}] "
-            f"| exit {code}{flag} | {dur}s | {escape(str(start))}"
+            f"| exit {code}{verdict}{flag} | {dur}s | {escape(str(start))}"
         )
         summary = str(r.get("summary", "") or "")
         if summary:
