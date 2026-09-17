@@ -21,8 +21,25 @@ Effort: **S** an afternoon · **M** a day or two · **L** a week. Items referenc
 | `fields` — the parse rule's named groups — stored on the record | O §2 |
 | Second-pass fixes: `--json` never claims an unarchived record; cheap `$OUTDIR` preview; doctor's `refused` count; `_NN` in `show`; short palette labels via one `reason_kind`; malformed dotted quads refused; Recent repaints and the cursor keeps its row | P §1.9 |
 
-The suite went from 305 tests in 27 files to 376 in 35; `ruff check` is clean. The changes are uncommitted
-on `fix/archive-correctness-and-tui-split`.
+The suite went from 305 tests in 27 files to 376 in 35; `ruff check` is clean.
+
+## Done in the 2026-09-17 remediation pass
+
+Every finding in `problems.md` was re-examined against the code; what was fixed, deferred or rejected is
+recorded there (§ 2–4). Landed:
+
+| Item | Reference |
+|---|---|
+| The stdin bar takes the keyboard only for prompt-shaped text or after a second of blocking | P §2.1 |
+| A whitespace-only partial line no longer leaves a job flagged "awaiting input" (found on the way) | P §2.2 |
+| `check_recipe` / `check_chain` return a `Verdict`; the reason-string matching is gone | P §2.3, D2 |
+| One merge rule for base and drop-ins; duplicates and ignored `name:`/`bin:` are reported, never silent | P §2.4 |
+| Stdin dismissal keyed by the job key; the status band updates in place; scope saved as the form saves | P §2.5–2.7 |
+| A kill cut short by quitting still kills (SIGKILL on the cancellation path for a job already asked to die) | P §2.8 |
+| Dead `ActiveJob.scope` gone; `theme.py` imports nothing of fieldlog's; the substitution boundary is documented in the code | P §2.9–2.11, D5, D6 |
+| README: drop-ins carry the same trust as `--extra-args` | P §2.12 |
+
+The suite is now 438 tests in 41 files; `ruff check` is clean. Committed to `main` on 2026-09-17.
 
 ---
 
@@ -40,27 +57,25 @@ on `fix/archive-correctness-and-tui-split`.
 
 ## Then: hygiene that makes the above safer
 
-7. **P §2.1** soften prompt focus-stealing — S. Two conditions in `_refresh_stdin_bar`.
-8. **D2 `reason_kind` from `is_blocked`** — S. The matching is now in one place (`recipes.reason_kind`);
-   the last step is to return the kind from `is_blocked` itself and delete the matcher.
-9. **P §3.2–3.4** merge-rule reporting, `_stdin_dismissed` key — S together.
-10. **D11 pane tests** — M spread over time. Tree cursor, variant keys, stdin bar on a prompt, layout switch.
-11. **D9 mypy in CI** — M. Start with `state.py`, `archive.py`, `launch.py`, `chain.py` (small, typed
-    dataclasses) and grow.
-12. **P §3.5** in-place status band updates — S.
-13. **README security note** (P §2.2, §2.3) — S.
+7. **D11 pane tests** — M spread over time. The stdin bar, status band and scope form now have them
+   (2026-09-17); the tree cursor, variant keys and layout switch do not.
+8. **D3 narrow the broad `except` guards** — S each, as panes are touched. `_repaint` is the shape.
+9. **P §3.7** palette chain rows could name the blocking step — S; `check_chain` already carries it.
 
 ## Later: the larger directions
 
-14. **F5 workspace report and export** — S–M. Needed the moment fieldlog is used on an engagement with more
+10. **F5 workspace report and export** — S–M. Needed the moment fieldlog is used on an engagement with more
     than one host.
-15. **F6 ad-hoc runs and save-as-recipe** — M. Closes the loop between field work and the catalog.
-16. **D §2 vantage points** — L. The first change to the run model; do it only once the record is complete.
-17. **D §5 automation surface** — M. After the injection footguns have become refusals.
+11. **F6 ad-hoc runs and save-as-recipe** — M. Closes the loop between field work and the catalog.
+12. **D §2 vantage points** — L. The first change to the run model; do it only once the record is complete.
+13. **D §5 automation surface** — M. After the injection footguns have become refusals.
 
 ## Not recommended now
 
 - **D §6 JSONL** — deferred by the maintainer; revisit only if a real target folder gets slow.
+- **mypy (D9)** — declined by the maintainer on 2026-09-16; not to be re-proposed.
+- **D7 `command:` preset field** and **`$LHOST6` (P §3.4)** — both features; queue them behind the field
+  notebook work above rather than alongside hygiene.
 - **F12 repeat mode** — deferred; F8 makes it more attractive later.
 - **A TUI rewrite around a repaint model (D1)** — the mixin split made the code navigable; a full
   invalidation model is worth doing only alongside F1, which is the next big TUI feature and would be the

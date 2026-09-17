@@ -100,4 +100,5 @@ async def test_tui_tabs_stay_unique_when_run_numbers_restart(tmp_workspace: Path
         assert [t.label for t in job_tabs] == ["true/noop #01", "true/noop #01"]
         assert len({t.id for t in job_tabs}) == 2
         assert len(app.jobs) == 2
-        assert {app.jobs[t.job_id].scope for t in job_tabs} == {"10.0.0.1", "10.0.0.2"}
+        # Each job's log sits under the target folder it was spawned for.
+        assert {app.jobs[t.job_id].log_path.parent.parent.name for t in job_tabs} == {"10.0.0.1", "10.0.0.2"}

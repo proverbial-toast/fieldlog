@@ -43,12 +43,13 @@ fieldlog/__main__.py ─► cli.main
   report.py ── pure Markdown from session.json (imports only recipes.run_succeeded)
 ```
 
-The graph is acyclic. Two edges point the "wrong" way and are worth knowing about:
+The graph is acyclic. One edge points the "wrong" way and is worth knowing about:
 
 - `recipes.py` imports `template_vars` from `state.py` (the `$VAR` grammar lives with the session model, but
   the catalog needs it to know which variables a preset uses). `TargetSession` is a `TYPE_CHECKING` import only.
-- `tui/theme.py` imports `RECIPES_PATH` from `recipes.py` to fill one palette hint, so the palette cannot be
-  loaded without YAML being importable.
+
+`tui/theme.py` imports nothing of fieldlog's own (guarded by `tests/test_theme_is_pure.py`); the one
+palette hint that needed the catalog path lives with the palette in `tui/modals.py`.
 
 Textual is imported only under `app.py` and `tui/`; `cli.py` imports `fieldlog.app` lazily inside the `tui`
 branch, so `fieldlog list -q` in a pipeline never pays for it (measured in the repo's own comments: a catalog
@@ -69,10 +70,16 @@ success?, scan?}]}`. `normalize_recipe` fills `bin` from `id`, turns a bare `bin
 `"true"` (YAML reads it as a boolean), and synthesises a single `default` preset for a tool written with
 top-level `flags`. A chain is `{id, name?, steps: [<recipe id> | {recipe, continue?}]}`.
 
-**Merge rules** (`_merge`, `_merge_chains`). A new tool id adds a tool; an existing id adds presets to it. A
-preset or chain id that already exists is replaced and recorded in `overrides`. A drop-in cannot change an
-existing tool's `name` or `bin` (silently ignored — see `problems.md`). Within one file, a duplicate tool id
-merges presets and a duplicate preset id keeps the first.
+**Merge rules** (`_merge`, `_merge_chains`). One rule, applied by one function to the base file and to every
+drop-in alike (`_read_file` returns a file's entries in order without merging anything). A new tool id adds
+a tool; an existing id adds presets to it. A `tool/preset` id that already exists is replaced: across files
+that is recorded in `overrides`, inside one file it is a mistake and lands in `errors` ("defined twice ·
+last one kept"). A `name:` or `bin:` restated on an existing tool with a different value is ignored and
+reported in `errors` (a preset-level `bin:` is the way to run one preset under another binary); restating
+the same value is silent. An entry with neither `presets` nor `flags` (or an empty `presets:`) adds nothing.
+Chains follow the same rule through `_merge_chains`, base file included: a repeated id replaces the earlier
+chain, recorded in `overrides` across files and in `errors` inside one. Guarded by
+`tests/test_merge_rules.py`.
 
 **Validation after everything is merged**, so a base chain may name a drop-in's preset:
 `_validate_chains` drops a chain whose id collides with a tool, has no steps, or names an unknown recipe;
@@ -82,18 +89,20 @@ list of ints in 0..255 and drops anything else. Every rejection lands in `catalo
 for YAML errors, the line. A bad file costs that file; a bad rule costs the rule. This fail-soft policy is
 applied consistently and is one of the two things the earlier reviews said to leave alone.
 
-**Runnability** is one function: `is_blocked(tool, preset, session, flags=None) -> (blocked, reason)`.
-It checks, in order: the binary is on `$PATH` (via a cached per-directory listing, `is_tool_installed`);
+**Runnability** is one function: `check_recipe(tool, preset, session, flags=None) -> Verdict`, a frozen
+dataclass of `blocked`, `kind` (`ready | binary | target | dns | lhost | interface`), `reason` and `missing`
+(the value is unset, as opposed to set and refused). `is_blocked` returns just `(blocked, reason)` for the
+callers that want the text. It checks, in order: the binary is on `$PATH` (via a cached per-directory listing, `is_tool_installed`);
 then for each `$VAR` the template uses — `$TARGET` non-empty, no leading `-`, only `[A-Za-z0-9._:/@-]`;
 `$HOST` (`session.dns_name`) non-empty, no leading `-`, only `[A-Za-z0-9._:/-]`; `$LHOST`
 (`session.effective_lhost()`) non-empty, same rules; `$IFACE` no leading `-`, same allowlist (empty allowed).
 A target made only of digits and dots that `ipaddress` rejects (`10.0.0.256`) is refused as "not a valid
 address". `flags` is the template that will actually run when a TUI args edit differs from the preset. Every
-caller (CLI `run`, `doctor`, chains, the TUI's Run button, the palette) goes through it. The reason strings
-are a small protocol: `reason_kind(reason)` (`ready | binary | target | dns | lhost | interface | other`) and
-`reason_missing(reason)` (a "needs …" reason, as opposed to a refused value) sit beside `is_blocked` and are
-the only place the prose is matched; `doctor` buckets with them and the TUI's `short_reason` labels with them
-(see `problems.md` § 2.4).
+caller (CLI `run`, `doctor`, chains, the TUI's Run button, the palette) goes through it. `check_chain`
+returns the first blocked step's verdict with the step named in the reason; `chain_blocked` is its
+`(blocked, reason)` form. `doctor` buckets by `verdict.kind`/`verdict.missing` and the TUI's `short_reason`
+labels from the same fields, so the reason text is prose and nothing matches on it (guarded by
+`tests/test_verdict.py`).
 
 Scope values are **allowlisted, not quoted**: they are interpolated raw into a `sh` command line, so safety
 rests entirely on the allowlist. `--extra-args` is appended unvalidated by design (documented as "append to
@@ -166,13 +175,18 @@ out_dir, note)` → `LaunchPlan(job, command, env, timeout, warnings)`** — the
 - `loop.add_reader(master)` feeds an `asyncio.Queue`; the loop splits chunks into lines, writes the
   ANSI-stripped line to the log (line-buffered) and hands the raw line to the front-end's `sink`;
 - **prompt heuristic:** a partial line followed by 0.4 s of silence marks the job "awaiting input"
-  (`job.await_prompt`), and the partial line is committed to the log so the artifact reads
-  question-then-answer. Nothing is parsed semantically. `send_stdin` writes the reply and injects a `› reply`
+  (`job.await_prompt`, which may be `''` for a whitespace-only line — the flag is `is not None`), and the
+  partial line is committed to the log so the artifact reads question-then-answer. Nothing is parsed
+  semantically; the next output clears the flag. The TUI raises its stdin bar for every block but moves the
+  keyboard into it only when the text ends like a prompt (`?`, `:`, `]`, `)`) or the block has lasted
+  `STDIN_FOCUS_AFTER` (1 s). `send_stdin` writes the reply and injects a `› reply`
   note — or `› (reply hidden)` unless the reply is one of the prompt's bracketed choices (`[y/N]`);
 - on exit: `shell_exit_code` (signal death → 128+N), summary and fields from the log tail, artifact
   attribution (§6), then `_append_manifest` builds the record, stores it on `job.record`, and
   `archive.append_record` writes it;
-- on cancellation (the TUI quitting): SIGTERM to the process group.
+- on cancellation (the TUI quitting): closing the pty master hangs up the child's controlling terminal
+  (SIGHUP, the end of most tools), then SIGTERM to the process group — or SIGKILL if `kill_job` had already
+  been asked for this job (`job.kill_requested`), since the SIGKILL it scheduled dies with the loop.
 
 Interrupt is `os.killpg(SIGINT)` (`interrupt_job`); the TUI's kill adds SIGKILL after 10 s (`kill_job`).
 
@@ -189,7 +203,7 @@ numbers are contiguous.
 
 | Tier | Where | Lifetime |
 |---|---|---|
-| Scope | `TargetSession` | process; the TUI persists it to `<workspace>/.last-scope.json` on unmount (only an operator-set `lhost` is saved) |
+| Scope | `TargetSession` | process; the TUI persists it to `<workspace>/.last-scope.json` whenever the `T` form is saved and again on unmount (only an operator-set `lhost` is saved) |
 | Job | `ActiveJob` — id, paths, pty fd, queue, counts, exit, summary, fields, note, record, prompt state | one run; the TUI drops it with its tab |
 | Catalog | `Catalog` in the process; `Shift+R` reloads | process |
 | Durable | `<workspace>/<slug>/session.json`, `raw/`, `.run-counter`, `.session.lock`; `<workspace>/.pinned-recent.json` | forever |

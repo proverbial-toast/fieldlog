@@ -299,6 +299,9 @@ class TargetModal(ModalScreen[bool]):
             self.session.interface = name
             # Only a typed `iface / address` sets one; otherwise $LHOST follows the interface.
             self.session.lhost = addr
+        # Cache it now rather than only at unmount: a scope the operator typed
+        # here should survive a crash or a killed terminal, not just a clean quit.
+        save_last_scope(self.session)
         self.dismiss(True)
 
     def action_cancel(self) -> None:

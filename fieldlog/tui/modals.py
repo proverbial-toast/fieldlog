@@ -20,7 +20,7 @@ from fieldlog.recipes import (
 )
 from fieldlog.tui.helpers import copy_text_to_clipboard, short_reason, truncate_right
 from fieldlog.tui.theme import (
-    ACCENT, BG_BASE, DIM, ERR, FAINT, FG, META_COMMANDS, MUTED, SOFT, UNFOCUSED, WARN,
+    ACCENT, BG_BASE, DIM, ERR, FAINT, FG, MUTED, SOFT, UNFOCUSED, WARN,
 )
 
 if TYPE_CHECKING:
@@ -307,6 +307,23 @@ class PaletteRowItem(Static):
             self.screen.pick_index(self.index, run=shift)
 
 
+# The palette's second half: what the harness itself can do, in the same list
+# as the tasks. Here rather than in theme.py because one hint is a catalog path,
+# and the palette constants have to stay readable without loading the yaml.
+META_COMMANDS = [
+    {"id": "mgr", "key": "M", "label": "Open recipe manager", "hint": "sources · counts · availability", "action": "recipe_manager"},
+    {"id": "reload", "key": "⇧R", "label": "Reload recipes from yaml", "hint": "keeps sessions", "action": "reload_recipes"},
+    {"id": "scope", "key": "T", "label": "Target scope & log destination", "hint": "", "action": "target_scope"},
+    {"id": "copypath", "key": "Y", "label": "Copy recipes yaml path", "hint": str(RECIPES_PATH), "action": "copy_catalog_path"},
+    {"id": "copytail", "key": "Y", "label": "Copy tail -f for active artifact", "hint": "read output in a pager", "action": "copy_tail"},
+    {"id": "layout", "key": "L", "label": "Toggle split / stacked layout", "hint": "stacked ≤ 120 cols", "action": "toggle_layout"},
+    {"id": "runnable", "key": "!", "label": "Toggle runnable-only filter", "hint": "", "action": "toggle_hide_missing"},
+    {"id": "closefin", "key": "⇧W", "label": "Close finished job tabs", "hint": "", "action": "close_finished_tabs"},
+    {"id": "copylog", "key": "Ctrl+Shift+C", "label": "Copy active log to clipboard", "hint": "whole buffer", "action": "copy_log"},
+    {"id": "keys", "key": "?", "label": "Key bindings", "hint": "", "action": "help"},
+]
+
+
 class PaletteModal(ModalScreen[Optional[Tuple]]):
     """Ctrl+P palette. Enter loads the row's args; ⇧Enter loads and runs."""
 
@@ -352,12 +369,12 @@ class PaletteModal(ModalScreen[Optional[Tuple]]):
             chain_rows: List[dict] = []
             if q:
                 hits = search(app.recipes, q, app.blocked_flag, app.hide_missing, limit=7)
-                # The real reason rides along, so a row can say what is actually
-                # missing. Asked for only when the row is blocked: the verdict
-                # re-runs a $PATH lookup and an ioctl per row.
+                # The verdict rides along, so a row can say what is actually
+                # missing. Asked for only when the row is blocked: it re-runs a
+                # $PATH lookup and an ioctl per row.
                 rows = [
                     {"kind": "task", "tool": t, "preset": p, "blocked": b,
-                     "reason": app.is_blocked(t, p)[1] if b else ""}
+                     "verdict": app.verdict(t, p) if b else None}
                     for t, p, b in hits
                 ]
                 chain_rows = [
@@ -382,9 +399,10 @@ class PaletteModal(ModalScreen[Optional[Tuple]]):
                         if not t:
                             continue
                         p = app.get_preset(t, preset_id)
-                        blocked, reason = app.is_blocked(t, p)
-                        rows.append({"kind": "task", "tool": t, "preset": p, "blocked": blocked,
-                                     "reason": reason if blocked else ""})
+                        verdict = app.verdict(t, p)
+                        rows.append({"kind": "task", "tool": t, "preset": p,
+                                     "blocked": verdict.blocked,
+                                     "verdict": verdict if verdict.blocked else None})
                     if len(rows) >= 6:
                         break
                 title = "pinned & recent"
@@ -440,10 +458,14 @@ class PaletteModal(ModalScreen[Optional[Tuple]]):
         else:
             t, p = item["tool"], item["preset"]
             t_bin = t.get("bin", t["id"])
-            # The blocked reason as is_blocked phrased it: a missing target, an
-            # unsafe one and a missing local address are different problems and
-            # used to read alike here.
-            state = "" if ok else short_reason(str(item.get("reason", "")))
+            # The blocked verdict as check_recipe reached it: a missing target,
+            # an unsafe one and a missing local address are different problems
+            # and used to read alike here.
+            # The verdict is fetched only for a row search() called blocked; if
+            # the two evaluations disagree within one keystroke (a binary just
+            # installed, an interface just up) the cell is blank, not a crash.
+            verdict = item.get("verdict")
+            state = short_reason(verdict) if not ok and verdict is not None else ""
             cells = (
                 f"{t_bin[:10]:<11}",
                 f"{p.get('name', p['id'])[:26]:<27}",

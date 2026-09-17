@@ -1,10 +1,12 @@
 """Recipe catalog: base yaml + `recipes.d/*.yaml` drop-ins, and the search matcher.
 
 Load order is base-first, then every drop-in in lexical filename order — the
-config dir, then `./recipes.d`, where a same-named local file wins. A
-drop-in may add a tool or add variants to an existing one; a colliding
-`tool/variant` id means last file wins. A drop-in can never delete a base
-recipe, and one malformed file never takes down the catalog.
+config dir, then `./recipes.d`, where a same-named local file wins. One merge
+rule holds everywhere, inside a file and across them: a repeated tool id adds
+its variants to the tool defined first, a repeated `tool/variant` id replaces
+the earlier one, and a `name:` or `bin:` restated on a tool that already exists
+is ignored and said so. A drop-in can never delete a base recipe, and one
+malformed file never takes down the catalog.
 """
 
 from __future__ import annotations
@@ -127,13 +129,34 @@ def unsafe_scope_chars(value: str, pattern: re.Pattern = _UNSAFE_SCOPE) -> str:
     return "".join(dict.fromkeys(pattern.findall(value or "")))
 
 
-def is_blocked(
+@dataclass(frozen=True)
+class Verdict:
+    """Whether a recipe can run against a scope, and what kind of gap stops it.
+
+    `kind` is one of `ready | binary | target | dns | lhost | interface`: what
+    the reader would have to go and fix. It is decided here, beside the reason
+    text, so doctor's buckets and the palette's labels read one answer instead
+    of each re-deriving it from the English.
+
+    `missing` splits the two things a reader is told to do: set the value, or
+    look at the value that is already there. Only an unset scope value is
+    missing — one that is set and refused is not, and telling the operator to
+    set it sends them to fill in what is already filled in.
+    """
+
+    blocked: bool
+    kind: str
+    reason: str
+    missing: bool = False
+
+
+def check_recipe(
     tool: dict, preset: dict, session: TargetSession, flags: Optional[str] = None
-) -> Tuple[bool, str]:
-    """(blocked, reason). Reasons are terse and surface-neutral — the caller
-    frames them (a CLI error, doctor's marks, the TUI's disabled button).
-    Missing binary and missing dns name are distinct reasons and must never be
-    reported as each other.
+) -> Verdict:
+    """The verdict for one recipe now. Reasons are terse and surface-neutral —
+    the caller frames them (a CLI error, doctor's marks, the TUI's disabled
+    button). Missing binary and missing dns name are distinct reasons and must
+    never be reported as each other.
 
     `flags` is the template that will actually run, when that is not the
     preset's own — a TUI args edit. The gate has to read what launches, not what
@@ -142,82 +165,63 @@ def is_blocked(
     """
     bin_name = preset.get("bin", tool.get("bin", tool.get("id", "")))
     if not is_tool_installed(bin_name):
-        return True, f"{bin_name}: not found in $PATH"
+        return Verdict(True, "binary", f"{bin_name}: not found in $PATH")
     used = template_vars(preset.get("flags", "") if flags is None else flags)
     if "TARGET" in used:
         if not (session.target or "").strip():
-            return True, "needs a target"
+            return Verdict(True, "target", "needs a target", missing=True)
         # A scope value is pasted in after the tool's own flags, so a leading
         # `-` is read as one more flag: `--target=-f` would arm ping's flood.
         # A `-` inside the value (`box-1`, `10-0-0-1.example`) is fine.
         target = session.target.strip()
         if target.startswith("-"):
-            return True, "target must not start with -"
+            return Verdict(True, "target", "target must not start with -")
         # Digits and dots is an address being typed, so a typo in one (`1.2.3`,
         # `10.0.0.256`) is a mistake worth catching rather than a hostname.
         if _DOTTED.fullmatch(target) and not is_ip_address(target):
-            return True, "target is not a valid address"
+            return Verdict(True, "target", "target is not a valid address")
         bad = unsafe_scope_chars(session.target, _UNSAFE_TARGET)
         if bad:
-            return True, f"target has unsafe characters ({bad})"
+            return Verdict(True, "target", f"target has unsafe characters ({bad})")
     if "HOST" in used:
         if not session.dns_name:
-            return True, "needs a dns name"
+            return Verdict(True, "dns", "needs a dns name", missing=True)
         if session.dns_name.startswith("-"):
-            return True, "dns name must not start with -"
+            return Verdict(True, "dns", "dns name must not start with -")
         bad = unsafe_scope_chars(session.dns_name)
         if bad:
-            return True, f"dns name has unsafe characters ({bad})"
+            return Verdict(True, "dns", f"dns name has unsafe characters ({bad})")
     if "LHOST" in used:
         lhost = session.effective_lhost()
         if not lhost:
             # An interface with no IPv4 would turn `-B $LHOST` into a bare `-B`.
             iface = session.interface or "the interface"
-            return True, f"needs a local address · {iface} has no IPv4 address"
+            return Verdict(
+                True, "lhost", f"needs a local address · {iface} has no IPv4 address", missing=True
+            )
         if lhost.startswith("-"):
-            return True, "local address must not start with -"
+            return Verdict(True, "lhost", "local address must not start with -")
         bad = unsafe_scope_chars(lhost)
         if bad:
-            return True, f"local address has unsafe characters ({bad})"
+            return Verdict(True, "lhost", f"local address has unsafe characters ({bad})")
     if "IFACE" in used:
         # $IFACE is interpolated into the shell command like the scope above, so
         # it takes the same allowlist. An empty interface stays allowed: the
         # command just carries a blank, the same as before this check.
         if (session.interface or "").startswith("-"):
-            return True, "interface must not start with -"
+            return Verdict(True, "interface", "interface must not start with -")
         bad = unsafe_scope_chars(session.interface)
         if bad:
-            return True, f"interface has unsafe characters ({bad})"
-    return False, f"{bin_name} · in $PATH"
+            return Verdict(True, "interface", f"interface has unsafe characters ({bad})")
+    return Verdict(False, "ready", f"{bin_name} · in $PATH")
 
 
-# What each of is_blocked's reasons is about, matched on the phrases it emits.
-# One definition: doctor's buckets and the palette's labels both read it, so
-# neither re-derives that logic and the two cannot drift apart.
-def reason_kind(reason: str) -> str:
-    """`ready | binary | target | dns | lhost | interface | other` for a reason."""
-    if " · in $PATH" in reason:
-        return "ready"
-    if "not found in $PATH" in reason:
-        return "binary"
-    if "dns name" in reason:
-        return "dns"
-    if "local address" in reason:
-        return "lhost"
-    if "interface has unsafe" in reason or "interface must not" in reason:
-        return "interface"
-    if "target" in reason:
-        return "target"
-    return "other"
-
-
-def reason_missing(reason: str) -> bool:
-    """Whether the block is a value that is not set, rather than one refused.
-
-    The difference is what a reader is told to do: set the value, or look at
-    the one that is already there.
-    """
-    return reason.startswith("needs ")
+def is_blocked(
+    tool: dict, preset: dict, session: TargetSession, flags: Optional[str] = None
+) -> Tuple[bool, str]:
+    """`(blocked, reason)` — check_recipe for a caller that wants only the text."""
+    verdict = check_recipe(tool, preset, session, flags)
+    return verdict.blocked, verdict.reason
 
 
 def writes_outdir(preset: dict, flags: Optional[str] = None) -> bool:
@@ -496,6 +500,8 @@ class Catalog:
     # Where each of those filenames was actually read from — the config dir and
     # `./recipes.d` both feed `files`, so the name alone cannot say.
     file_paths: Dict[str, Path] = field(default_factory=dict)
+    # A variant replaced by a later file — expected, and worth saying. The same
+    # id twice inside one file is a mistake instead, and is reported in `errors`.
     overrides: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
@@ -515,8 +521,14 @@ class Catalog:
         )
 
 
-def _read_file(path: Path) -> Tuple[List[dict], List[dict]]:
-    """(tools, chains) from one yaml file. A list-form file is tools only."""
+def _read_file(path: Path) -> Tuple[List[Tuple[dict, frozenset]], List[dict]]:
+    """(entries, chains) from one yaml file. A list-form file is tools only.
+
+    An entry is `(tool, keys as written)`: nothing is merged here, not even two
+    entries of the same file, so that `_merge` is the only place a collision is
+    decided. The raw keys ride along because normalize_recipe fills `bin` in for
+    every tool, and only the file says whether the operator typed it.
+    """
     data = _parse_yaml(path.read_text(encoding="utf-8", errors="replace")) or {}
     raw_chains: List[dict] = []
     if isinstance(data, list):
@@ -531,59 +543,79 @@ def _read_file(path: Path) -> Tuple[List[dict], List[dict]]:
     else:
         raise ValueError("top level is not a mapping or list")
 
-    out: List[dict] = []
-    by_id: Dict[str, dict] = {}
-
+    entries: List[Tuple[dict, frozenset]] = []
     for r in raw:
         if not isinstance(r, dict) or "id" not in r:
             raise ValueError("a recipe entry has no id")
-        norm = normalize_recipe(r)
-        tid = norm["id"]
-        if tid in by_id:
-            existing = by_id[tid]
-            preset_ids = {p["id"] for p in existing.get("presets", [])}
-            for p in norm.get("presets", []):
-                if p["id"] not in preset_ids:
-                    existing["presets"].append(p)
-                    preset_ids.add(p["id"])
-        else:
-            by_id[tid] = norm
-            out.append(norm)
+        # `presets:` left empty or null is the same as absent: nothing written.
+        entries.append((normalize_recipe(r), frozenset(k for k in r if k != "presets" or r["presets"])))
 
-    return out, [normalize_chain(c) for c in raw_chains]
+    return entries, [normalize_chain(c) for c in raw_chains]
 
 
-def _read_tools(path: Path) -> List[dict]:
-    """Just the tools of a file — the shape every caller but load_catalog wants."""
-    return _read_file(path)[0]
+# What a second definition of a tool is for, and what it is not for — said once
+# here because the same sentence is the answer for both `name:` and `bin:`.
+_IGNORED_TOOL_KEY = {
+    "bin": "a later file adds presets to a tool, not a new bin · set bin: on the preset",
+    "name": "the first definition names the tool",
+}
 
 
-def _merge(tools: List[dict], incoming: List[dict], src: Optional[str], overrides: List[str]) -> None:
-    """Merge `incoming` into `tools` in place. Last definition wins, and says so."""
+def _merge(
+    tools: List[dict],
+    entries: List[Tuple[dict, frozenset]],
+    src: Optional[str],
+    overrides: List[str],
+    errors: List[str],
+    label: str,
+) -> None:
+    """Fold one file's entries into `tools` in place, saying what it changed.
+
+    The whole merge rule, and the only one: a repeated tool id adds its presets
+    to the tool defined first, a repeated `tool/preset` id replaces the earlier
+    preset, and `name:`/`bin:` written again on a tool that already exists is
+    ignored. The base file comes through here too (`src=None`), so a drop-in and
+    the shipped catalog cannot be merged by different rules.
+
+    Nothing is ever dropped over a message: a repeat inside one file is a
+    mistake worth reporting, but the preset the operator wrote last still wins.
+    """
     by_id = {t["id"]: t for t in tools}
-    for new in incoming:
-        target = by_id.get(new["id"])
+    written: set = set()                # `tool/preset` keys this file has placed
+    for new, as_written in entries:
+        tid = new["id"]
+        target = by_id.get(tid)
         if target is None:
-            tool = dict(new)
-            tool["presets"] = [dict(p, **({"src": src} if src else {})) for p in new["presets"]]
-            if src:
-                tool["src"] = src
-            tools.append(tool)
-            by_id[tool["id"]] = tool
-            continue
-        for key in ("name", "bin"):
-            if key in new and src is None:
-                target[key] = new[key]
-        existing = {p["id"]: i for i, p in enumerate(target["presets"])}
+            target = dict(new, presets=[], **({"src": src} if src else {}))
+            tools.append(target)
+            by_id[tid] = target
+        else:
+            for key, why in _IGNORED_TOOL_KEY.items():
+                # Only a value that differs is worth a line: a drop-in that
+                # copies the base entry, `bin:` and all, before adding to it
+                # has restated the tool, not tried to change it.
+                if key in as_written and new.get(key) != target.get(key):
+                    errors.append(f"{label}: {tid}: {key} ignored · {why}")
+            # An entry with no recipe of its own has nothing left to add.
+            # normalize_recipe gives every tool a `default` preset to stand in
+            # for absent ones; merged here it would be a phantom recipe.
+            if "presets" not in as_written and "flags" not in as_written:
+                continue
+
+        index = {p["id"]: i for i, p in enumerate(target["presets"])}
         for p in new["presets"]:
+            pid = p["id"]
             merged = dict(p, **({"src": src} if src else {}))
-            if p["id"] in existing:
-                target["presets"][existing[p["id"]]] = merged
-                if src:
-                    overrides.append(f"{target['id']}/{p['id']} overridden by recipes.d/{src}")
+            if pid in index:
+                target["presets"][index[pid]] = merged
+                if f"{tid}/{pid}" in written:
+                    errors.append(f"{label}: {tid}/{pid} defined twice · last one kept")
+                elif src:
+                    overrides.append(f"{tid}/{pid} overridden by recipes.d/{src}")
             else:
-                existing[p["id"]] = len(target["presets"])
+                index[pid] = len(target["presets"])
                 target["presets"].append(merged)
+            written.add(f"{tid}/{pid}")
 
 
 # ---- Chains ---------------------------------------------------------------
@@ -611,18 +643,32 @@ def normalize_chain(c: dict) -> dict:
     }
 
 
-def _merge_chains(chains: List[dict], incoming: List[dict], src: Optional[str], overrides: List[str]) -> None:
-    """Last definition of an id wins, and says so — as preset overrides do."""
+def _merge_chains(
+    chains: List[dict],
+    incoming: List[dict],
+    src: Optional[str],
+    overrides: List[str],
+    errors: List[str],
+    label: str,
+) -> None:
+    """The preset rule, for chains: a repeated id replaces the earlier chain —
+    an override across files, a mistake inside one. The base file comes through
+    here too, so a chain id repeated in it is one chain, not two."""
     by_id = {c["id"]: i for i, c in enumerate(chains)}
+    written: set = set()                # chain ids this file has placed
     for new in incoming:
         item = dict(new, **({"src": src} if src else {}))
-        if item["id"] in by_id:
-            chains[by_id[item["id"]]] = item
-            if src:
-                overrides.append(f"chain {item['id']} overridden by recipes.d/{src}")
+        cid = item["id"]
+        if cid in by_id:
+            chains[by_id[cid]] = item
+            if cid in written:
+                errors.append(f"{label}: chain {cid} defined twice · last one kept")
+            elif src:
+                overrides.append(f"chain {cid} overridden by recipes.d/{src}")
         else:
-            by_id[item["id"]] = len(chains)
+            by_id[cid] = len(chains)
             chains.append(item)
+        written.add(cid)
 
 
 def _validate_chains(cat: Catalog) -> None:
@@ -673,13 +719,16 @@ def chain_steps(catalog: Catalog, chain: dict) -> List[Tuple[dict, dict, bool]]:
     return out
 
 
-def chain_blocked(
+def check_chain(
     catalog: Catalog,
     chain: dict,
     session: TargetSession,
     flags_overrides: Optional[Dict[str, str]] = None,
-) -> Tuple[bool, str]:
-    """(blocked, reason) for the first step that cannot run now.
+) -> Verdict:
+    """The verdict of the first step that cannot run now, naming that step.
+
+    The kind and the missing/refused split are the step's own, so a chain
+    blocked on an unset target is bucketed exactly as the recipe would be.
 
     `flags_overrides` maps a recipe key to the template that step will run with,
     so the gate sees the same args `run_chain` will hand it.
@@ -688,10 +737,21 @@ def chain_blocked(
     overrides = flags_overrides or {}
     for index, (tool, preset, _cont) in enumerate(steps, start=1):
         key = f"{tool['id']}/{preset['id']}"
-        blocked, reason = is_blocked(tool, preset, session, flags=overrides.get(key))
-        if blocked:
-            return True, f"step {index} {tool['id']}/{preset['id']}: {reason}"
-    return False, f"{len(steps)} steps ready"
+        step = check_recipe(tool, preset, session, flags=overrides.get(key))
+        if step.blocked:
+            return Verdict(True, step.kind, f"step {index} {key}: {step.reason}", step.missing)
+    return Verdict(False, "ready", f"{len(steps)} steps ready")
+
+
+def chain_blocked(
+    catalog: Catalog,
+    chain: dict,
+    session: TargetSession,
+    flags_overrides: Optional[Dict[str, str]] = None,
+) -> Tuple[bool, str]:
+    """`(blocked, reason)` — check_chain for a caller that wants only the text."""
+    verdict = check_chain(catalog, chain, session, flags_overrides)
+    return verdict.blocked, verdict.reason
 
 
 def chain_matches(chain: dict, q: str) -> bool:
@@ -808,10 +868,16 @@ def load_catalog(
     cat = Catalog(base_path=base, dropin_dir=DROPIN_DIR if dropin_dir is None else dropin_dir)
     if base.exists():
         try:
-            cat.tools, cat.chains = _read_file(base)
+            entries, base_chains = _read_file(base)
         except Exception as exc:  # noqa: BLE001 — a bad base is still not a crash
             cat.errors.append(f"{display_path(base)}{_where(exc)} invalid · no base recipes loaded")
             cat.tools, cat.chains = [], []
+        else:
+            # The base goes through the same merge as a drop-in, untagged: a
+            # duplicate id in the shipped file is the same mistake as in one of
+            # the operator's, and is worth the same message.
+            _merge(cat.tools, entries, None, cat.overrides, cat.errors, display_path(base))
+            _merge_chains(cat.chains, base_chains, None, cat.overrides, cat.errors, display_path(base))
 
     paths, shadowed = scan_dropins(dropin_dir)
     cat.errors.extend(shadowed)
@@ -823,8 +889,14 @@ def load_catalog(
         except Exception as exc:  # noqa: BLE001
             bad.append(f"recipes.d/{path.name}{_where(exc)} invalid · skipped")
             continue
-        _merge(cat.tools, incoming, path.name, cat.overrides)
-        _merge_chains(cat.chains, incoming_chains, path.name, cat.overrides)
+        _merge(
+            cat.tools, incoming, path.name, cat.overrides, cat.errors,
+            f"recipes.d/{path.name}",
+        )
+        _merge_chains(
+            cat.chains, incoming_chains, path.name, cat.overrides, cat.errors,
+            f"recipes.d/{path.name}",
+        )
         cat.files.append(path.name)
         cat.file_paths[path.name] = path
 

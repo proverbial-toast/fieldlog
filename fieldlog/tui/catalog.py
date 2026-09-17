@@ -16,9 +16,10 @@ from textual.widgets import Static
 from fieldlog import recipes as recipes_mod
 from fieldlog.recipes import (
     RECIPES_PATH,
+    Verdict,
     chain_blocked,
+    check_recipe,
     display_path,
-    is_blocked,
     clear_tool_cache,
     is_tool_installed,
     load_catalog,
@@ -60,16 +61,20 @@ class CatalogMixin:
     def selected_chain(self) -> Optional[dict]:
         return self.get_chain(self.selected_chain_id) if self.selected_chain_id else None
 
-    def is_blocked(self, tool: dict, preset: dict) -> Tuple[bool, str]:
-        """(blocked, reason). Missing binary and missing dns name are
-        distinct reasons and must never be reported as each other.
+    def verdict(self, tool: dict, preset: dict) -> Verdict:
+        """Whether this recipe can run now, and what kind of gap stops it.
 
         Judged against this recipe's args edit when it has one, because that is
         the template `_spawn_job` will launch — a row that says it can run and
         then runs with an empty `$HOST` is the same bug either way.
         """
         key = f"{tool.get('id', '')}/{preset.get('id', '')}"
-        return is_blocked(tool, preset, self.session, flags=self.flag_edits.get(key))
+        return check_recipe(tool, preset, self.session, flags=self.flag_edits.get(key))
+
+    def is_blocked(self, tool: dict, preset: dict) -> Tuple[bool, str]:
+        """(blocked, reason) for a caller that wants only the text."""
+        verdict = self.verdict(tool, preset)
+        return verdict.blocked, verdict.reason
 
     def blocked_flag(self, tool: dict, preset: dict) -> bool:
         return self.is_blocked(tool, preset)[0]

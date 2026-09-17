@@ -34,5 +34,6 @@ Every claim in the reference set carries one of four tags, so a reader can tell 
 Line references are of the form `module.py:NN` and were correct on the date of the document; they drift.
 
 The investigation behind the reference set was done on 2026-09-16 against branch
-`fix/archive-correctness-and-tui-split`. Where a document says "this pass", it means the implementation work
-that accompanied that investigation (see `problems.md` § "Fixed in this pass").
+`fix/archive-correctness-and-tui-split`, and a remediation pass over its findings followed on 2026-09-17.
+`problems.md` § 1 records what the investigation fixed as it went, § 2 what the remediation pass fixed, and
+§ 3–4 the state of everything else; `next-steps.md` has a "Done" table for each.

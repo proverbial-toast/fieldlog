@@ -7,10 +7,10 @@ import re
 import sys
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from fieldlog.recipes import reason_kind, reason_missing
-
 if TYPE_CHECKING:
     from textual.app import App
+
+    from fieldlog.recipes import Verdict
 
 
 def parse_iface_field(raw: str, current: str) -> Tuple[str, str]:
@@ -78,18 +78,17 @@ _SHORT_REFUSED = {
 }
 
 
-def short_reason(reason: str, width: int = 15) -> str:
-    """A blocked reason in a list cell, phrased from `recipes.reason_kind`.
+def short_reason(verdict: "Verdict", width: int = 15) -> str:
+    """A blocked verdict in a list cell, phrased from its kind.
 
     A missing binary is the gap the operator installs; everything else is a
-    scope value, either unset or refused. Anything unrecognised falls back to
-    the head of the reason as is_blocked wrote it.
+    scope value, either unset or refused. A kind with no label of its own falls
+    back to the head of the reason as check_recipe wrote it.
     """
-    kind = reason_kind(reason)
-    if kind == "binary":
+    if verdict.kind == "binary":
         return "not installed"
-    table = _SHORT_MISSING if reason_missing(reason) else _SHORT_REFUSED
-    return table.get(kind) or truncate_right(reason.split(" · ")[0], width)
+    table = _SHORT_MISSING if verdict.missing else _SHORT_REFUSED
+    return table.get(verdict.kind) or truncate_right(verdict.reason.split(" · ")[0], width)
 
 
 def truncate_right(text: str, width: int) -> str:

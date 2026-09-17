@@ -1,8 +1,10 @@
-"""Shared palette, layout constants, and command tables for the TUI."""
+"""Shared palette and layout constants for the TUI.
+
+Imports nothing of fieldlog's own: a colour is wanted by every module here, and
+one import of the catalog would make reading a hex code parse recipes.yaml.
+"""
 
 from __future__ import annotations
-
-from fieldlog.recipes import RECIPES_PATH
 
 # Exact hex color palette.
 ACCENT = "#6fd7bd"
@@ -55,17 +57,4 @@ HOTKEYS = [
     ("W", "Close Tab", False),
     ("L", "Layout", False),
     ("?", "All Keys", False),
-]
-
-META_COMMANDS = [
-    {"id": "mgr", "key": "M", "label": "Open recipe manager", "hint": "sources · counts · availability", "action": "recipe_manager"},
-    {"id": "reload", "key": "⇧R", "label": "Reload recipes from yaml", "hint": "keeps sessions", "action": "reload_recipes"},
-    {"id": "scope", "key": "T", "label": "Target scope & log destination", "hint": "", "action": "target_scope"},
-    {"id": "copypath", "key": "Y", "label": "Copy recipes yaml path", "hint": str(RECIPES_PATH), "action": "copy_catalog_path"},
-    {"id": "copytail", "key": "Y", "label": "Copy tail -f for active artifact", "hint": "read output in a pager", "action": "copy_tail"},
-    {"id": "layout", "key": "L", "label": "Toggle split / stacked layout", "hint": "stacked ≤ 120 cols", "action": "toggle_layout"},
-    {"id": "runnable", "key": "!", "label": "Toggle runnable-only filter", "hint": "", "action": "toggle_hide_missing"},
-    {"id": "closefin", "key": "⇧W", "label": "Close finished job tabs", "hint": "", "action": "close_finished_tabs"},
-    {"id": "copylog", "key": "Ctrl+Shift+C", "label": "Copy active log to clipboard", "hint": "whole buffer", "action": "copy_log"},
-    {"id": "keys", "key": "?", "label": "Key bindings", "hint": "", "action": "help"},
 ]

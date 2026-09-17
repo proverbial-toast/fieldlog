@@ -66,7 +66,7 @@ def plan_launch(
     tool_id = tool["id"]
     preset_id = preset.get("id", "default")
     run_id = next_run_id(session, reserve=not dry_run)
-    log_path, out_dir, root, scope, stamp = prepare_job_paths(
+    log_path, out_dir, root, stamp = prepare_job_paths(
         session, tool_id, preset_id, run_id, create=not dry_run, stamp=stamp, out_dir=out_dir
     )
 
@@ -101,7 +101,6 @@ def plan_launch(
         variant_id=preset_id,
         command=command,
         root=root,
-        scope=scope,
         stamp=stamp,
         out_dir=out_dir,
         chain=chain,

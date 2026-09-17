@@ -14,14 +14,16 @@ import time
 from typing import List, Optional, Tuple
 
 from rich.text import Text
+from textual.app import ScreenStackError
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches, WrongType
 from textual.widgets import ContentSwitcher, RichLog, Static
 
 from fieldlog.recipes import run_succeeded
 from fieldlog import __version__ as VERSION
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
-from fieldlog.runner import HIDDEN_REPLY, interrupt_job, kill_job, loggable_reply, run_job, send_stdin
+from fieldlog.runner import HIDDEN_REPLY, interrupt_job, kill_job, loggable_reply, run_job, send_stdin, strip_ansi
 from fieldlog.state import ActiveJob, save_pinned_recent
 from fieldlog.tui.helpers import copy_text_to_clipboard, truncate_right
 from fieldlog.tui.models import TabDescriptor
@@ -29,6 +31,13 @@ from fieldlog.tui.modals import CloseJobModal
 from fieldlog.tui.theme import ACCENT, DIM, ERR, FAINT, FG, GUTTER, SOFT, WARN
 from fieldlog.tui.widgets import StdinChip, StdinInput, TabItem
 
+
+# How long a job must have been blocked before an unrecognised prompt is worth
+# the operator's keyboard. The runner calls a job "awaiting" after a partial
+# line and 0.4s of quiet (runner.BLOCK_GRACE), which a tool that prints
+# `working...` and pauses also satisfies; a wait this long is no longer
+# explained by a slow tool.
+STDIN_FOCUS_AFTER = 1.0
 
 
 class JobsMixin:
@@ -100,8 +109,8 @@ class JobsMixin:
     def _refresh_status_band(self) -> None:
         try:
             box = self.query_one("#status-items", Horizontal)
-        except Exception:
-            return
+        except (NoMatches, WrongType, ScreenStackError):
+            return                      # not mounted yet, or no screen at all
         items = self._status_items()
         # Must not wrap to a second row: drop items rather than wrap.
         avail = max(20, self.size.width - 26)
@@ -112,15 +121,22 @@ class JobsMixin:
                 break
             budget += cost
             keep.append((label, value, color))
+        texts = [
+            Text.assemble((label.upper() + "\n", FAINT), (value, color))
+            for label, value, color in keep
+        ]
+        # A running job redraws this every second, and every System transcript
+        # line redraws it again: the numbers change, the shape almost never
+        # does. Repaint the cells that are already there and only rebuild the
+        # row when the band has actually changed shape.
+        cells = list(box.query(Static))
+        if len(cells) == len(texts):
+            for cell, text in zip(cells, texts):
+                cell.update(text)
+            return
         box.remove_children()
-        cells = []
-        for label, value, color in keep:
-            cells.append(Static(
-                Text.assemble((label.upper() + "\n", FAINT), (value, color)),
-                classes="status-item",
-            ))
-        if cells:
-            box.mount_all(cells)
+        if texts:
+            box.mount_all([Static(text, classes="status-item") for text in texts])
 
     def _refresh_pinned_block(self) -> None:
         try:
@@ -151,7 +167,10 @@ class JobsMixin:
             bar.add_class("hidden")
             return
         bar.remove_class("hidden")
-        prompt = job.await_prompt or ""
+        # The pty hands the prompt over with its colour escapes still on; the
+        # bar shows it clean, and the shape test below must not be fooled by a
+        # reset sequence sitting after the colon.
+        prompt = strip_ansi(job.await_prompt or "")
         self.query_one("#stdin-prompt-text", Static).update(Text(prompt, style=FG))
         waited = max(1, int(time.time() - (job.await_since or time.time())))
         self.query_one("#stdin-waiting", Static).update(Text(f"blocked {waited}s", style=DIM))
@@ -164,11 +183,19 @@ class JobsMixin:
                 chips.mount_all([StdinChip(r) for r in replies])
         self._stdin_replies = replies
 
-        # The one place automatic focus-stealing is correct: the process waits.
-        if self._stdin_dismissed.get(job.id) != job.await_since:
-            field = self.query_one("#stdin-input", StdinInput)
-            if self.focused is not field:
-                field.focus()
+        # The bar goes up for any block, but the keyboard is only taken when the
+        # process is plainly asking: text that ends the way a prompt ends
+        # (`Password:`, `[y/N]`, `(yes/no)?`), or a block that has outlasted
+        # STDIN_FOCUS_AFTER, by which point a slow tool is no longer the likely
+        # reading. Anything else keeps the operator's next hotkey out of the
+        # reply field. Esc (dismiss_stdin_focus) still hands the keyboard back,
+        # and is checked ahead of both.
+        if self._stdin_dismissed.get(tab.job_id) != job.await_since:
+            blocked_for = time.time() - (job.await_since or time.time())
+            if prompt.rstrip().endswith(("?", ":", "]", ")")) or blocked_for >= STDIN_FOCUS_AFTER:
+                field = self.query_one("#stdin-input", StdinInput)
+                if self.focused is not field:
+                    field.focus()
 
     @staticmethod
     def _quick_replies(prompt: str) -> List[str]:
@@ -181,9 +208,12 @@ class JobsMixin:
 
     def dismiss_stdin_focus(self) -> None:
         """Esc in the stdin field: blur, keys return to the harness, job stays blocked."""
+        tab = self.active_tab()
         job = self.active_job()
-        if job:
-            self._stdin_dismissed[job.id] = job.await_since
+        # Keyed by the job key, like self.jobs: job.id is the per-target run
+        # number, so two targets' #01 runs would share one dismissal.
+        if job is not None and tab is not None and tab.job_id:
+            self._stdin_dismissed[tab.job_id] = job.await_since
         self.set_focus(None)
 
     def send_stdin_reply(self, text: Optional[str] = None) -> None:
@@ -265,7 +295,7 @@ class JobsMixin:
                     kill_job(job)
                     self.write_system_log(
                         f"[runner] {tab.label} killed by operator · SIGINT sent, "
-                        f"SIGKILL in 10s if still running · partial output at {tab.artifact}",
+                        f"SIGKILL in 10s if still running (at once on quit) · partial output at {tab.artifact}",
                         style=WARN,
                     )
                     self._drop_tab(tab_id)
@@ -290,9 +320,8 @@ class JobsMixin:
         # The tab was the only thing holding the job: its buffered lines and
         # artifact record go with it. A detached job keeps running and keeps
         # writing to its log; nothing in the app reads it again either way.
-        job = self.jobs.pop(tab.job_id or "", None)
-        if job is not None:
-            self._stdin_dismissed.pop(job.id, None)
+        self.jobs.pop(tab.job_id or "", None)
+        self._stdin_dismissed.pop(tab.job_id or "", None)
         if was_active:
             new_idx = max(0, min(idx, len(self.tabs) - 1))
             self.active_tab_id = self.tabs[new_idx].id
@@ -465,7 +494,7 @@ class JobsMixin:
         return rlog, tab_id
 
     def _spawn_job(self, tool: dict, preset: dict, key: str) -> None:
-        """plan_launch captures root, scope and stamp onto the job; every
+        """plan_launch captures root, stamp and out_dir onto the job; every
         displayed path renders from those captured fields, never from live state."""
         plan = plan_launch(self.session, tool, preset, flags_override=self.flag_edits.get(key))
         rlog, tab_id = self._open_job_tab(plan, tool, preset)

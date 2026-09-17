@@ -459,6 +459,9 @@ directory first, then `./recipes.d/`.
   only it defines are gone. The shadowing is reported.
 - A file that fails to parse is reported, with the line, and skipped. The rest
   still load. Editor leftovers (`*~`, `*.swp`, `*.bak`, `*.orig`) are ignored.
+- A recipe's `flags` is shell. `./recipes.d/` is read from wherever you start
+  fieldlog, so treat a checkout's drop-ins the way you would its `Makefile`: do
+  not run one you have not read (see [Variables](#variables)).
 
 Adding a preset to the built-in `ping`:
 

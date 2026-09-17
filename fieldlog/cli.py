@@ -26,18 +26,19 @@ from fieldlog.archive import load_target_history
 from fieldlog.report import DEFAULT_TAIL, load_runs, record_ok, render_report, run_number
 from fieldlog.recipes import (
     Catalog,
+    Verdict,
     chain_arrow,
     chain_blocked,
     chain_matches,
     chain_steps,
+    check_chain,
+    check_recipe,
     find_chain,
     find_recipe,
     is_blocked,
     format_command,
     is_tool_installed,
     load_catalog,
-    reason_kind,
-    reason_missing,
     run_succeeded,
     score,
     search,
@@ -991,44 +992,37 @@ def doctor_session(args: argparse.Namespace) -> TargetSession:
     )
 
 
-# is_blocked's reasons, bucketed by what would unblock the recipe. The phrase
-# matching lives with the reasons themselves (recipes.reason_kind), so doctor
-# and the TUI cannot read one of them differently.
-def doctor_bucket(reason: str) -> str:
-    return reason_kind(reason)
-
-
-# Terse, CLI-neutral phrasing for a scope block; the footer says how to set each.
+# Terse, CLI-neutral phrasing for a scope value that is simply not set; the
+# footer says how to set each. A verdict is only `missing` for these three
+# kinds, so there is no fourth note to write.
 _DOCTOR_SCOPE_NOTE = {
     "target": "needs a target",
     "dns": "needs a dns name",
     "lhost": "needs a local address",
-    "interface": "interface has unsafe characters",
 }
 
 
-def doctor_mark(blocked: bool, reason: str, ready_note: str) -> Tuple[str, str, str]:
+def doctor_mark(verdict: Verdict, ready_note: str) -> Tuple[str, str, str]:
     """(mark, style, note) for one line. A missing binary is a ✗ — the gap doctor
     is for; a scope-only block is a ◐ (otherwise ready, just needs a scope value),
     with doctor's own terse note for the scope kind (the footer says how to set it)."""
-    if not blocked:
+    if not verdict.blocked:
         return "✓", "green", ready_note
-    bucket = doctor_bucket(reason)
-    if bucket == "binary":
-        return "✗", "red", reason.split(" · ")[0]
-    # The terse note stands in for a value that is simply missing. A reason that
-    # says something more specific — unsafe characters, a leading `-` — has to
-    # be the one shown, or doctor reads as "needs a target" for a target that
-    # is set and refused.
-    if not reason_missing(reason):
-        return "◐", "yellow", reason.split(" · ")[0]
-    return "◐", "yellow", _DOCTOR_SCOPE_NOTE.get(bucket, reason.split(" · ")[0])
+    head = verdict.reason.split(" · ")[0]
+    if verdict.kind == "binary":
+        return "✗", "red", head
+    # The terse note stands in for a value that is simply missing. A value that
+    # is set and refused — unsafe characters, a leading `-` — has to show its
+    # own reason, or doctor reads as "needs a target" for a target that is there.
+    if not verdict.missing:
+        return "◐", "yellow", head
+    return "◐", "yellow", _DOCTOR_SCOPE_NOTE.get(verdict.kind, head)
 
 
 def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
     """Per-tool, per-preset and per-chain runnability, plus rolled-up counts.
 
-    Every verdict comes from is_blocked / chain_blocked, so doctor and an actual
+    Every verdict comes from check_recipe / check_chain, so doctor and an actual
     run can never disagree on whether something is runnable.
     """
     tools: List[dict] = []
@@ -1041,32 +1035,36 @@ def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
     for tool in catalog.tools:
         rows = []
         for preset in tool.get("presets", []):
-            blocked, reason = is_blocked(tool, preset, session)
+            verdict = check_recipe(tool, preset, session)
             recipes_total += 1
-            bucket = ""
-            if blocked:
-                bucket = doctor_bucket(reason)
-                if bucket == "binary":
+            if verdict.blocked:
+                if verdict.kind == "binary":
                     missing.add(preset.get("bin", tool.get("bin", tool["id"])))
-                elif bucket in needs and reason_missing(reason):
-                    needs[bucket] += 1
-                elif bucket in needs:
+                elif verdict.kind in needs and verdict.missing:
+                    needs[verdict.kind] += 1
+                elif verdict.kind in needs:
                     # Set and refused: the footer's "set a target" would send
                     # the operator to fill in what is already filled in.
                     refused += 1
             else:
                 recipes_ready += 1
-            rows.append({"preset": preset, "blocked": blocked, "reason": reason})
+            rows.append({
+                "preset": preset, "blocked": verdict.blocked,
+                "reason": verdict.reason, "verdict": verdict,
+            })
         ready = sum(1 for r in rows if not r["blocked"])
         tools.append({"tool": tool, "rows": rows, "ready": ready, "total": len(rows)})
 
     chains = []
     chains_ready = 0
     for chain in catalog.chains:
-        blocked, reason = chain_blocked(catalog, chain, session)
-        if not blocked:
+        verdict = check_chain(catalog, chain, session)
+        if not verdict.blocked:
             chains_ready += 1
-        chains.append({"chain": chain, "blocked": blocked, "reason": reason})
+        chains.append({
+            "chain": chain, "blocked": verdict.blocked,
+            "reason": verdict.reason, "verdict": verdict,
+        })
 
     tools_installed = sum(1 for t in catalog.tools if is_tool_installed(t.get("bin", t["id"])))
     return {
@@ -1169,16 +1167,18 @@ def handle_doctor(args: argparse.Namespace, catalog: Catalog) -> int:
         console.print(f"  [{style}]{mark}[/{style}] [bold]{tid}[/bold] {name}  [dim]{escape(note)}[/dim]")
         if verbose:
             for r in t["rows"]:
-                mark, style, note = doctor_mark(r["blocked"], r["reason"], "ready")
+                mark, style, note = doctor_mark(r["verdict"], "ready")
                 key = escape(f"{tool['id']}/{r['preset']['id']}")
                 console.print(f"      [{style}]{mark}[/{style}] {key}  [dim]{escape(note)}[/dim]")
 
     if scan["chains"]:
         console.print("\n[bold dim]CHAINS[/bold dim]")
         for c in scan["chains"]:
-            mark, style, note = doctor_mark(c["blocked"], c["reason"], c["reason"])
+            # A chain's own reason names the step that blocks it, which the
+            # per-kind note would drop — "needs a target" for which of five.
+            mark, style, _note = doctor_mark(c["verdict"], c["reason"])
             cid = escape(c["chain"]["id"].ljust(id_w))
-            console.print(f"  [{style}]{mark}[/{style}] [bold]{cid}[/bold] [dim]{escape(note)}[/dim]")
+            console.print(f"  [{style}]{mark}[/{style}] [bold]{cid}[/bold] [dim]{escape(c['reason'])}[/dim]")
 
     console.print(
         f"\n[dim]{scan['recipes_ready']}/{scan['recipes_total']} recipes ready · "

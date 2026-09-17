@@ -1,17 +1,25 @@
 # fieldlog — problems and technical debt
 
-**Status:** reference document, 2026-09-16. Tags: **[confirmed]** reproduced by execution or read
-unambiguously from the code · **[likely]** inferred from reading · **[proposal]** a recommended change.
-See `README.md` for the conventions.
+**Status:** reference document. Investigated 2026-09-16; a remediation pass over every finding followed on
+2026-09-17 and this is the record of where each one stands. Tags: **[confirmed]** reproduced by execution or
+read unambiguously from the code · **[likely]** inferred from reading · **[proposal]** a recommended change.
+Every finding also carries one status: **resolved** (fixed, with the test that guards it) · **deferred**
+(real, not now, and why) · **rejected** (not a defect, or not worth the change) · **open** (still to
+investigate). See `README.md` for the conventions.
 
 The two dated reviews in this folder already found and fixed the big structural issues (chain exit codes,
-artifact attribution, the args-edit gate, `history` lookup, memory reclamation, the app split). This document
-starts where they stopped. §1 is what this pass fixed, §2 what is confirmed and still open, §3 what is
-probably wrong, §4 the debt that shapes how hard the next changes will be.
+artifact attribution, the args-edit gate, `history` lookup, memory reclamation, the app split). §1 is what the
+2026-09-16 investigation fixed as it went, §2 what the 2026-09-17 remediation pass fixed, §3 every finding
+that was not fixed and why, §4 the debt that shapes how hard the next changes will be.
+
+The remediation pass took the suite from 376 tests in 35 files to 438 in 41; `ruff check` is clean; every
+CLI surface (`list -V`, `doctor -v`, `doctor --json`, `show`, `run --dry-run`, a refused target) was compared
+byte for byte against the pre-pass tree and is unchanged, and the shipped catalog plus this repo's
+`recipes.d/` still load with no messages. Committed to `main` on 2026-09-17.
 
 ---
 
-## 1. Fixed in this pass
+## 1. Fixed in the 2026-09-16 pass
 
 Each of these was reproduced by execution before it was fixed; the tests named are the regression guards.
 
@@ -133,114 +141,222 @@ under their edge cases, and that the three repaired curl recipes run against a l
 
 ---
 
-## 2. Confirmed and still open
+---
 
-### 2.1 The prompt heuristic fires on any partial line, and the TUI steals focus for it — **[confirmed]**
+## 2. Fixed in the 2026-09-17 remediation pass
 
-`printf working...; sleep 1; echo done` through `run_job` produces `await_prompt='working...'` after 0.4 s.
-In the TUI that raises the stdin bar and moves keyboard focus into it ("the one place automatic
-focus-stealing is correct: the process waits"). For a tool that prints a progress prefix and pauses — a
-slow `openssl s_client`, a scanner printing `Scanning…` — the operator's next hotkey lands in the reply field.
-`Esc` recovers, and the heuristic is documented as a timeout, not a parser.
+Each entry names the finding it closes by its old section number. Each was reproduced, or read from the
+code with no interpretation needed, before it was changed.
 
-**[proposal]** Keep the heuristic (it is what makes sudo/ssh prompts work) but soften the *consequence*:
-raise the bar without taking focus unless the partial line ends in a prompt-like character (`?`, `:`, `]`,
-`)`) or the job has been quiet for a second tick. Both are one-line conditions in `_refresh_stdin_bar`.
+### 2.1 The stdin bar took the keyboard for any partial line — was §2.1 — **[confirmed, resolved]**
 
-### 2.2 `--extra-args` and TUI args edits bypass scope validation by design — **[confirmed]**
+The runner's "awaiting input" is a timeout (a partial line and 0.4 s of quiet), and the TUI moved focus into
+the reply field on every one, so a tool that printed `working...` and paused ate the operator's next hotkey.
+The bar still rises for every block, so the block is visible; the keyboard moves only when the text ends the
+way a prompt ends (`?`, `:`, `]`, `)` — `Password:`, `[y/N]`, `(yes/no)?`) or the block has outlasted
+`STDIN_FOCUS_AFTER` (1 s, which the next `_tick` sees; no new timer). Esc still hands the keyboard back and
+is checked ahead of both. The accepted trade-off: a tool silent for more than a second on a partial line still
+gets focus, because past that a slow tool is no longer the likely reading. Tests: `tests/test_stdin_bar.py`.
 
-`fieldlog run ping/quick 10.0.0.1 --extra-args "; id"` runs `id`. The README says "append to the command"
-and the operator typed it, so this is the documented contract, not a bug. Worth stating in the README's
-security note so nobody wraps fieldlog in something that passes untrusted extra args.
+### 2.2 A whitespace-only partial line left the job flagged "awaiting input" — new, **[confirmed, resolved]**
 
-### 2.3 Recipes in the current directory execute — **[confirmed]**
+Found while reading §2.1. `printf '    '; sleep 0.7; echo done` through `run_job` fired `on_state` once (the
+block) and never again: the prompt was stripped to `''`, and the resume check was `if job.await_prompt:`, so
+the empty prompt never cleared. The job read as blocked until it exited, and the stdin bar stayed up with an
+empty prompt. Both checks in the read loop are now `is None` / `is not None`, which is what `ActiveJob.awaiting`
+already tested. Tests: `tests/test_prompt_heuristic.py` (the ordinary case and the whitespace one).
 
-`./recipes.d/*.yaml` loads from wherever fieldlog is started, and a recipe's `flags` is shell. Running
-`fieldlog` inside an untrusted checkout and pressing Enter on one of its recipes runs that recipe. This is the
-same trust model as `make` or a `Makefile`, and the manager modal shows where each file came from, but the
-README does not say it. **[proposal]** One sentence under "Drop-in files".
+### 2.3 The reason strings were an implicit API — was §2.4 and D2 — **[confirmed, resolved]**
 
-### 2.4 Reason bucketing is still substring matching on English — **[confirmed, narrowed]**
+`reason_kind` and `reason_missing` recovered the kind of a block by matching English substrings of
+`is_blocked`'s reasons; `doctor` and the palette both read them, and `cli._DOCTOR_SCOPE_NOTE["interface"]`
+was unreachable. Now `check_recipe(tool, preset, session, flags=None)` returns a frozen
+`Verdict(blocked, kind, reason, missing)` with `kind` in `ready | binary | target | dns | lhost | interface`
+and `missing` true only when the scope value is unset; `check_chain` returns the first blocked step's verdict
+with the step named in the reason. `is_blocked` and `chain_blocked` are two-line wrappers, so no caller's
+contract changed. `reason_kind`, `reason_missing` and `doctor_bucket` are gone; the palette rows carry the
+verdict; `doctor` buckets by `kind`/`missing` and its `--json` shape is unchanged. Tests:
+`tests/test_verdict.py` (every reason → kind, missing, label; `is_blocked` still equals the pair),
+`tests/test_palette.py`, `tests/test_doctor.py` (no edits needed).
 
-`recipes.reason_kind` matches `"not found in $PATH"`, `"dns name"`, `"local address"`, `"interface …"`,
-`"target"` against the prose `is_blocked` returns; `reason_missing` tests for a `"needs "` prefix. This pass
-moved that matching next to the strings it matches, so doctor, the palette and any future reader share one
-copy — but it is still prose, and adding a reason still means checking the matcher. Returning the kind from
-`is_blocked` itself (refactor #10) remains the clean end state. Two leftovers noted by the second pass:
-`cli._DOCTOR_SCOPE_NOTE["interface"]` is unreachable (no interface reason starts with "needs "), and
-`peek_run_number` trusts the counter, so a hand-edited `session.json` with a higher id than `.run-counter`
-would make the *preview* understate by one (reservations still read both).
+### 2.4 Two merge rules, both partly silent — was §3.2 and §3.3 — **[confirmed, resolved]**
 
-### 2.5 A note is quoted, not escaped, in the report — **[confirmed, by design]**
+Reading `_merge` upgraded both findings to confirmed: its `src is None` branch — the only place a tool's
+`name`/`bin` could ever be updated — was unreachable, because the base file was loaded through `_read_file`
+and never merged. So a drop-in's `bin:` or `name:` on an existing tool was always silently ignored, a duplicate
+preset id inside one file silently kept the first, and `_read_tools` was dead code.
 
-`report.py` writes a note as a Markdown blockquote without escaping, two lines under a summary that is
-escaped on the principle that "tool output never becomes markup". A note is operator prose, not tool output,
-and the second pass confirmed a note containing `|`, `#` and a fence stays inside the blockquote and does not
-break the artifacts list. Recorded so the asymmetry is known to be deliberate.
+Now `_read_file` returns a file's entries in order, merging nothing, and one `_merge` folds them in for the
+base file and every drop-in alike: a repeated tool id adds its presets to the tool defined first; a repeated
+`tool/preset` replaces the earlier one, reported to `overrides` across files (as before) and to `errors`
+inside one file (`recipes.d/x.yaml: ping/quick defined twice · last one kept`); `name:`/`bin:` restated on an
+existing tool with a *different* value is ignored and reported (`ping: bin ignored · … set bin: on the
+preset`), while restating the same value — the drop-in an operator writes by copying the base entry — says
+nothing; and an entry with neither `presets` nor `flags` adds nothing, where before `normalize_recipe`'s
+stand-in `default` preset would have landed as a phantom recipe (a bare `ping`, running under the very `bin`
+the message said was ignored). Explicitness is read from the raw YAML keys, never the normalised dict, so a
+second drop-in adding a preset to `http` (`bin: python3`) without restating `bin` is silent. Nothing is ever
+dropped over a message. Tests: `tests/test_merge_rules.py` (10 cases); `tests/test_dropins.py` and
+`tests/test_base_catalog.py` unchanged.
+
+### 2.5 `_stdin_dismissed` was keyed by the per-target run number — was §3.4 — **[confirmed, resolved]**
+
+Keyed by the process-wide job key (`tab.job_id`) in all three places, the same key `self.jobs` uses and for
+the same reason. Test: the two-targets-both-`#01` case in `tests/test_stdin_bar.py`.
+
+### 2.6 The status band was rebuilt from scratch every second — was §3.5 — **[confirmed, resolved]**
+
+`_refresh_status_band` now updates the existing cells in place when their count matches the items that
+survive the width budget, and rebuilds only when the band changes shape (another tab, an item dropped for
+width). This covers both callers: `_tick` once a second and `write_system_log` per transcript line. Two
+refreshes inside one frame still rebuild (Textual queues the removal, so the count no longer matches); that is
+the safe direction. Tests: `tests/test_status_band.py`.
+
+### 2.7 The scope was persisted only on a clean unmount — was §3.8 — **[confirmed, resolved]**
+
+`TargetModal.action_save` writes `.last-scope.json` as it saves, so a crash or a killed terminal no longer
+loses the target the operator just typed. Test: `tests/test_scope_persists.py`.
+
+### 2.8 A kill cut short by quitting was lost — was §3.9 — **[confirmed, resolved]**
+
+Executed rather than inferred this time. Cancelling `run_job` closes the pty master, which hangs up the
+child's controlling terminal: most tools die of that SIGHUP before the SIGTERM the cleanup sends (observed:
+`sh -c 'trap "" INT TERM; sleep 30'` exited −1). What survived was a tool that ignores INT, TERM *and* HUP —
+a daemon, in effect — after the operator had chosen Kill and quit inside the 10 s grace: `kill_job`'s SIGKILL
+was scheduled on the loop that the quit tore down. `kill_job` now sets `job.kill_requested`, and the
+cancellation path sends SIGKILL to such a job instead of SIGTERM; a job that was not asked to die still gets
+SIGTERM. Test: `tests/test_kill_escalation.py`.
+
+### 2.9 `ActiveJob.scope` was captured and never read — was §3.7 — **[confirmed, resolved]**
+
+Removed, with the `scope` element of `prepare_job_paths`'s tuple. The one test that read it
+(`tests/test_h6_run_ids.py`) now asserts what production actually uses: each job's log sits under the target
+folder it was spawned for.
+
+### 2.10 `tui/theme.py` imported the catalog for one string — was D5 — **[confirmed, resolved]**
+
+`META_COMMANDS` moved to `tui/modals.py`, its only consumer, which already imported `RECIPES_PATH`. The theme
+imports nothing of fieldlog's own; `tests/test_theme_is_pure.py` imports it in a fresh interpreter and
+asserts neither `yaml` nor `fieldlog.recipes` loaded.
+
+### 2.11 The two substitution mechanisms had no marked boundary — was D6 — **[resolved, in comments]**
+
+The regex `state._VAR` *is* the boundary, and now says so: what it matches, fieldlog substitutes as text after
+`is_blocked` has allowlisted the value; what it leaves alone reaches the shell and expands from the child's
+environment, which `runner.build_env` fills with the same bindings. Same values, one gated path. No code
+change.
+
+### 2.12 The README did not state the trust model — was §2.2 and §2.3 — **[resolved]**
+
+The sentence about `--extra-args` and TUI args edits being the operator's own shell, and `./recipes.d/`
+carrying the same trust, was already in the working tree under *Variables* from the 2026-09-16 pass
+(uncommitted, so §2 had not caught up with it). This pass adds the cross-reference under *Drop-in files*,
+where a reader looking at drop-ins would actually look.
+
+### 2.13 Found by the independent second pass — **[confirmed, resolved]**
+
+A separate agent reconstructed the pre-pass tree from the diff, compared behaviour old against new over a
+matrix of catalogs, scopes and CLI invocations, and ran every new test against the old code to see which ones
+discriminate. It found no correctness regression: `doctor -v` and `doctor --json` are byte-identical across
+four scopes and per-row identical across ten; the run record is unchanged; the status band never shows a
+stale cell (tab switches, a summary appearing and vanishing, a width-truncated band, two refreshes in one
+frame); the focus rule is actually delivered by `_tick`; and the signal path never touches a finished job or
+its recorded exit code. Its risks and nits were all taken:
+
+- **A palette row could crash instead of going blank.** The row's `blocked` came from `search()`'s own
+  `check_recipe` call and its `verdict` from a second one; if the two disagree within a keystroke (a binary
+  just installed, an interface just up) `short_reason(None)` raised, where the old code rendered an empty
+  cell. Guarded.
+- **`presets: []` and `presets:` (null) still produced the phantom `default` preset** that §2.4's guard was
+  meant to stop, because the guard tested whether the key was written, not whether it held anything — and
+  the `bin ignored` message is exactly what nudges an operator to write an empty `presets:`. Now an empty
+  or null list counts as absent. Test in `tests/test_merge_rules.py`.
+- **Chains did not follow the "one merge rule" the docstring claimed.** Base chains never went through
+  `_merge_chains` at all, so a chain id repeated in the base file gave *two* chains and `find_chain` returned
+  the first; inside one drop-in a repeat was reported as an override. Pre-existing, but the claim was new.
+  Base chains now go through `_merge_chains` with the same written/errors treatment as presets: within a
+  file "chain X defined twice · last one kept", across files the override as before. Tests in
+  `tests/test_merge_rules.py`.
+- **`_DOCTOR_SCOPE_NOTE[verdict.kind]` was an unguarded subscript** where the old code fell back; safe today
+  (verified: `missing` is only ever set for the three kinds in the table) but back to `.get(kind, head)`.
+- **The narrowed status-band guard let `ScreenStackError` escape** on an app with no screen (reproduced on
+  a never-run app; unverified as reachable in the running one). Added to the tuple.
+- **The prompt-shape test read the un-stripped pty text**, so a coloured prompt ending in a reset
+  (`Password: \x1b[0m`) missed the colon and fell back to the timer. `runner.strip_ansi` (the same regex the
+  log uses) is now applied to the prompt in the stdin bar, so the bar also shows it clean. Test in
+  `tests/test_stdin_bar.py`.
+- **One test was a wall-clock race** (it relied on less than a second passing between building the job and
+  the refresh). It now sets `await_since` immediately before the call.
+- **The kill grace is cut short by quitting** — the one deliberate trade. A job the operator chose to Kill
+  and that is still alive when the app quits inside the 10 s grace now gets SIGKILL at once rather than
+  SIGTERM (§2.8). A tool that catches SIGINT and is mid-flush would lose that window; a tool that ignores
+  INT, TERM and HUP would otherwise outlive its kill. The quit dialog already says quitting kills running
+  jobs; the close-tab transcript line now says "SIGKILL in 10s if still running (at once on quit)".
+
+Behaviour changes the pass makes on purpose, for an operator reading the boot transcript: a `tool/preset`
+repeated inside one file is now last-wins plus an error (the old code kept *both* under one id when the
+repeat was inside a single entry); `name:` restated with a different value is now reported; an entry that
+only restates a tool no longer adds a phantom preset, so that file's variant count in the recipe manager
+drops by one. The shipped catalog is unaffected: 20 tools, 61 variants, no messages, and the base and
+drop-in counts still sum to the total.
 
 ---
 
-## 3. Likely problems
+## 3. Not fixed: deferred, rejected, open
 
-Inferred from reading; none executed. Ordered by how much they would matter.
+### 3.1 `session.json` is rewritten whole on every append — **[likely, deferred]**
 
-### 3.1 `session.json` is rewritten whole on every append — **[likely]**
+Cost is O(records) per run under the lock. The maintainer has explicitly deferred JSONL (D §6); the format is
+fine to a few thousand records per target, and the writer and the two readers are the only places that would
+change. Revisit only if a real target folder gets slow.
 
-`append_record` reads the array, appends, writes a temp file and `os.replace`s it, under the lock. Cost is
-O(records) per run, so a target with thousands of runs (a server recipe restarted daily, a monitoring loop)
-pays a growing tax and holds the lock longer. The maintainer has explicitly deferred JSONL; the honest
-statement is that the current format is fine up to a few thousand records per target and that the writer
-and readers are the only two places that would change. `directions.md` § 6 sketches the migration.
+### 3.2 A note is quoted, not escaped, in the report — **[confirmed, rejected: by design]**
 
-### 3.2 A drop-in cannot change a tool's `bin` or `name`, and nothing says so — **[likely]**
+Operator prose, not tool output; a note containing `|`, `#` and a fence stays inside the blockquote. Recorded
+so the asymmetry with the escaped summary is known to be deliberate.
 
-`_merge` copies `name`/`bin` from an incoming tool only when `src is None` (the base file). A drop-in that
-redefines `ping` with `bin: /opt/ping` adds its presets and silently keeps the base `bin`. Either allow it
-(and report it as an override) or report the ignored keys in `catalog.errors`.
+### 3.3 `peek_run_number` trusts `.run-counter` — **[confirmed, rejected]**
 
-### 3.3 Duplicate preset ids inside one file keep the first; across files the last wins — **[likely]**
+A hand-edited `session.json` with an id above the counter makes the `$OUTDIR` *preview* understate by one.
+Reading the manifest is exactly what the preview avoids (it is redrawn per keypress), reservations read both,
+and a hand-edited manifest is outside the contract. Left as is.
 
-`_read_file` merges a repeated tool id and drops a repeated preset id silently; `_merge` replaces and reports.
-Two rules for one situation. The within-file case should at least be reported.
+### 3.4 `$LHOST` can never be IPv6 — **[likely, deferred]**
 
-### 3.4 `_stdin_dismissed` is keyed by the per-target run number — **[likely]**
+`get_interface_ip` uses `SIOCGIFADDR`, IPv4 only. A `$LHOST6` from `/proc/net/if_inet6` or `getaddrinfo` is
+a feature, not a correctness fix, and was kept out of this pass on purpose.
 
-`jobs.py` uses `job.id` (e.g. `"01"`) as the key, while `self.jobs` is keyed by the process-wide job
-sequence precisely because run numbers restart per target. Two targets' `#01` jobs share the key. The value
-compared is `await_since`, so a false match needs two prompts at the same float timestamp — practically
-impossible, but the key is wrong on principle and the fix is `job_key`.
+### 3.5 `report --full` on a very large log reads it whole — **[likely, deferred]**
 
-### 3.5 The status band is rebuilt from scratch every second — **[likely]**
+By request: `--full` means the whole log goes into the report, so the report string has to hold it anyway.
+The only saving available inside `render_report`'s current shape is the intermediate list of lines (roughly
+half of peak); a streaming writer would be a different API (`write_report(fh)`), which nothing needs yet.
 
-`_tick` calls `_refresh_status_band` for a running job, which does `remove_children()` + `mount_all()` of
-five `Static`s. `write_system_log` does the same for every transcript line while the System tab is active.
-Textual copes, but a busy chain writing transcript lines and a running job together mean two full rebuilds a
-second. In-place `update()` of existing cells is the obvious fix and is what `_refresh_tab_strip` already does.
+### 3.6 `doctor --json` reports `summary.needs.interface`, always 0 — new, **[confirmed, open, minor]**
 
-### 3.6 `$LHOST` can never be IPv6 — **[likely]**
+An interface block is never a *missing* value (an empty interface is allowed), so the count cannot move and no
+footer hint reads it. It was already unreachable before the verdict change; dropping the key would alter the
+pinned JSON shape. Drop it the next time that shape changes for a real reason.
 
-`get_interface_ip` uses `SIOCGIFADDR`, which returns the IPv4 address only. A recipe like `ping -6 -I $LHOST`
-cannot be expressed. Reading `/proc/net/if_inet6` or `socket.getaddrinfo` would give a `$LHOST6`.
+### 3.7 The palette says "step blocked" for every blocked chain — new, **[confirmed, proposal]**
 
-### 3.7 `ActiveJob.scope` is captured and never read — **[likely]**
+`check_chain` now carries the blocking step and its kind, so the chain row could say which step and why, as
+the task rows do (`tui/modals.py` `_render_item`). Cosmetic; noted by the implementation agent.
 
-`plan_launch` sets `scope=session.target`; nothing reads `job.scope`. Dead field; the comment about capturing
-at spawn applies to `root`, `stamp` and `out_dir`, which are used.
+### 3.8 The stdin-bar focus fallback — **[confirmed, accepted]**
 
-### 3.8 The TUI persists scope only on a clean unmount — **[likely]**
+The other half of §2.1: a tool silent for more than `STDIN_FOCUS_AFTER` on a partial line still gets focus.
+Documented as the trade-off; the alternative (never taking focus for an unrecognised prompt) would break
+tools whose prompts end in nothing recognisable.
 
-`.last-scope.json` and `.pinned-recent.json` are written on `on_unmount` (pins/recent also on change). A crash
-or a killed terminal loses the scope. Saving on every `TargetModal` save is one call.
+### 3.9 Smaller things noticed while reviewing, not changed
 
-### 3.9 `kill_job`'s SIGKILL escalation is lost if the app exits inside the grace — **[likely]**
-
-Carried over from the previous review. `run_job`'s cancellation path sends SIGTERM to the group, which
-covers the common case.
-
-### 3.10 `report --full` on a very large log reads it whole — **[likely]**
-
-By request, and the bounded tail reader exists for the default path; but `--full` on the 410 MB log the code
-comments mention will allocate over a gigabyte. A streaming copy into the fenced block would be cheap.
+- `find_recipe` fabricates a `default` preset for a tool with none, but `normalize_recipe` guarantees at least
+  one, so that branch only serves hand-built catalogs.
+- `tui/variants.py` calls `is_blocked` / `chain_blocked` and discards the reason; `blocked_flag` /
+  `chain_blocked_flag` say that more directly.
+- `write_system_log` wraps its `_refresh_status_band` call in a broad `except`; the method now handles its
+  own missing-widget case. One of the D3 guards.
 
 ---
 
@@ -248,23 +364,25 @@ comments mention will allocate over a gigabyte. A streaming copy into the fenced
 
 What makes the next change harder than it should be. None of these is a bug.
 
-| # | Debt | Where | Why it matters |
+| # | Debt | Where | Status |
 |---|---|---|---|
-| D1 | **No repaint/invalidation model in the TUI.** Eleven `_refresh_*` methods, ~15 call sites, each caller choosing a subset. | `tui/*.py`, `app.py` | The only way to know a state change repaints correctly is to trace every caller; a pane cannot be tested on its own. Open refactor #5. |
-| D2 | **`is_blocked` reasons are an implicit API.** The matching is now in one place (`recipes.reason_kind`, `reason_missing`), consumed by `doctor_bucket` and `tui.helpers.short_reason`. | `recipes.py`, `cli.py`, `tui/helpers.py` | Rewording a reason still means checking one matcher. A `(blocked, kind, reason)` triple from `is_blocked` would delete it. Open refactor #10, now small. |
-| D3 | **31 broad `except Exception` guards remain** in the TUI, mostly `query_one` guards that return early. | `tui/*.py`, `app.py` | Correct for a missing widget; they also hide real bugs in the guarded body. `_repaint` is the right shape; the remaining guards could adopt it. |
-| D4 | **`TargetModal` lives in `app.py`** so tests can monkeypatch `get_interface_ip` through that module. | `app.py` | The test coupling dictates the file layout. Injecting the probe functions into the modal would free it. |
-| D5 | **`tui/theme.py` imports the catalog** for one string. | `tui/theme.py` | The palette cannot be imported without YAML. Pass the path at render time. |
-| D6 | **Two substitution mechanisms for one set of bindings**: fieldlog's `$VAR` regex and the child's environment. | `state.py`, `runner.py` | Safety differs (allowlisted raw text vs. real parameter expansion) and nothing marks the boundary. Documented behaviour; keep, but say so in the code. |
-| D7 | **The `_WRAPPERS` heuristic** decides whether `bin` is prepended from the first token of the flags. | `recipes.py` | `env`, `sudo`, `timeout`, `doas`, `nice` get one behaviour, `ionice` another, silently. An explicit preset field (`command: true`, "flags are the whole command") would be honest and matches the maintainer's stated preference for explicit opt-in. |
-| D8 | **`Catalog.files` vs `file_paths` vs `overrides` vs `errors`** — four provenance collections with a comment explaining a workaround. | `recipes.py` | A single list of `Source(path, kind, tools, presets, chains, errors)` would answer the manager modal and the boot transcript in one shape. |
-| D9 | **No type checking in CI.** The previous review counted 37 mypy baseline errors and deferred it. | `pyproject.toml`, CI | The dict-shaped catalog (`tool["presets"]`, `preset.get("flags")`) is exactly where types would pay. |
-| D10 | **The catalog is untyped dicts.** | everywhere | Every consumer re-derives `preset.get("bin", tool.get("bin", tool["id"]))`. A `Preset`/`Tool` dataclass with `.bin` would delete a dozen copies of that line. |
-| D11 | **TUI coverage is thin.** 8 tests drive the app; none exercise the tree cursor, the variants pane, the stdin bar or the layout switch. | `tests/` | The mixin split made these reachable; nothing uses that yet. |
+| D1 | **No repaint/invalidation model in the TUI.** Eleven `_refresh_*` methods, ~15 call sites, each caller choosing a subset. | `tui/*.py`, `app.py` | **Deferred.** Worth doing only alongside F1 (history in the TUI), the first feature that would consume it. Open refactor #5. |
+| D2 | `is_blocked` reasons were an implicit API. | `recipes.py`, `cli.py`, `tui/helpers.py` | **Resolved** — §2.3, `Verdict`. |
+| D3 | **Broad `except Exception` guards** in the TUI: 35 before this pass, 34 after (the one in `_refresh_status_band` is now `(NoMatches, WrongType)`). | `tui/*.py`, `app.py` | **Deferred.** Correct for a missing widget; they also hide real bugs in the guarded body. `_repaint` is the shape to adopt; narrow them as each pane is next touched rather than in a sweep. |
+| D4 | **`TargetModal` lives in `app.py`** so tests can monkeypatch `get_interface_ip` through that module. | `app.py` | **Deferred, minor.** Injecting the probe functions into the modal would free it; nothing is waiting on that. |
+| D5 | `tui/theme.py` imported the catalog. | `tui/theme.py` | **Resolved** — §2.10. |
+| D6 | Two substitution mechanisms for one set of bindings. | `state.py`, `runner.py` | **Resolved** — §2.11, said in the code. |
+| D7 | **The `_WRAPPERS` heuristic** decides whether `bin` is prepended from the first token of the flags (`env`, `sudo`, `timeout`, `doas`, `nice`). | `recipes.py` | **Deferred.** The honest replacement is an explicit preset field (`command: true`, "flags are the whole command"), which matches the maintainer's preference for opt-in over inference — but it is a feature, kept out of a correctness pass. |
+| D8 | `Catalog.files` vs `file_paths` vs `overrides` vs `errors` — four provenance collections. | `recipes.py` | **Deferred.** A single `Source(path, kind, tools, presets, chains, errors)` would answer the manager modal and the boot transcript in one shape; the merge unification (§2.4) did not need it. |
+| D9 | No type checking in CI. | `pyproject.toml`, CI | **Rejected.** The maintainer declined mypy outright on 2026-09-16 (gating, annotation work or a CI step). Do not re-propose. |
+| D10 | The catalog is untyped dicts. | everywhere | **Deferred.** `preset.get("bin", tool.get("bin", tool["id"]))` is still copied a dozen times; a `Preset`/`Tool` dataclass is the fix, and a large one. |
+| D11 | TUI coverage is thin. | `tests/` | **Partly resolved.** This pass added pane tests for the stdin bar (focus rule, dismissal), the status band and the scope form — 10 tests driving the mounted app. The tree cursor, the variants pane and the layout switch are still untested. |
 
 ---
 
 ## 5. Things the reviews said to leave alone, and still should
 
 The pty + `exec_form` + `_make_ctty` triangle in `runner.py`, and the catalog's fail-soft loading. Both were
-re-read for this document; every comment in them is still load-bearing.
+re-read for this document; every comment in them is still load-bearing. This pass touched the runner twice
+(§2.2, §2.8) and the loader once (§2.4), each time inside that policy: nothing new fails closed, and the
+pty/exec/ctty code is as it was.

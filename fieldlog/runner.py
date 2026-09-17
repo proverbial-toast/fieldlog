@@ -48,6 +48,12 @@ PTY_ROWS, PTY_COLS = 24, 200
 # terminal-aware CLI emits under a pty.
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
+def strip_ansi(text: str) -> str:
+    """`text` without the escapes a pty makes tools emit — what the log holds,
+    and what a prompt has to be read as before its shape means anything."""
+    return _ANSI.sub("", text)
+
+
 # How much of a finished log a `parse:` rule is shown. A server recipe can write
 # for hours; the closing stats a summary is after are in the last few KB.
 PARSE_TAIL_BYTES = 64 * 1024
@@ -66,11 +72,16 @@ def log_tail(path: Path, limit: int = PARSE_TAIL_BYTES) -> str:
             raw = fh.read()
     except OSError:
         return ""
-    return _ANSI.sub("", raw.decode("utf-8", errors="replace"))
+    return strip_ansi(raw.decode("utf-8", errors="replace"))
 
 
 def build_env(session: TargetSession, out_dir: Path, run_id: str) -> Dict[str, str]:
-    """Env injected before spawning. Covers both $TARGET and $TARGET_IP spellings."""
+    """Env injected before spawning. Covers both $TARGET and $TARGET_IP spellings.
+
+    The same bindings `state.resolve_flags` substitutes as text, exported so
+    the shell forms it leaves alone (`${TARGET:-x}`, a script's own `$OUTDIR`)
+    expand to the same values — see the note above `state._VAR`.
+    """
     env = dict(os.environ)
     env.update(
         TARGET=session.target,
@@ -110,6 +121,7 @@ def kill_job(job: ActiveJob, grace: float = 10.0) -> bool:
     """
     if not interrupt_job(job):
         return False
+    job.kill_requested = True
     pgid = job.process.pid
 
     def force() -> None:
@@ -325,7 +337,7 @@ async def run_job(
                 # stays greppable. The live pane still gets the colored text.
                 # ponytail: CSI + OSC covers real tool output; add more if some
                 # tool's escapes leak through.
-                raw.write(_ANSI.sub("", text) + "\n")
+                raw.write(strip_ansi(text) + "\n")
                 lines += 1
                 job.lines_count = lines
                 job.bytes_count += len(text) + 1
@@ -334,7 +346,10 @@ async def run_job(
             while True:
                 # Wait forever unless a partial line is pending and unclaimed —
                 # then only until the grace period says the tool has stopped.
-                timeout = BLOCK_GRACE if (pending and not job.await_prompt) else None
+                # `is None`, not truthiness, on both sides: a partial line of
+                # only whitespace strips to an empty prompt, which is still a
+                # prompt the tool has to be seen resuming from.
+                timeout = BLOCK_GRACE if (pending and job.await_prompt is None) else None
                 try:
                     kind, payload = await asyncio.wait_for(queue.get(), timeout)
                 except asyncio.TimeoutError:
@@ -355,7 +370,7 @@ async def run_job(
                     continue
 
                 text = payload.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-                if job.await_prompt:
+                if job.await_prompt is not None:
                     job.await_prompt = None
                     job.await_since = None
                     if on_state:
@@ -401,15 +416,23 @@ async def run_job(
         job.pty_fd = None
         if proc.returncode is None:
             # Reached only when the worker was cancelled (the app quitting)
-            # while the job is still live. Signal the whole process group, not
-            # just the leader: a pipeline's shell leaves children in the group
-            # that a bare terminate() would orphan. Jobs run in their own
-            # session (setsid in _make_ctty), so the pgid is the leader's pid.
+            # while the job is still live. Closing the master above already
+            # hung up the child's controlling terminal, which is the end of
+            # most tools; the signal is for the ones that ignore SIGHUP.
+            # Signal the whole process group, not just the leader: a
+            # pipeline's shell leaves children in the group that a bare
+            # terminate() would orphan. Jobs run in their own session (setsid
+            # in _make_ctty), so the pgid is the leader's pid.
+            #
+            # A job the operator already asked to kill is past politeness:
+            # kill_job scheduled its SIGKILL for after the grace, and the loop
+            # that would have delivered it is going down with the app.
+            sig = signal.SIGKILL if job.kill_requested else signal.SIGTERM
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                os.killpg(os.getpgid(proc.pid), sig)
             except (ProcessLookupError, PermissionError, OSError):
                 try:
-                    proc.terminate()
+                    proc.send_signal(sig)
                 except (ProcessLookupError, OSError):
                     pass
 

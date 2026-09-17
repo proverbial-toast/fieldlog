@@ -246,6 +246,14 @@ class TargetSession:
 
 # `$NAME` or `${NAME}`, whole names only. Shell forms such as `${NAME:-x}` do not
 # match and are left for the shell, which has every binding in its env.
+#
+# This regex is the boundary between the two ways a recipe's variables get
+# filled. What it matches, fieldlog substitutes as raw text (resolve_flags),
+# which is safe only because is_blocked has allowlisted every scope value
+# first; that is also what previews show. What it leaves alone reaches the
+# shell untouched and expands through real parameter expansion from the
+# child's environment (runner.build_env exports the same bindings). Same
+# values either way; only the first path is the one the allowlist guards.
 _VAR = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
 
 # Alternate spellings, mapped to the binding they resolve as.
@@ -297,8 +305,8 @@ def prepare_job_paths(
     create: bool = True,
     stamp: Optional[str] = None,
     out_dir: Optional[Path] = None,
-) -> Tuple[Path, Path, str, str, str]:
-    """Resolve (log_path, out_dir, root, scope, stamp). With `create`, also create
+) -> Tuple[Path, Path, str, str]:
+    """Resolve (log_path, out_dir, root, stamp). With `create`, also create
     the log, falling back to raw/ when the log destination is not writable.
 
     The directory is named for the run — `<stamp>_<run_id>` — so two runs
@@ -309,14 +317,13 @@ def prepare_job_paths(
     per-run slug.
     """
     root = session.artifact_root
-    scope = session.target
     stamp = run_stamp() if stamp is None else stamp
     slug = recipe_slug(tool_id, preset_id, run_id)
     base = session.log_dir()
     log_path = Path(f"{base}{stamp}_{slug}.log")
     out_dir = Path(out_dir) if out_dir is not None else Path(f"{base}{stamp}_{run_id}")
     if not create:
-        return log_path, out_dir, root, scope, stamp
+        return log_path, out_dir, root, stamp
 
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -328,7 +335,7 @@ def prepare_job_paths(
         # the name its chain knows it by.
         out_dir = session.raw_dir / out_dir.name
 
-    return log_path, out_dir, root, scope, stamp
+    return log_path, out_dir, root, stamp
 
 
 @dataclass
@@ -353,6 +360,10 @@ class ActiveJob:
     lines_count: int = 0
     bytes_count: int = 0
     interrupted: bool = False
+    # The operator chose kill, not just interrupt: SIGINT now and SIGKILL after
+    # a grace (runner.kill_job). Kept on the job so a shutdown that lands
+    # inside the grace can finish the kill rather than lose it.
+    kill_requested: bool = False
     # `{"id": "reach", "step": 2, "of": 3}` when this run is a chain's step.
     chain: Optional[dict] = None
     # The preset's parse rule (see recipes.parse_rule), and the one-line summary
@@ -378,7 +389,6 @@ class ActiveJob:
     # Captured at spawn so a later scope / log-destination change never
     # retroactively rewrites the path shown for a job already running.
     root: str = DEFAULT_ARTIFACT_ROOT
-    scope: str = ""
     stamp: str = ""
     out_dir: Optional[Path] = None
 

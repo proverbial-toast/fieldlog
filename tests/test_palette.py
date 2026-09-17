@@ -1,4 +1,4 @@
-"""The palette says why a row cannot run, in the words is_blocked used.
+"""The palette says why a row cannot run, from the verdict check_recipe made.
 
 Every blocked row used to read "needs dns name" as long as the binary was
 installed — a missing target, an unsafe one and a missing local address alike.
@@ -39,10 +39,10 @@ def _label(modal: PaletteModal, row: dict) -> str:
     return text.plain
 
 
-def test_a_row_carries_the_reason_it_is_blocked(tmp_workspace: Path):
+def test_a_row_carries_the_verdict_it_is_blocked_by(tmp_workspace: Path):
     modal, rows = _rows(tmp_workspace, TargetSession(workspace_dir=tmp_workspace))
     assert rows["aim"]["blocked"] is True
-    assert rows["aim"]["reason"] == "needs a target"
+    assert rows["aim"]["verdict"].reason == "needs a target"
 
 
 @pytest.mark.parametrize(
