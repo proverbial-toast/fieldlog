@@ -1,5 +1,7 @@
 # fieldlog — missed opportunities
 
+_Moved to `history/` on 2026-09-17. Built items are marked inline; the rest are listed with reasons in `../next-steps.md`._
+
 **Status:** reference document, 2026-09-16. Everything here is something the *existing* architecture
 already makes cheap. Each item names the components that support it. Tags as in `README.md`; items are
 **[proposal]** unless marked otherwise. Larger ideas are developed in `features.md`; this document is the

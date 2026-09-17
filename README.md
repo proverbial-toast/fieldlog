@@ -584,7 +584,7 @@ flags: >-
   `RIFACE=ens192 fieldlog run rcap/ssh jump1` picks the remote interface.
 
 The tests behind these points are in
-[`docs/investigations/2026-09-13-ssh-wireshark.md`](docs/investigations/2026-09-13-ssh-wireshark.md).
+[`docs/history/investigations/2026-09-13-ssh-wireshark.md`](docs/history/investigations/2026-09-13-ssh-wireshark.md).
 
 ## The archive
 

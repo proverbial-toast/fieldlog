@@ -1,5 +1,7 @@
 # fieldlog — implementation roadmap
 
+_Moved to `history/` on 2026-09-17: every group in § 8 has landed, so this is the record of the plan, not the plan. Its sibling references (`features.md` and so on) are to files now beside it here; `problems.md`, `architecture.md` and `next-steps.md` are one level up._
+
 **Status:** reference document, written 2026-09-17 before the work it describes, and updated as each
 group lands (see § 8). Tags as in `README.md`: **[proposal]** until built, **[confirmed]** once a test
 guards it. This document reads `opportunities.md`, `features.md`, `directions.md` and `problems.md`

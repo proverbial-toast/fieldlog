@@ -1,8 +1,8 @@
 # fieldlog — architecture
 
 **Status:** reference document, written 2026-09-16 from the code on branch
-`fix/archive-correctness-and-tui-split`, after the changes described in `problems.md` § "Fixed in this pass";
-updated 2026-09-17 for the feature pass described in `roadmap.md` (`expect:`, chain summaries, the note
+`fix/archive-correctness-and-tui-split`, after the 2026-09-16 fixes (`history/problems-fixed-2026-09-16-17.md` § 1);
+updated 2026-09-17 for the feature pass described in `history/roadmap.md` (`expect:`, chain summaries, the note
 record, `history` views, the session transcript).
 Everything here is **[confirmed]** unless tagged otherwise.
 
@@ -311,7 +311,7 @@ summary has `steps`, `stopped_at`, an empty `artifact_log`, no artifacts, and `s
   table cells escape `|`. Chain summaries render as a step table. `--since N` filters by run number.
 - `doctor` runs `is_blocked` over the whole catalog against a scope and buckets the reasons (missing binary
   vs. scope value), with `--json`.
-- The TUI reads nothing back from the archive (see `opportunities.md`), but it writes one more thing to
+- The TUI reads nothing back from the archive (a deliberate gap: `next-steps.md`, "Not doing"), but it writes one more thing to
   it: every System-tab line, through `write_system_log` → `transcript.append_transcript`, to
   `<workspace>/fieldlog.log`. An unwritable workspace is said once in the System tab and then left alone.
 

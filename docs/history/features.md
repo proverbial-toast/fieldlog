@@ -1,5 +1,7 @@
 # fieldlog — proposed features
 
+_Moved to `history/` on 2026-09-17. What was built from this is marked inline; what was not is listed with its reason in `../next-steps.md`, which is now the only maintained list._
+
 **Status:** reference document, 2026-09-16. Every item is a **[proposal]** unless marked otherwise. Each
 one answers the same seven questions: what it does, what problem it solves, why it fits fieldlog, which
 existing components carry it, what new architecture it needs, how hard it is, and what it risks.

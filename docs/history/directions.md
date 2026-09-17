@@ -1,5 +1,7 @@
 # fieldlog — directions
 
+_Moved to `history/` on 2026-09-17. § 11 (macOS in, Windows out) is the one decision here that still binds; `../next-steps.md` carries it._
+
 **Status:** reference document, 2026-09-16. Everything here is **[speculative]** unless marked otherwise:
 these are directions the core ideas could be pushed in, with the reasoning and, where it matters, a migration
 path. `features.md` holds the concrete proposals; this document asks what they add up to.
