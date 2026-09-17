@@ -36,6 +36,8 @@ from fieldlog.recipes import (
     format_command,
     is_tool_installed,
     load_catalog,
+    reason_kind,
+    reason_missing,
     run_succeeded,
     score,
     search,
@@ -164,6 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--artifact-root", default="", help="Log destination (default: <workspace>/<target>/raw)")
     run_p.add_argument("-n", "--dry-run", action="store_true", help="Print resolved command and env without executing")
     run_p.add_argument("--extra-args", default="", help="Append extra flags to command")
+    run_p.add_argument("--note", default="", help="Free text stored on the run record, e.g. why this run was made")
     run_p.add_argument("-q", "--quiet", action="store_true", help="Suppress banner/summary; stream only tool output")
     run_p.add_argument("--json", action="store_true", help="Emit completion manifest as JSON")
     run_p.add_argument("--timeout", type=float, default=None, help="Maximum execution duration in seconds")
@@ -618,19 +621,22 @@ async def execute_cli_job(
     if as_json:
         if not emit_json:
             return code
-        manifest_record = {
+        if job.record is not None:
+            # What was archived, not a second rendering of it: the two used to
+            # disagree on both the key names and what they left out.
+            print(json.dumps(job.record, indent=2))
+            return code
+        # No manifest was written, so the run never reached the archive (an
+        # execution error). Say that, and no more: a fuller shape here would be
+        # a second schema for a consumer to come to depend on.
+        print(json.dumps({
             "id": job.id,
             "recipe": f"{job.recipe_id}/{job.variant_id}",
             "command": command,
             "exit_code": code,
             "duration_sec": elapsed,
-            "primary_log": str(job.log_path),
-            "artifacts": [
-                {"path": a.path, "bytes": a.bytes, "lines": a.lines, "binary": a.binary}
-                for a in (delta.artifacts if delta else [])
-            ],
-        }
-        print(json.dumps(manifest_record, indent=2))
+            "error": True,
+        }, indent=2))
         return code
 
     if not quiet:
@@ -700,11 +706,14 @@ def handle_run_chain(args: argparse.Namespace, catalog: Catalog, chain: dict) ->
         # A preview of a chain that cannot run yet is still worth reading, so
         # the blocked check below is skipped here. Nothing is reserved.
         stamp = run_stamp()
+        shared: Optional[Path] = None           # the first step's $OUTDIR, as run_chain shares it
         for index, (tool, preset, _cont) in enumerate(steps, start=1):
             plan = plan_launch(
                 session, tool, preset, timeout=timeout, dry_run=True, stamp=stamp,
+                out_dir=shared,
                 chain={"id": chain["id"], "step": index, "of": len(steps)},
             )
+            shared = plan.job.out_dir
             print_dry_run(plan, f"step {index}/{len(steps)}")
         return 0
 
@@ -728,7 +737,10 @@ def handle_run_chain(args: argparse.Namespace, catalog: Catalog, chain: dict) ->
         return await execute_cli_job(plan, session, quiet=quiet, as_json=as_json, emit_json=False)
 
     result = asyncio.run(
-        run_chain(session, catalog, chain, run_step=run_step, timeout=timeout)
+        run_chain(
+            session, catalog, chain, run_step=run_step, timeout=timeout,
+            note=getattr(args, "note", "").strip(),
+        )
     )
     record = result.record
 
@@ -777,6 +789,9 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
         extra_args=getattr(args, "extra_args", ""),
         timeout=getattr(args, "timeout", None),
         dry_run=dry_run,
+        # Stripped here: `--note "  "` is not a note, and an empty one keeps
+        # the key off the record entirely.
+        note=getattr(args, "note", "").strip(),
     )
 
     if dry_run:
@@ -908,6 +923,9 @@ def handle_history(args: argparse.Namespace) -> int:
         summary = str(r.get("summary", "") or "")
         if summary:
             console.print(f"      [cyan]{escape(summary)}[/cyan]")
+        note = str(r.get("note", "") or "")
+        if note:
+            console.print(f"      [dim]✎ {escape(note)}[/dim]")
         if artifacts:
             for a in artifacts:
                 console.print(f"      ↳ {escape(str(a.get('path')))} ({a.get('bytes', 0)} B)")
@@ -973,20 +991,11 @@ def doctor_session(args: argparse.Namespace) -> TargetSession:
     )
 
 
-# is_blocked's reasons, bucketed by what would unblock the recipe. Matched on the
-# stable phrases is_blocked emits, so doctor never re-derives that logic itself.
+# is_blocked's reasons, bucketed by what would unblock the recipe. The phrase
+# matching lives with the reasons themselves (recipes.reason_kind), so doctor
+# and the TUI cannot read one of them differently.
 def doctor_bucket(reason: str) -> str:
-    if "not found in $PATH" in reason:
-        return "binary"
-    if "dns name" in reason:
-        return "dns"
-    if "local address" in reason:
-        return "lhost"
-    if "interface has unsafe" in reason:
-        return "interface"
-    if "target" in reason:
-        return "target"
-    return "other"
+    return reason_kind(reason)
 
 
 # Terse, CLI-neutral phrasing for a scope block; the footer says how to set each.
@@ -1007,6 +1016,12 @@ def doctor_mark(blocked: bool, reason: str, ready_note: str) -> Tuple[str, str, 
     bucket = doctor_bucket(reason)
     if bucket == "binary":
         return "✗", "red", reason.split(" · ")[0]
+    # The terse note stands in for a value that is simply missing. A reason that
+    # says something more specific — unsafe characters, a leading `-` — has to
+    # be the one shown, or doctor reads as "needs a target" for a target that
+    # is set and refused.
+    if not reason_missing(reason):
+        return "◐", "yellow", reason.split(" · ")[0]
     return "◐", "yellow", _DOCTOR_SCOPE_NOTE.get(bucket, reason.split(" · ")[0])
 
 
@@ -1021,6 +1036,7 @@ def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
     recipes_total = 0
     missing: set = set()                        # bin names not on $PATH, deduped
     needs = {"target": 0, "dns": 0, "lhost": 0, "interface": 0}
+    refused = 0                                 # scope values that are set and rejected
 
     for tool in catalog.tools:
         rows = []
@@ -1032,8 +1048,12 @@ def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
                 bucket = doctor_bucket(reason)
                 if bucket == "binary":
                     missing.add(preset.get("bin", tool.get("bin", tool["id"])))
-                elif bucket in needs:
+                elif bucket in needs and reason_missing(reason):
                     needs[bucket] += 1
+                elif bucket in needs:
+                    # Set and refused: the footer's "set a target" would send
+                    # the operator to fill in what is already filled in.
+                    refused += 1
             else:
                 recipes_ready += 1
             rows.append({"preset": preset, "blocked": blocked, "reason": reason})
@@ -1058,6 +1078,7 @@ def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
         "tools_total": len(catalog.tools),
         "chains_ready": chains_ready,
         "chains_total": len(catalog.chains),
+        "refused": refused,
         "missing": missing,
         "needs": needs,
     }
@@ -1106,6 +1127,7 @@ def doctor_report_json(scan: dict, session: TargetSession) -> dict:
             "chains_total": scan["chains_total"],
             "missing_binaries": sorted(scan["missing"]),
             "needs": scan["needs"],
+            "refused": scan["refused"],
         },
     }
 
@@ -1173,6 +1195,8 @@ def handle_doctor(args: argparse.Namespace, catalog: Catalog) -> int:
         hints.append(f"set a dns name (-H) to unlock {scan['needs']['dns']}")
     if scan["needs"]["lhost"]:
         hints.append(f"pick an interface with an address (-i/-l) to unlock {scan['needs']['lhost']}")
+    if scan["refused"]:
+        hints.append(f"{scan['refused']} refused by the scope value (-v to see why)")
     if hints:
         console.print(f"[dim]{escape(' · '.join(hints))}[/dim]")
     return 0

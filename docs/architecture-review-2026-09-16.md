@@ -6,6 +6,11 @@
 rather than from names or docstrings. Ran the suite (269 passing) and `ruff check` (clean).
 Several findings below were confirmed by execution, not by reading; those are marked **verified**.
 
+> **Superseded as a reference, kept as a record.** The architecture map in §1 is now maintained in
+> [`architecture.md`](architecture.md); the open items (#5 repaint model, #10 `reason_kind`, the "Smaller"
+> list) are tracked in [`problems.md`](problems.md) §4 and [`next-steps.md`](next-steps.md). See
+> [`README.md`](README.md) for the documentation map.
+>
 > Companion to [`review-2026-09-15.md`](review-2026-09-15.md), which was an open-ended code review.
 > This one is structural: how the system actually fits together, and where that differs from how it
 > presents itself. It does not re-litigate items that review already actioned.

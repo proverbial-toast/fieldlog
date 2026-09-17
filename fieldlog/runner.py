@@ -30,7 +30,7 @@ from fieldlog.archive import (
     manifest_environment,
     snapshot_workspace,
 )
-from fieldlog.recipes import parse_summary
+from fieldlog.recipes import fields_from_match, parse_match, summary_from_match
 from fieldlog.state import ActiveJob, TargetSession
 
 # Called for each output line: (text, stream) where stream is "out" or "err".
@@ -373,7 +373,10 @@ async def run_job(
         job.end_time = time.time()
         job.await_prompt = None
         job.await_since = None
-        job.summary = parse_summary(job.parse_rule, log_tail(job.log_path))
+        # One match, read twice: the regex is an operator's, run over 64 KB.
+        match = parse_match(job.parse_rule, log_tail(job.log_path))
+        job.summary = summary_from_match(job.parse_rule, match)
+        job.fields = fields_from_match(match)
         if job.scan_workspace:
             delta = detect_artifact_deltas(
                 session.target_dir, pre_snap, primary_log=job.log_path, extra_roots=extra_roots
@@ -457,6 +460,11 @@ def _append_manifest(
         **({"interrupted": True} if job.interrupted else {}),
         # What the preset's `parse:` rule made of the log, when it has one.
         **({"summary": job.summary} if job.summary else {}),
+        # The same match's named groups, kept raw so a value can be trended
+        # across runs without parsing the log again.
+        **({"fields": job.fields} if job.fields else {}),
+        # Why the operator made this run, when they said (`--note`).
+        **({"note": job.note} if job.note else {}),
         # The codes this recipe calls success, so a reader of the archive can
         # see why a non-zero exit was not a failure. The code itself stays raw.
         **({"success": job.success_codes} if job.success_codes else {}),
@@ -466,3 +474,6 @@ def _append_manifest(
         record["chain"] = job.chain
 
     append_record(session.target_dir, record)
+    # Only now: a front-end reads this as "what the archive holds", so a write
+    # that raised (a full or read-only disk) must leave it unset.
+    job.record = record

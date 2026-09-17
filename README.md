@@ -217,8 +217,9 @@ disk and exits 0.
 | `--timeout SECONDS` | Stop the job after this long, recorded as exit 124. Per step for a chain |
 | `-n`, `--dry-run` | Show what would run. Reserves no run number, creates nothing |
 | `--extra-args "..."` | Append to the command. Not accepted for a chain |
+| `--note "..."` | Free text stored on the record, shown by `history` and `report`. On a chain the note goes on the chain's summary record |
 | `-q`, `--quiet` | Tool output only, no banner or summary |
-| `--json` | Print the run record (or the chain summary record) as JSON when done |
+| `--json` | Print the run record (or the chain summary record) as JSON when done. On an execution error before the archive was written, a short `{"error": true}` record instead |
 
 `show` accepts `-t`, `-H`, `-i` and `-l`. `history` accepts `-t`, `-w` and
 `--json`. `list` accepts `-r`/`--runnable`, `-V`/`--verbose`, `-q`/`--names`
@@ -332,6 +333,9 @@ beside that run, and the record carries it as `summary`.
   anchoring to them.
 - Without `summary` the whole match is used. A template may only reference
   groups the regex names.
+- The named groups are kept on the record as `fields`
+  (`{"rx": "4", "loss": "0"}`) beside the formatted summary, so `history --json`
+  can trend a value across runs without re-parsing the logs.
 - The last 64 KB of the log is scanned, so a server recipe that ran for hours
   still summarises at the same cost.
 - A regex that does not compile, or a template naming a group that does not
@@ -373,14 +377,20 @@ script that reads `$OUTDIR` itself.
 | `$HOST`, `$TARGET_HOST` | DNS name. If unset and the target is a hostname (not `user@host`), the target. Presets using it are not runnable without one |
 | `$LHOST` | Local IP: the one given, else the interface's IPv4 address, read when the job starts (see [TUI](#tui) to set one there). Presets using it are not runnable without one |
 | `$IFACE` | Interface name |
-| `$OUTDIR`, `$OUT_DIR` | Per-run folder for files the tool writes: `targets/<name>/raw/<timestamp>/` |
+| `$OUTDIR`, `$OUT_DIR` | Per-run folder for files the tool writes: `targets/<name>/raw/<timestamp>_<run>/` |
 | `$RUN_ID` | Run number, `01`, `02`, … Set in the environment only |
 
 A preset is **not runnable** while its variables are unmet or its binary is
 missing. The TUI says why; the CLI refuses with the same reason. Targets and
 DNS names may only contain letters, digits, `.`, `:`, `/`, `-` and `_`, since
 they are pasted into a shell command. Targets may also contain `@`, for an ssh
-`user@host`.
+`user@host`. None of them may start with `-`, which would be read as one more
+flag (`--target=-f` is a flood ping, not a target), and a target made only of
+digits and dots has to be a valid address: `10.0.0.256` is refused rather than
+run. `--extra-args` and TUI args edits are appended as typed and are not
+checked; they are the operator's own shell. The same trust applies to
+`./recipes.d/`: a recipe's `flags` is shell, so running fieldlog inside a
+directory you do not trust and choosing one of its recipes runs that recipe.
 
 ### Chains
 
@@ -412,8 +422,8 @@ chains:
   if it was interrupted. So a chain whose `continue: true` step failed still
   exits non-zero, even when every later step succeeds.
 - A chain is runnable only when every step is. The reason names the step.
-- Every step shares one `$OUTDIR`, so side files from one chain land together.
-  Logs stay separate, one per step.
+- Every step shares one `$OUTDIR` — the first step's — so side files from one
+  chain land together. Logs stay separate, one per step.
 - Each step is archived as its own run record, tagged with its position. When
   the chain ends, it appends one summary record named `chain/<id>` to the same
   `session.json`: each step's run number and exit code, where it stopped, and
@@ -507,7 +517,7 @@ targets/
     ├── .run-counter                # highest run number handed out
     └── raw/
         ├── 20260912T180156_ping_quick_01.log    # what the tool printed, ANSI stripped
-        └── 20260912T180156/                    # that run's $OUTDIR, if it used one
+        └── 20260912T180156_01/                 # that run's $OUTDIR, if it used one
 ```
 
 A run record:
@@ -518,9 +528,9 @@ A run record:
   "recipe": "ping/quick",
   "command": "ping -c 4 -W 1 192.168.1.20",
   "environment": {"TARGET": "192.168.1.20", "TARGET_IP": "192.168.1.20", "TARGET_HOST": "",
-                  "LHOST": "192.168.1.5", "IFACE": "eth0", "OUT_DIR": "…/raw/20260912T180156", "RUN_ID": "01"},
+                  "LHOST": "192.168.1.5", "IFACE": "eth0", "OUT_DIR": "…/raw/20260912T180156_01", "RUN_ID": "01"},
   "artifact_log": "…/targets/192.168.1.20/raw/20260912T180156_ping_quick_01.log",
-  "out_dir": "…/targets/192.168.1.20/raw/20260912T180156",
+  "out_dir": "…/targets/192.168.1.20/raw/20260912T180156_01",
   "start_time": "2026-09-12T18:01:56.734145",
   "end_time": "2026-09-12T18:01:59.801200",
   "duration_sec": 3.07,
@@ -530,7 +540,8 @@ A run record:
 ```
 
 Optional keys: `"interrupted": true` when the operator sent SIGINT, `"summary"`
-when the preset has a `parse` rule that matched, `"success"` listing the exit
+when the preset has a `parse` rule that matched, `"fields"` with that match's
+named groups, `"note"` when `--note` was given, `"success"` listing the exit
 codes its preset calls a success, `"chain": {"id", "step", "of"}`
 on a chain step, `"binary": true` on an artifact that is not text. The
 `environment` block leaves out `HOST` and `OUTDIR`: both are exported to the

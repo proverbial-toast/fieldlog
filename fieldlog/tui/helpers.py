@@ -7,6 +7,8 @@ import re
 import sys
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
+from fieldlog.recipes import reason_kind, reason_missing
+
 if TYPE_CHECKING:
     from textual.app import App
 
@@ -64,6 +66,30 @@ def arg_groups(s: str) -> dict:
             out.append({"flag": "", "value": tk})
         i += 1
     return {"groups": out, "count": len(toks)}
+
+
+# What a blocked row says in the ~15 cells a list has for it. Missing and
+# refused read differently on purpose: one asks for a value, the other says the
+# value that is there was rejected.
+_SHORT_MISSING = {"target": "needs target", "dns": "needs dns name", "lhost": "needs lhost"}
+_SHORT_REFUSED = {
+    "target": "bad target", "dns": "bad dns name",
+    "lhost": "bad lhost", "interface": "bad interface",
+}
+
+
+def short_reason(reason: str, width: int = 15) -> str:
+    """A blocked reason in a list cell, phrased from `recipes.reason_kind`.
+
+    A missing binary is the gap the operator installs; everything else is a
+    scope value, either unset or refused. Anything unrecognised falls back to
+    the head of the reason as is_blocked wrote it.
+    """
+    kind = reason_kind(reason)
+    if kind == "binary":
+        return "not installed"
+    table = _SHORT_MISSING if reason_missing(reason) else _SHORT_REFUSED
+    return table.get(kind) or truncate_right(reason.split(" · ")[0], width)
 
 
 def truncate_right(text: str, width: int) -> str:

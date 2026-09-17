@@ -8,6 +8,7 @@ their evidence there.
 from __future__ import annotations
 
 import fcntl
+import ipaddress
 import json
 import os
 import re
@@ -16,7 +17,7 @@ import struct
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 if TYPE_CHECKING:
     import asyncio
@@ -133,6 +134,20 @@ def scope_dir(target: str) -> str:
     return "unassigned" if set(name) <= {"."} else name
 
 
+def is_ip_address(value: str) -> bool:
+    """Whether `value` is a literal IPv4/IPv6 address, as the stdlib reads one."""
+    try:
+        ipaddress.ip_address((value or "").strip())
+        return True
+    except ValueError:
+        return False
+
+
+# What an operator typing an IPv4 address produces, whether or not they got it
+# right: `10.0.0.256` and `1.2.3` are addresses that are wrong, not hostnames.
+_DOTTED = re.compile(r"[\d.]+")
+
+
 def run_stamp(when: Optional[float] = None) -> str:
     """Compact ISO basic form: sorts lexically, needs no escaping."""
     return time.strftime("%Y%m%dT%H%M%S", time.localtime(when if when is not None else time.time()))
@@ -160,7 +175,11 @@ class TargetSession:
         t = (self.target or "").strip()
         if re.search(r"/\d+$", t):
             return "subnet"
-        if re.match(r"^[0-9a-fA-F:.]+$", t):
+        # Digits and dots is an address, sound or not — a mistyped one must not
+        # fall through to `hostname` and quietly start binding `$HOST`.
+        # Otherwise the parser decides, not the alphabet: `dc1`, `cafe` and
+        # `db2` are spelled entirely in hex digits and are hostnames all the same.
+        if _DOTTED.fullmatch(t) or is_ip_address(t):
             return "address"
         if "@" in t:
             return "user@host"
@@ -206,19 +225,18 @@ class TargetSession:
 
     # ---- Artifact layout (captured onto the job at spawn, never re-derived) --
     @staticmethod
-    def artifact_dir_for(root: str, target: str) -> str:
+    def artifact_dir_for(root: str, name: str) -> str:
+        """`name` is what `slug` is built from — the dns name if set, else the
+        target — so a log destination folder and the workspace folder agree."""
         base = (root or "").strip().rstrip("/") or "."
-        return f"{os.path.abspath(base)}/{scope_dir(target)}/"
-
-    @staticmethod
-    def out_dir_for(root: str, target: str, stamp: str) -> str:
-        return TargetSession.artifact_dir_for(root, target) + stamp
+        return f"{os.path.abspath(base)}/{scope_dir(name)}/"
 
     def log_dir(self, root: Optional[str] = None) -> str:
         """Where this scope's logs land: `<root>/<scope>/` when a log destination
         is set, else the target workspace's raw/ dir."""
         root = self.artifact_root if root is None else root
-        return TargetSession.artifact_dir_for(root, self.target) if root.strip() else f"{self.raw_dir}/"
+        name = self.hostname or self.target
+        return TargetSession.artifact_dir_for(root, name) if root.strip() else f"{self.raw_dir}/"
 
     def ensure_dirs(self) -> Path:
         """Create raw/ (owned by the operator) and return it."""
@@ -257,7 +275,10 @@ def resolve_flags(session: TargetSession, flags: str, out_dir: Optional[str] = N
 
     Unknown names (e.g. `$RUN_ID`) are left for the shell, which gets them as env.
     """
-    outdir = out_dir if out_dir is not None else session.log_dir() + run_stamp()
+    # The fallback is a preview for a caller with no run in hand (`show`, which
+    # knows no workspace): `NN` stands where the run number would be, and is a
+    # placeholder that pastes into a command as harmlessly as it reads.
+    outdir = out_dir if out_dir is not None else f"{session.log_dir()}{run_stamp()}_NN"
     vals = {
         "TARGET": session.target,
         "HOST": session.dns_name,
@@ -275,12 +296,17 @@ def prepare_job_paths(
     run_id: str,
     create: bool = True,
     stamp: Optional[str] = None,
+    out_dir: Optional[Path] = None,
 ) -> Tuple[Path, Path, str, str, str]:
     """Resolve (log_path, out_dir, root, scope, stamp). With `create`, also create
     the log, falling back to raw/ when the log destination is not writable.
 
-    A caller-supplied `stamp` is what lets every step of a chain share one
-    `$OUTDIR`; the log filenames still differ, by their per-run slug.
+    The directory is named for the run — `<stamp>_<run_id>` — so two runs
+    started in the same second never write into one another's `$OUTDIR`. A
+    caller that wants one shared deliberately, which is what a chain's later
+    steps want, passes the directory in as `out_dir`. A caller-supplied `stamp`
+    only shares the name of the hour; the log filenames still differ, by their
+    per-run slug.
     """
     root = session.artifact_root
     scope = session.target
@@ -288,7 +314,7 @@ def prepare_job_paths(
     slug = recipe_slug(tool_id, preset_id, run_id)
     base = session.log_dir()
     log_path = Path(f"{base}{stamp}_{slug}.log")
-    out_dir = Path(base + stamp)
+    out_dir = Path(out_dir) if out_dir is not None else Path(f"{base}{stamp}_{run_id}")
     if not create:
         return log_path, out_dir, root, scope, stamp
 
@@ -298,7 +324,9 @@ def prepare_job_paths(
     except (PermissionError, OSError):
         session.ensure_dirs()
         log_path = session.raw_dir / f"{stamp}_{slug}.log"
-        out_dir = session.raw_dir / stamp
+        # The fallback moves the directory, never renames it: a shared one keeps
+        # the name its chain knows it by.
+        out_dir = session.raw_dir / out_dir.name
 
     return log_path, out_dir, root, scope, stamp
 
@@ -331,6 +359,9 @@ class ActiveJob:
     # it found in the finished log. Both stay empty for a preset without one.
     parse_rule: Optional[dict] = None
     summary: str = ""
+    # The named groups that rule found, so a reader can trend a value across
+    # runs without parsing the log again.
+    fields: Dict[str, str] = field(default_factory=dict)
     # The preset's `success:` codes. None means the default, 0 alone.
     success_codes: Optional[list] = None
     # The preset's `scan:` flag — find this run's artifacts by scanning the
@@ -338,6 +369,11 @@ class ActiveJob:
     scan_workspace: bool = False
     log_lines: list[str] = field(default_factory=list)
     artifact_delta: Optional[ArtifactDelta] = None
+    # Free text the operator gave with `--note`: why this run was made.
+    note: str = ""
+    # The archived record, set when the manifest is written, so a front-end can
+    # show exactly what was archived rather than rebuilding its own version.
+    record: Optional[dict] = None
 
     # Captured at spawn so a later scope / log-destination change never
     # retroactively rewrites the path shown for a job already running.

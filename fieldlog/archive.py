@@ -179,9 +179,7 @@ def collect_job_artifacts(
     The log belongs to the run outright. `$OUTDIR` needs one qualifier: the
     steps of a chain deliberately share one, so a step records what changed in
     it since that step began (`out_snap`, taken at spawn), not everything in it
-    — otherwise step 2 would claim step 1's output. Runs launched in the same
-    second also share a stamp, and so a directory; within it they are told
-    apart the same way.
+    — otherwise step 2 would claim step 1's output.
 
     That snapshot is one directory, not the archive. The whole-tree diff below
     knows only that a file changed *during* the run, which means "this run
@@ -336,6 +334,21 @@ def next_run_number(target_dir: Path) -> int:
     except (OSError, ValueError):
         issued = 0
     return max(issued, load_target_history(target_dir).max_run_id) + 1
+
+
+def peek_run_number(target_dir: Path) -> int:
+    """The next number, for a preview that must stay cheap.
+
+    The counter alone answers it: `reserve_run_number` writes
+    `max(issued, max_recorded) + 1`, so it is never below any recorded id and
+    the manifest need not be parsed — which a preview redrawn on every keypress
+    would otherwise do. An archive from before the counter existed has no file,
+    and only that falls back to reading the runs. Reserves nothing either way.
+    """
+    try:
+        return int((Path(target_dir) / RUN_COUNTER).read_text(encoding="utf-8").strip()) + 1
+    except (OSError, ValueError):
+        return next_run_number(target_dir)
 
 
 def reserve_run_number(target_dir: Path) -> int:

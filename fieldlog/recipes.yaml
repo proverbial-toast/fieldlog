@@ -108,10 +108,20 @@ recipes:
     presets:
       - id: timing80
         name: "timing breakdown :80"
-        flags: "-o /dev/null -s -w @fmt http://$HOST/"
+        flags: >-
+          -o /dev/null -sS -w "dns=%{time_namelookup} tcp=%{time_connect}
+          ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n"
+          http://$HOST/
+        parse: 'total=(?P<total>\S+) code=(?P<code>\d{3})'
+        summary: "HTTP {code} in {total}s"
       - id: timing443
         name: "timing breakdown :443"
-        flags: "-o /dev/null -s -w @fmt https://$HOST/"
+        flags: >-
+          -o /dev/null -sS -w "dns=%{time_namelookup} tcp=%{time_connect}
+          ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n"
+          https://$HOST/
+        parse: 'total=(?P<total>\S+) code=(?P<code>\d{3})'
+        summary: "HTTP {code} in {total}s"
       - id: trace
         name: "full trace · headers + timing"
         flags: >-
@@ -129,7 +139,10 @@ recipes:
         summary: "HTTP {code}"
       - id: loop
         name: "loop · 20 requests"
-        flags: "-o /dev/null -s -w @fmt --retry 0 https://$HOST/"
+        # curl's own URL globbing makes the 20 requests, one line of output each.
+        flags: >-
+          -o /dev/null -sS -w "%{http_code} %{time_total}s\n" --retry 0
+          "https://$HOST/?[1-20]"
 
   - id: openssl
     name: "TLS Certificate Validator"

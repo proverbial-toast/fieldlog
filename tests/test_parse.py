@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from fieldlog.recipes import load_catalog, parse_rule, parse_summary
+from fieldlog.recipes import load_catalog, parse_fields, parse_rule, parse_summary
 
 PING_TAIL = """\
 64 bytes from 10.0.0.1: icmp_seq=3 ttl=64 time=0.09 ms
@@ -71,6 +71,39 @@ def test_a_summary_is_one_capped_line():
     summary = parse_summary(rule, PING_TAIL)
     assert "\n" not in summary
     assert len(summary) <= PARSE_SUMMARY_MAX
+
+
+def test_the_named_groups_are_kept_as_fields():
+    rule = parse_rule(_preset(
+        parse=r"(?P<rx>\d+) received, (?P<loss>[\d.]+)% packet loss",
+        summary="{rx} replies · {loss}% loss",
+    ))
+    assert parse_fields(rule, PING_TAIL) == {"rx": "4", "loss": "0"}
+
+
+def test_a_rule_without_named_groups_has_no_fields():
+    rule = parse_rule(_preset(parse=r"\d+ received"))
+    assert parse_fields(rule, PING_TAIL) == {}
+
+
+def test_a_rule_that_does_not_match_has_no_fields():
+    rule = parse_rule(_preset(parse=r"(?P<rx>\d+) sent"))
+    assert parse_fields(rule, PING_TAIL) == {}
+    assert parse_fields(None, PING_TAIL) == {}
+
+
+def test_the_shipped_curl_rule_reads_a_real_timing_line(tmp_path: Path):
+    """The rule that ships with `curl/timing80`, against the line its own `-w`
+    format writes."""
+    dropins = tmp_path / "recipes.d"
+    dropins.mkdir(exist_ok=True)
+    cat = load_catalog(dropin_dir=dropins)
+    curl = next(t for t in cat.tools if t["id"] == "curl")
+    rule = parse_rule(next(p for p in curl["presets"] if p["id"] == "timing80"))
+
+    line = "dns=0.004 tcp=0.020 ttfb=0.310 total=0.311 code=200\n"
+    assert parse_summary(rule, line) == "HTTP 200 in 0.311s"
+    assert parse_fields(rule, line) == {"total": "0.311", "code": "200"}
 
 
 # ---- 2. Load-time validation ----------------------------------------------
@@ -145,6 +178,8 @@ def test_a_run_record_carries_the_summary(tmp_path: Path, tmp_workspace: Path):
 
     runs = json.loads((tmp_workspace / "10.0.0.1" / "session.json").read_text(encoding="utf-8"))
     assert runs[-1]["summary"] == "4 replies · 0% loss"
+    # The groups ride along raw, so a value can be trended without re-parsing.
+    assert runs[-1]["fields"] == {"rx": "4", "loss": "0"}
 
 
 def test_a_preset_without_a_rule_writes_no_summary_key(tmp_path: Path, tmp_workspace: Path):
@@ -165,6 +200,7 @@ def test_a_preset_without_a_rule_writes_no_summary_key(tmp_path: Path, tmp_works
 
     runs = json.loads((tmp_workspace / "10.0.0.1" / "session.json").read_text(encoding="utf-8"))
     assert "summary" not in runs[-1]
+    assert "fields" not in runs[-1]
 
 
 # ---- 4. The surfaces -------------------------------------------------------

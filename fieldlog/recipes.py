@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
-from fieldlog.state import template_vars
+from fieldlog.state import is_ip_address, template_vars
 
 if TYPE_CHECKING:
     from fieldlog.state import TargetSession
@@ -118,6 +118,9 @@ def clear_tool_cache() -> None:
 _UNSAFE_SCOPE = re.compile(r"[^A-Za-z0-9._:/-]")
 _UNSAFE_TARGET = re.compile(r"[^A-Za-z0-9._:/@-]")
 
+# Anything an operator typing an IPv4 address could produce, right or wrong.
+_DOTTED = re.compile(r"[\d.]+")
+
 
 def unsafe_scope_chars(value: str, pattern: re.Pattern = _UNSAFE_SCOPE) -> str:
     """The distinct disallowed characters in a target/host, '' if it is clean."""
@@ -144,12 +147,24 @@ def is_blocked(
     if "TARGET" in used:
         if not (session.target or "").strip():
             return True, "needs a target"
+        # A scope value is pasted in after the tool's own flags, so a leading
+        # `-` is read as one more flag: `--target=-f` would arm ping's flood.
+        # A `-` inside the value (`box-1`, `10-0-0-1.example`) is fine.
+        target = session.target.strip()
+        if target.startswith("-"):
+            return True, "target must not start with -"
+        # Digits and dots is an address being typed, so a typo in one (`1.2.3`,
+        # `10.0.0.256`) is a mistake worth catching rather than a hostname.
+        if _DOTTED.fullmatch(target) and not is_ip_address(target):
+            return True, "target is not a valid address"
         bad = unsafe_scope_chars(session.target, _UNSAFE_TARGET)
         if bad:
             return True, f"target has unsafe characters ({bad})"
     if "HOST" in used:
         if not session.dns_name:
             return True, "needs a dns name"
+        if session.dns_name.startswith("-"):
+            return True, "dns name must not start with -"
         bad = unsafe_scope_chars(session.dns_name)
         if bad:
             return True, f"dns name has unsafe characters ({bad})"
@@ -159,6 +174,8 @@ def is_blocked(
             # An interface with no IPv4 would turn `-B $LHOST` into a bare `-B`.
             iface = session.interface or "the interface"
             return True, f"needs a local address · {iface} has no IPv4 address"
+        if lhost.startswith("-"):
+            return True, "local address must not start with -"
         bad = unsafe_scope_chars(lhost)
         if bad:
             return True, f"local address has unsafe characters ({bad})"
@@ -166,10 +183,41 @@ def is_blocked(
         # $IFACE is interpolated into the shell command like the scope above, so
         # it takes the same allowlist. An empty interface stays allowed: the
         # command just carries a blank, the same as before this check.
+        if (session.interface or "").startswith("-"):
+            return True, "interface must not start with -"
         bad = unsafe_scope_chars(session.interface)
         if bad:
             return True, f"interface has unsafe characters ({bad})"
     return False, f"{bin_name} · in $PATH"
+
+
+# What each of is_blocked's reasons is about, matched on the phrases it emits.
+# One definition: doctor's buckets and the palette's labels both read it, so
+# neither re-derives that logic and the two cannot drift apart.
+def reason_kind(reason: str) -> str:
+    """`ready | binary | target | dns | lhost | interface | other` for a reason."""
+    if " · in $PATH" in reason:
+        return "ready"
+    if "not found in $PATH" in reason:
+        return "binary"
+    if "dns name" in reason:
+        return "dns"
+    if "local address" in reason:
+        return "lhost"
+    if "interface has unsafe" in reason or "interface must not" in reason:
+        return "interface"
+    if "target" in reason:
+        return "target"
+    return "other"
+
+
+def reason_missing(reason: str) -> bool:
+    """Whether the block is a value that is not set, rather than one refused.
+
+    The difference is what a reader is told to do: set the value, or look at
+    the one that is already there.
+    """
+    return reason.startswith("needs ")
 
 
 def writes_outdir(preset: dict, flags: Optional[str] = None) -> bool:
@@ -215,34 +263,61 @@ def parse_rule(preset: dict) -> Optional[dict]:
     return {"parse": pattern, "summary": str(preset.get("summary", "") or "")}
 
 
-def parse_summary(rule: Optional[dict], text: str) -> str:
-    """The one-line summary `rule` finds in `text`: '' when there is no rule, or
-    it does not match.
+def parse_match(rule: Optional[dict], text: str) -> Optional[re.Match]:
+    """The match `rule` makes in `text`, or None when there is no rule or no match.
 
     The last match wins, because the numbers worth keeping are a tool's closing
     stats and a `-c 4` ping writes four lines that look much like them. A rule
-    that survived the load has a compiling regex and a template naming only
-    groups that regex defines, so an operator's file cannot fail here — the
-    guards are for a rule handed in from somewhere else.
+    that survived the load has a compiling regex, so an operator's file cannot
+    fail here — the guard is for a rule handed in from somewhere else.
     """
     if not rule:
-        return ""
+        return None
     try:
         matches = list(re.finditer(rule["parse"], text, re.MULTILINE))
     except re.error:
+        return None
+    return matches[-1] if matches else None
+
+
+def fields_from_match(match: Optional[re.Match]) -> Dict[str, str]:
+    """The named groups of a match already made, `None` read as ''.
+
+    Kept on the record beside the formatted summary, so a value can be trended
+    across runs without re-parsing the logs. A rule with no named groups, or one
+    that did not match, contributes nothing.
+    """
+    return {k: v or "" for k, v in match.groupdict().items()} if match else {}
+
+
+def summary_from_match(rule: Optional[dict], match: Optional[re.Match]) -> str:
+    """The one-line summary for a match already made: '' when there was none.
+
+    A rule that survived the load has a template naming only groups its regex
+    defines, so the guards below are for a rule handed in from somewhere else.
+    """
+    if match is None:
         return ""
-    if not matches:
-        return ""
-    last = matches[-1]
-    template = rule.get("summary", "")
+    template = (rule or {}).get("summary", "")
     try:
-        if template:
-            found = template.format_map({k: v or "" for k, v in last.groupdict().items()})
-        else:
-            found = last.group(0)
+        found = template.format_map(fields_from_match(match)) if template else match.group(0)
     except (KeyError, IndexError, ValueError):
         return ""
     return " ".join(found.split())[:PARSE_SUMMARY_MAX]
+
+
+def parse_fields(rule: Optional[dict], text: str) -> Dict[str, str]:
+    """`fields_from_match` for a rule and a text — the one-shot form."""
+    return fields_from_match(parse_match(rule, text))
+
+
+def parse_summary(rule: Optional[dict], text: str) -> str:
+    """`summary_from_match` for a rule and a text — the one-shot form.
+
+    A caller that wants both a summary and its fields matches once instead (see
+    parse_match): the regex is an operator's, run over 64 KB of log.
+    """
+    return summary_from_match(rule, parse_match(rule, text))
 
 
 def success_codes(preset: dict) -> Optional[List[int]]:

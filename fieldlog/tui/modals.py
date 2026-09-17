@@ -15,11 +15,10 @@ from fieldlog.recipes import (
     RECIPES_PATH,
     chain_matches,
     display_path,
-    is_tool_installed,
     search,
     steps_label,
 )
-from fieldlog.tui.helpers import copy_text_to_clipboard, truncate_right
+from fieldlog.tui.helpers import copy_text_to_clipboard, short_reason, truncate_right
 from fieldlog.tui.theme import (
     ACCENT, BG_BASE, DIM, ERR, FAINT, FG, META_COMMANDS, MUTED, SOFT, UNFOCUSED, WARN,
 )
@@ -353,8 +352,12 @@ class PaletteModal(ModalScreen[Optional[Tuple]]):
             chain_rows: List[dict] = []
             if q:
                 hits = search(app.recipes, q, app.blocked_flag, app.hide_missing, limit=7)
+                # The real reason rides along, so a row can say what is actually
+                # missing. Asked for only when the row is blocked: the verdict
+                # re-runs a $PATH lookup and an ioctl per row.
                 rows = [
-                    {"kind": "task", "tool": t, "preset": p, "blocked": b}
+                    {"kind": "task", "tool": t, "preset": p, "blocked": b,
+                     "reason": app.is_blocked(t, p)[1] if b else ""}
                     for t, p, b in hits
                 ]
                 chain_rows = [
@@ -379,7 +382,9 @@ class PaletteModal(ModalScreen[Optional[Tuple]]):
                         if not t:
                             continue
                         p = app.get_preset(t, preset_id)
-                        rows.append({"kind": "task", "tool": t, "preset": p, "blocked": app.blocked_flag(t, p)})
+                        blocked, reason = app.is_blocked(t, p)
+                        rows.append({"kind": "task", "tool": t, "preset": p, "blocked": blocked,
+                                     "reason": reason if blocked else ""})
                     if len(rows) >= 6:
                         break
                 title = "pinned & recent"
@@ -435,7 +440,10 @@ class PaletteModal(ModalScreen[Optional[Tuple]]):
         else:
             t, p = item["tool"], item["preset"]
             t_bin = t.get("bin", t["id"])
-            state = "" if ok else ("needs dns name" if is_tool_installed(t_bin) else "not installed")
+            # The blocked reason as is_blocked phrased it: a missing target, an
+            # unsafe one and a missing local address are different problems and
+            # used to read alike here.
+            state = "" if ok else short_reason(str(item.get("reason", "")))
             cells = (
                 f"{t_bin[:10]:<11}",
                 f"{p.get('name', p['id'])[:26]:<27}",

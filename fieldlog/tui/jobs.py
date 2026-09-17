@@ -418,11 +418,19 @@ class JobsMixin:
         self.action_run_task()
 
     def _remember(self, key: str) -> None:
-        """Keep the last six things launched, recipe keys and `chain/<id>` alike."""
-        if key not in self.recent:
-            self.recent.insert(0, key)
-            del self.recent[6:]
-            save_pinned_recent(self.session.workspace_dir, self.pinned, self.recent)
+        """Keep the last six things launched, recipe keys and `chain/<id>` alike.
+
+        Re-launching something already listed moves it back to the front, or the
+        list would be the first six ever launched rather than the last six.
+        """
+        if key in self.recent:
+            self.recent.remove(key)
+        self.recent.insert(0, key)
+        del self.recent[6:]
+        save_pinned_recent(self.session.workspace_dir, self.pinned, self.recent)
+        # The list just changed shape, so the pane showing it has to be redrawn
+        # — the cursor keeps its row, not its index (see _rebuild_tree).
+        self._rebuild_tree()
 
     def _open_job_tab(self, plan: LaunchPlan, tool: dict, preset: dict) -> Tuple[RichLog, str]:
         """Tab, RichLog and transcript lines for a planned job. The caller starts

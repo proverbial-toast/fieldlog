@@ -128,16 +128,29 @@ class RecipeTreeMixin:
             text.append("  " + row.meta, style=meta_style)
         return text
 
+    @staticmethod
+    def _row_identity(row: TreeRow) -> tuple:
+        """What makes a row the same row across a rebuild, index aside."""
+        return (row.kind, row.bin, row.tool_id, row.preset_id)
+
     def _rebuild_tree(self) -> None:
         try:
             tree = self.query_one("#recipe-tree", VerticalScroll)
         except Exception:
             return
+        # The cursor follows the row it was on, not the index it sat at:
+        # launching something re-orders Recent underneath it, and an index held
+        # still would leave the cursor on a different recipe than the one the
+        # operator put it on.
+        was_on = self._row_identity(self._rows[self.cursor]) if 0 <= self.cursor < len(self._rows) else None
         self._rows = self.visible_rows()
-        if self.cursor >= len(self._rows) or (
-            self._rows and self._rows[min(self.cursor, len(self._rows) - 1)].kind == "header"
-        ):
-            self.cursor = self._first_selectable()
+        here = self._rows[self.cursor] if 0 <= self.cursor < len(self._rows) else None
+        if here is None or here.kind == "header" or (was_on is not None and self._row_identity(here) != was_on):
+            moved = next(
+                (i for i, r in enumerate(self._rows) if r.kind != "header" and self._row_identity(r) == was_on),
+                None,
+            ) if was_on is not None else None
+            self.cursor = self._first_selectable() if moved is None else moved
         tree.remove_children()
         widgets = [
             RecipeRowWidget(i, self._row_text(r, i == self.cursor),

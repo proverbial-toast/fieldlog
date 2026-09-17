@@ -43,3 +43,13 @@ def test_show_uses_the_presets_own_bin(capsys):
     assert handle_show(args, _catalog()) == 0
     out = capsys.readouterr().out
     assert "delv +vtrace example.com" in out and "dig +vtrace" not in out
+
+
+def test_show_previews_the_per_run_outdir(capsys):
+    """`show` knows no workspace, so it has no run number: `NN` stands where one
+    would, rather than the old shared-by-the-second directory."""
+    cat = Catalog(tools=[normalize_recipe(
+        {"id": "cap", "bin": "true", "presets": [{"id": "w", "flags": "-w $OUTDIR/x.pcap"}]}
+    )])
+    assert handle_show(build_parser().parse_args(["show", "cap/w"]), cat) == 0
+    assert "_NN/x.pcap" in capsys.readouterr().out

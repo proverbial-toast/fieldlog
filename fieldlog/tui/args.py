@@ -14,6 +14,7 @@ from rich.text import Text
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Static
 
+from fieldlog.archive import peek_run_number
 from fieldlog.state import resolve_flags, run_stamp
 from fieldlog.tui.helpers import arg_groups
 from fieldlog.tui.theme import ACCENT, FG, MUTED, SOFT, WARN
@@ -29,8 +30,13 @@ class ArgsBandMixin:
         return resolve_flags(self.session, flags, out_dir=out_dir if out_dir is not None else self.pending_out_dir())
 
     def pending_out_dir(self) -> str:
-        """$OUTDIR as it would resolve for a job started now (preview only)."""
-        return self.session.log_dir() + run_stamp()
+        """$OUTDIR as it would resolve for a job started now (preview only).
+
+        The run number is read, never reserved: the launch path claims it, and
+        a preview that claimed one would burn a number per keypress.
+        """
+        run_id = peek_run_number(self.session.target_dir)
+        return f"{self.session.log_dir()}{run_stamp()}_{run_id:02d}"
 
     def bound_values(self) -> List[str]:
         """Substituted values that should render amber in the token view."""

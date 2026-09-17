@@ -82,7 +82,7 @@ async def test_a_run_owns_its_outdir(tmp_workspace: Path):
 
     paths = [a.path for a in job.artifact_delta.artifacts]
     assert paths[0] == _log(session, job)                         # primary log sorts first
-    assert set(paths) == {_log(session, job), f"raw/{job.stamp}/x.txt"}
+    assert set(paths) == {_log(session, job), f"raw/{job.out_dir.name}/x.txt"}
 
 
 @pytest.mark.asyncio
@@ -120,7 +120,8 @@ async def test_scan_still_reaches_outside_the_archive(tmp_path: Path, tmp_worksp
     assert code == 0
 
     scope = elsewhere / "10.0.0.1"
-    assert _paths(job) == {str(job.log_path), str(scope / job.stamp / "x.txt")}
+    assert job.out_dir.parent == scope                # the run dir sits under the log destination
+    assert _paths(job) == {str(job.log_path), str(job.out_dir / "x.txt")}
     assert all(Path(p).is_absolute() for p in _paths(job))
 
 
@@ -156,15 +157,18 @@ async def test_a_chain_step_does_not_claim_the_previous_steps_output(tmp_workspa
                       stamp=stamp)
     await run_job(one.command, one.job, session, lambda t, s: None, env=one.env)
 
+    # Sharing is deliberate and explicit: the chain driver hands every later
+    # step the first step's directory, which is what these two stand in for.
     two = plan_launch(session, SH, {"id": "two", "flags": """-c 'echo two > "$OUTDIR/two.txt"'"""},
-                      stamp=stamp)
+                      stamp=stamp, out_dir=one.job.out_dir)
     await run_job(two.command, two.job, session, lambda t, s: None, env=two.env)
 
     assert one.job.out_dir == two.job.out_dir            # the shared dir, as designed
     assert (two.job.out_dir / "one.txt").is_file()       # step 2 can still read step 1's file
 
-    assert _paths(one.job) == {_log(session, one.job), f"raw/{stamp}/one.txt"}
-    assert _paths(two.job) == {_log(session, two.job), f"raw/{stamp}/two.txt"}
+    shared = one.job.out_dir.name
+    assert _paths(one.job) == {_log(session, one.job), f"raw/{shared}/one.txt"}
+    assert _paths(two.job) == {_log(session, two.job), f"raw/{shared}/two.txt"}
 
 
 @pytest.mark.asyncio
@@ -180,7 +184,7 @@ async def test_a_rewritten_file_is_claimed_by_the_run_that_rewrote_it(tmp_worksp
 
     again = plan_launch(session, SH,
                         {"id": "b", "flags": """-c 'echo a-much-longer-line > "$OUTDIR/f.txt"'"""},
-                        stamp=stamp)
+                        stamp=stamp, out_dir=first.job.out_dir)
     await run_job(again.command, again.job, session, lambda t, s: None, env=again.env)
 
-    assert f"raw/{stamp}/f.txt" in _paths(again.job)
+    assert f"raw/{first.job.out_dir.name}/f.txt" in _paths(again.job)

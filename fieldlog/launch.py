@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shlex
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from fieldlog.archive import next_run_number, reserve_run_number
@@ -47,7 +48,9 @@ def plan_launch(
     timeout: Optional[float] = None,
     dry_run: bool = False,
     stamp: Optional[str] = None,
+    out_dir: Optional[Path] = None,
     chain: Optional[dict] = None,
+    note: str = "",
 ) -> LaunchPlan:
     """Everything needed to run `tool`/`preset` against `session`.
 
@@ -55,15 +58,16 @@ def plan_launch(
     like a preset's flags, so an edit made under one scope still runs against
     the scope in force now. Unless `dry_run`, the run number is reserved and
     the log file and (when the command writes there) `$OUTDIR` are created; a
-    dry run touches nothing on disk. `stamp` and `chain` are set by the chain
-    driver, so every step of one chain shares an `$OUTDIR` and says so in the
-    manifest.
+    dry run touches nothing on disk. `stamp`, `out_dir` and `chain` are set by
+    the chain driver, so every step of one chain shares the first step's
+    `$OUTDIR` and says so in the manifest. `note` is the operator's `--note`,
+    carried onto the record.
     """
     tool_id = tool["id"]
     preset_id = preset.get("id", "default")
     run_id = next_run_id(session, reserve=not dry_run)
     log_path, out_dir, root, scope, stamp = prepare_job_paths(
-        session, tool_id, preset_id, run_id, create=not dry_run, stamp=stamp
+        session, tool_id, preset_id, run_id, create=not dry_run, stamp=stamp, out_dir=out_dir
     )
 
     template = preset.get("flags", "") if flags_override is None else flags_override
@@ -104,5 +108,6 @@ def plan_launch(
         parse_rule=parse_rule(preset),
         success_codes=success_codes(preset),
         scan_workspace=scans_workspace(preset),
+        note=note,
     )
     return LaunchPlan(job, command, build_env(session, out_dir, run_id), timeout, warnings)

@@ -206,7 +206,7 @@ class TargetModal(ModalScreen[bool]):
 
     def _outdir_preview(self, root: str, target: str, host: str) -> str:
         base = self._log_dir(root, target, host)
-        return f"$OUTDIR → {base}<stamp>/ · per-run, so repeat scans stay diffable"
+        return f"$OUTDIR → {base}<stamp>_<run>/ · per-run, so repeat scans stay diffable"
 
     def _iface_text(self, name: str, ip: str) -> Text:
         on = (self.iface_name == name)

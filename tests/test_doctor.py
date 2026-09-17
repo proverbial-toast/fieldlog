@@ -97,6 +97,32 @@ def test_scope_blocked_chain_reads_cleanly(catalog, capsys):
     assert "variant" not in out
 
 
+def test_a_refused_target_says_why_rather_than_needs_a_target(catalog, capsys):
+    """The terse note is for a value that is missing. A target that is set and
+    refused has a reason of its own, and reading 'needs a target' sends the
+    operator to set what is already set."""
+    assert handle_doctor(_args(["doctor", "-t", "10.0.0.1;id", "-v"]), catalog) == 0
+    out = capsys.readouterr().out
+    assert "target has unsafe characters" in out
+    assert "needs a target" not in out
+
+
 def test_dispatch_check_alias():
     assert dispatch_argv(["check", "10.0.0.1"]) == ("cli", ["doctor", "10.0.0.1"])
     assert dispatch_argv(["doctor"]) == ("cli", ["doctor"])
+
+
+def test_a_refused_target_is_not_counted_as_a_missing_one(catalog, capsys):
+    """The footer tells the operator what to do next. "set a target" is wrong
+    advice for a target that is set and rejected."""
+    assert handle_doctor(_args(["doctor", "--target=-f"]), catalog) == 0
+    out = capsys.readouterr().out
+    assert "set a target" not in out
+    assert "refused" in out
+
+
+def test_the_json_summary_counts_refused_values(catalog, capsys):
+    assert handle_doctor(_args(["doctor", "--target=-f", "--json"]), catalog) == 0
+    summary = json.loads(capsys.readouterr().out)["summary"]
+    assert summary["refused"] == 1                 # alive/t, the one $TARGET preset
+    assert summary["needs"]["target"] == 0

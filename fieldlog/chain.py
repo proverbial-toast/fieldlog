@@ -1,7 +1,7 @@
 """Run a catalogued chain: its recipes in order, against one scope.
 
-Every step shares the chain's `$OUTDIR` and is planned lazily, so a chain that
-halts never reserves a run number for a step that did not run. The chain's own
+Every step shares the first step's `$OUTDIR` and is planned lazily, so a chain
+that halts never reserves a run number for a step that did not run. The chain's own
 summary number is claimed last, which keeps the step numbers contiguous. How a
 step actually runs is the front-end's business: the CLI streams it to the
 terminal, the TUI opens a tab for it, and both hand that in as `run_step`.
@@ -39,19 +39,24 @@ async def run_chain(
     run_step: RunStep,
     timeout: Optional[float] = None,
     flags_overrides: Optional[Dict[str, str]] = None,
+    note: str = "",
 ) -> ChainResult:
     """Run `chain` step by step, stopping at the first failure unless that step
     says `continue: true`. An interrupt always stops it, whatever the step says.
 
     `flags_overrides` maps a recipe key to an unresolved template, so the
-    operator's per-recipe args edits apply inside a chain too.
+    operator's per-recipe args edits apply inside a chain too. `note` is the
+    operator's `--note`; it goes on the summary record, not on every step.
     """
     steps = chain_steps(catalog, chain)
     stamp = run_stamp()
     start = time.time()
     overrides = flags_overrides or {}
 
-    out_dir = session.log_dir() + stamp
+    # The first step's directory, which every later step then reuses. A chain
+    # without steps is dropped at load, so the empty string is never archived.
+    out_dir = ""
+    shared: Optional[Path] = None
     records: List[dict] = []
     stopped_at: Optional[str] = None
     exit_code = 0
@@ -63,8 +68,10 @@ async def run_chain(
             flags_override=overrides.get(key),
             timeout=timeout,
             stamp=stamp,
+            out_dir=shared,
             chain={"id": chain["id"], "step": index, "of": len(steps)},
         )
+        shared = plan.job.out_dir
         out_dir = str(plan.job.out_dir)
         code = await run_step(plan)
         # The step's own code, never a verdict — the same rule the per-run
@@ -100,6 +107,7 @@ async def run_chain(
         "environment": manifest_environment(build_env(session, Path(out_dir), run_id)),
         "artifact_log": "",
         "out_dir": out_dir,
+        **({"note": note} if note else {}),
         # Naive local time, as every step's own record is (see runner).
         "start_time": datetime.fromtimestamp(start).isoformat(),
         "end_time": datetime.fromtimestamp(end).isoformat(),

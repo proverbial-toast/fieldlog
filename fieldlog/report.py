@@ -437,6 +437,14 @@ def render_report(
             # and tool output never becomes markup in this file.
             lines += [f"Summary: `{summary.replace('`', '')}`", ""]
 
+        note = str(record.get("note", "") or "")
+        if note:
+            # A note is the operator's own prose, so it is quoted rather than
+            # escaped. Every line carries the marker, blank ones included, so a
+            # multi-line note reads as one blockquote instead of two.
+            lines += [f"> {line}" if line.strip() else ">" for line in note.splitlines()]
+            lines.append("")
+
         artifacts = [a for a in (record.get("artifacts") or []) if isinstance(a, dict)]
         if artifacts:
             lines.append("Artifacts:")
