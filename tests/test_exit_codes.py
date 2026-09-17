@@ -117,7 +117,10 @@ def test_exec_form_only_wraps_a_single_simple_command(command, execd):
     assert exec_form(command) == (f"exec {command}" if execd else command)
 
 
-def test_timeout_wrapper_execs_the_inner_command(tmp_workspace: Path):
+def test_timeout_wrapper_execs_the_inner_command(tmp_workspace: Path, monkeypatch):
+    # The wrapper is whichever coreutils timeout the box has (gtimeout on a Mac
+    # with Homebrew), so it is pinned here rather than read from the runner's $PATH.
+    monkeypatch.setattr("fieldlog.launch.timeout_binary", lambda: "timeout")
     session = TargetSession(target="10.0.0.9", workspace_dir=tmp_workspace)
     plan = plan_launch(session, {"id": "true", "bin": "true"}, {"id": "t", "flags": ""}, timeout=5, dry_run=True)
     assert plan.command == "timeout -k 5 5s sh -c 'exec true'"

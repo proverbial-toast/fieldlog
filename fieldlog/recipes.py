@@ -17,6 +17,7 @@ from pathlib import Path
 import os
 import re
 import shutil
+import sys
 from string import Formatter
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
@@ -110,6 +111,20 @@ def clear_tool_cache() -> None:
     built from it."""
     _PATH_DIR_NAMES.clear()
     is_tool_installed.cache_clear()
+
+
+def timeout_binary() -> Optional[str]:
+    """The coreutils `timeout` on this box, or None when it has neither.
+
+    Darwin ships no coreutils `timeout`; Homebrew's coreutils installs it as
+    `gtimeout` to keep it clear of the BSD userland. Resolved when a launch is
+    planned rather than at import, so installing coreutils takes effect without
+    a restart, and answered from the same $PATH cache every other lookup uses.
+    """
+    for name in ("timeout", "gtimeout"):
+        if is_tool_installed(name):
+            return name
+    return None
 
 
 # A scope value is interpolated into a shell command line (runner runs it via
@@ -324,6 +339,32 @@ def parse_summary(rule: Optional[dict], text: str) -> str:
     return summary_from_match(rule, parse_match(rule, text))
 
 
+def expect_rule(preset: dict) -> Optional[str]:
+    """The preset's `expect:` regex, or None when it has no expectation.
+
+    Carried on the job like the parse rule, and for the same reason: the runner
+    settles the verdict from the log it just wrote, without reaching back into
+    the catalog the run was planned from.
+    """
+    pattern = str(preset.get("expect", "") or "")
+    return pattern or None
+
+
+def expect_found(pattern: Optional[str], text: str) -> Optional[bool]:
+    """Whether `pattern` is anywhere in `text`; None when there is no pattern.
+
+    Any match counts — this is a verdict, not a reading, so the last-match rule
+    parse_match follows has nothing to decide here. A rule that survived the
+    load compiles, so the guard is for one handed in from somewhere else.
+    """
+    if not pattern:
+        return None
+    try:
+        return re.search(pattern, text, re.MULTILINE) is not None
+    except re.error:
+        return None
+
+
 def success_codes(preset: dict) -> Optional[List[int]]:
     """The exit codes this preset calls a success, or None to mean 0 alone.
 
@@ -338,14 +379,27 @@ def success_codes(preset: dict) -> Optional[List[int]]:
 def run_succeeded(code: object, codes: Optional[List[int]] = None) -> bool:
     """Whether `code` counts as success under `codes` (default: 0 alone).
 
-    The one definition of a good exit, so the CLI's status, the TUI's tab, a
-    chain's stop policy and the report cannot disagree about a run.
+    The exit-code half of the verdict, and a function of its own because
+    `success:` is its own concept with its own tests. `run_passed` is the one
+    production caller and the one a reader should call: a run's verdict is its
+    code *and* its expectation, never the code alone.
     """
     try:
         value = int(code)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return False
     return value in codes if codes else value == 0
+
+
+def run_passed(code: object, codes: Optional[List[int]] = None, found: Optional[bool] = None) -> bool:
+    """Whether a run passed: the definition, and the only one.
+
+    A run passes when its exit code is one the recipe declared a success and
+    its expectation, when it has one, was found in the log. `found` is None for
+    a recipe that expects nothing, which is not a failure — it is no claim.
+    `run_succeeded` is the exit-code half of it.
+    """
+    return run_succeeded(code, codes) and found is not False
 
 
 def find_recipe(catalog: Catalog, spec: str) -> Tuple[Optional[dict], Optional[dict], Optional[str]]:
@@ -391,7 +445,7 @@ def display_path(p: Path) -> str:
     return "~" + text[len(home):] if text.startswith(home + "/") else text
 
 
-_WRAPPERS = ("timeout", "sudo", "doas", "env", "nice")
+_WRAPPERS = ("timeout", "gtimeout", "sudo", "doas", "env", "nice")
 
 
 def format_command(bin_name: str, flags: str) -> str:
@@ -521,14 +575,65 @@ class Catalog:
         )
 
 
-def _read_file(path: Path) -> Tuple[List[Tuple[dict, frozenset]], List[dict]]:
+def platform_key(name: Optional[str] = None) -> str:
+    """`sys.platform`, or a name handed in, as a recipe writes it.
+
+    sys.platform carries the release on some systems — `freebsd14` — and a
+    recipe names the system, not the release, so only the leading word is kept.
+    The vocabulary is deliberately open: `linux` and `darwin` are what the
+    shipped catalog uses, and anything else an operator's box calls itself
+    works the same way, because this is only ever compared against itself.
+    """
+    text = (sys.platform if name is None else str(name)).strip().lower()
+    match = re.match(r"[a-z]+", text)
+    return match.group(0) if match else text
+
+
+def _platform_names(value) -> Optional[List[str]]:
+    """The platform names a `platform:` value lists, or None when it is not names.
+
+    One string is one name; a list is several. A key written and left empty —
+    `platform:`, `platform: ""`, `platform: []` — lists nothing and is the same
+    as absent, as an empty `presets:` or `expect:` is: the entry exists
+    everywhere. None means the value is not a platform name at all (`platform:
+    3`), which is the operator's mistake, not a filter.
+    """
+    if value is None:
+        return []
+    values = value if isinstance(value, list) else [value]
+    if not all(isinstance(v, str) for v in values):
+        return None
+    return [key for key in (platform_key(v) for v in values) if key]
+
+
+def _wrong_platform(entry: dict, platform: str) -> bool:
+    """Whether `platform:` puts this entry on some system other than `platform`.
+
+    A value that names nothing, or names no platform at all, leaves the entry
+    everywhere; the second kind is reported once the catalog is merged
+    (_validate_platform), where the entry can still be named by the file it
+    came from.
+    """
+    if "platform" not in entry:
+        return False
+    names = _platform_names(entry["platform"])
+    return bool(names) and platform not in names
+
+
+def _read_file(path: Path, platform: Optional[str] = None) -> Tuple[List[Tuple[dict, frozenset]], List[dict]]:
     """(entries, chains) from one yaml file. A list-form file is tools only.
 
     An entry is `(tool, keys as written)`: nothing is merged here, not even two
     entries of the same file, so that `_merge` is the only place a collision is
     decided. The raw keys ride along because normalize_recipe fills `bin` in for
     every tool, and only the file says whether the operator typed it.
+
+    `platform:` is applied here, before any of that: an entry for another system
+    does not exist on this one. Filtering as the file is read is what lets the
+    same `tool/preset` id be written once per platform — two entries in the file,
+    one in the catalog — instead of reading as a definition repeated.
     """
+    platform = platform_key(platform)
     data = _parse_yaml(path.read_text(encoding="utf-8", errors="replace")) or {}
     raw_chains: List[dict] = []
     if isinstance(data, list):
@@ -547,8 +652,17 @@ def _read_file(path: Path) -> Tuple[List[Tuple[dict, frozenset]], List[dict]]:
     for r in raw:
         if not isinstance(r, dict) or "id" not in r:
             raise ValueError("a recipe entry has no id")
+        # A tool's own `platform:` carries its presets with it; a preset's is its
+        # own. Either way the entry is gone rather than disabled — a recipe for
+        # another system is not a recipe this box can be told about.
+        if _wrong_platform(r, platform):
+            continue
+        item = normalize_recipe(r)
+        item["presets"] = [p for p in item["presets"] if not _wrong_platform(p, platform)]
+        if not item["presets"]:
+            continue
         # `presets:` left empty or null is the same as absent: nothing written.
-        entries.append((normalize_recipe(r), frozenset(k for k in r if k != "presets" or r["presets"])))
+        entries.append((item, frozenset(k for k in r if k != "presets" or r["presets"])))
 
     return entries, [normalize_chain(c) for c in raw_chains]
 
@@ -820,6 +934,30 @@ def _validate_parsers(cat: Catalog) -> None:
                 preset.pop("parse", None)
 
 
+def _validate_expect(cat: Catalog) -> None:
+    """Drop an `expect:` regex that does not compile, and say why.
+
+    The same bargain a parse rule gets: the preset survives, now without a
+    check, rather than a recipe disappearing over a typo. An `expect:` written
+    and left empty says nothing, so it goes quietly.
+    """
+    for tool in cat.tools:
+        for preset in tool.get("presets", []):
+            if "expect" not in preset:
+                continue
+            pattern = str(preset.get("expect") or "")
+            if not pattern:
+                preset.pop("expect", None)
+                continue
+            src = f"recipes.d/{preset['src']}: " if preset.get("src") else ""
+            where = f"{src}{tool['id']}/{preset.get('id', 'default')}"
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                cat.errors.append(f"{where} expect: invalid regex · {exc.msg} · no check")
+                preset.pop("expect", None)
+
+
 def _validate_success(cat: Catalog) -> None:
     """Normalise `success:` to a list of exit codes, dropping what cannot be one.
 
@@ -855,20 +993,45 @@ def _validate_success(cat: Catalog) -> None:
             preset["success"] = codes
 
 
+def _validate_platform(cat: Catalog) -> None:
+    """Report a `platform:` value that names no platform; the entry stays everywhere.
+
+    The filtering itself happens when a file is read, before anything is merged,
+    so only a value the filter could make nothing of reaches this far. It is
+    reported here rather than there because only a merged entry carries the
+    `src` that names the drop-in it was written in.
+    """
+    for tool in cat.tools:
+        entries = [(tool, tool["id"])]
+        entries += [(p, f"{tool['id']}/{p.get('id', 'default')}") for p in tool.get("presets", [])]
+        for entry, name in entries:
+            if "platform" not in entry or _platform_names(entry["platform"]) is not None:
+                continue
+            src = f"recipes.d/{entry['src']}: " if entry.get("src") else ""
+            cat.errors.append(
+                f"{src}{name} platform: {entry['platform']!r} is not a platform name · ignored"
+            )
+            entry.pop("platform", None)
+
+
 def load_catalog(
     base: Optional[Path] = None,
     dropin_dir: Optional[Path] = None,
+    platform: Optional[str] = None,
 ) -> Catalog:
     """Read the base file then every drop-in, tolerating a bad operator file.
 
     With no `dropin_dir` both the config dir and `./recipes.d` are scanned; an
-    explicit one is scanned alone.
+    explicit one is scanned alone. `platform` is the system whose recipes to
+    load, this box's by default; an entry marked for another one never enters
+    the catalog, so what `list` and `doctor` show is this platform's catalog.
     """
     base = RECIPES_PATH if base is None else base
+    platform = platform_key(platform)
     cat = Catalog(base_path=base, dropin_dir=DROPIN_DIR if dropin_dir is None else dropin_dir)
     if base.exists():
         try:
-            entries, base_chains = _read_file(base)
+            entries, base_chains = _read_file(base, platform)
         except Exception as exc:  # noqa: BLE001 — a bad base is still not a crash
             cat.errors.append(f"{display_path(base)}{_where(exc)} invalid · no base recipes loaded")
             cat.tools, cat.chains = [], []
@@ -885,7 +1048,7 @@ def load_catalog(
     bad: List[str] = []
     for path in paths:
         try:
-            incoming, incoming_chains = _read_file(path)
+            incoming, incoming_chains = _read_file(path, platform)
         except Exception as exc:  # noqa: BLE001
             bad.append(f"recipes.d/{path.name}{_where(exc)} invalid · skipped")
             continue
@@ -903,7 +1066,9 @@ def load_catalog(
     # Only now can a step be resolved: a base chain may name a drop-in's preset.
     _validate_chains(cat)
     _validate_parsers(cat)
+    _validate_expect(cat)
     _validate_success(cat)
+    _validate_platform(cat)
 
     # Never fail closed on one bad operator file: say what survived.
     n = len(cat.files)

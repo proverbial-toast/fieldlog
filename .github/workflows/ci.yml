@@ -7,10 +7,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Both supported systems, not just the one the work is done on: the ioctl
+    # number behind $LHOST and the default interface name differ on Darwin, and
+    # a Linux-only run would never exercise either.
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:

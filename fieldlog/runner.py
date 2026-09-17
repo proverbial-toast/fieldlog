@@ -30,7 +30,7 @@ from fieldlog.archive import (
     manifest_environment,
     snapshot_workspace,
 )
-from fieldlog.recipes import fields_from_match, parse_match, summary_from_match
+from fieldlog.recipes import expect_found, fields_from_match, parse_match, summary_from_match
 from fieldlog.state import ActiveJob, TargetSession
 
 # Called for each output line: (text, stream) where stream is "out" or "err".
@@ -388,10 +388,17 @@ async def run_job(
         job.end_time = time.time()
         job.await_prompt = None
         job.await_since = None
-        # One match, read twice: the regex is an operator's, run over 64 KB.
-        match = parse_match(job.parse_rule, log_tail(job.log_path))
+        # One read of the tail, and one match off it: both regexes are an
+        # operator's, run over 64 KB, and the parse rule's match is read twice.
+        tail = log_tail(job.log_path)
+        match = parse_match(job.parse_rule, tail)
         job.summary = summary_from_match(job.parse_rule, match)
         job.fields = fields_from_match(match)
+        # An interrupted run makes no claim about its expectation: the tool
+        # never got to print its closing line, and a `false` here would archive
+        # an operator's Ctrl+C as a failed check. A timeout is not exempt — the
+        # log it left is what the tool printed, and the run fails on 124 anyway.
+        job.expect_found = None if job.interrupted else expect_found(job.expect, tail)
         if job.scan_workspace:
             delta = detect_artifact_deltas(
                 session.target_dir, pre_snap, primary_log=job.log_path, extra_roots=extra_roots
@@ -491,6 +498,11 @@ def _append_manifest(
         # The codes this recipe calls success, so a reader of the archive can
         # see why a non-zero exit was not a failure. The code itself stays raw.
         **({"success": job.success_codes} if job.success_codes else {}),
+        # The check that was made and how it went, kept beside the raw exit
+        # code, never in place of it.
+        # `found` is null for a run that made no claim (an interrupt), which
+        # every reader treats as unchecked rather than as a miss.
+        **({"expect": {"pattern": job.expect, "found": job.expect_found}} if job.expect else {}),
         "artifacts": artifact_entries,
     }
     if job.chain:

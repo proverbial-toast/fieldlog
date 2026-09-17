@@ -1,7 +1,8 @@
 # fieldlog — problems and technical debt
 
 **Status:** reference document. Investigated 2026-09-16; a remediation pass over every finding followed on
-2026-09-17 and this is the record of where each one stands. Tags: **[confirmed]** reproduced by execution or
+2026-09-17, then the feature pass described in `roadmap.md` and a cold review of it (§ 2.14). This is the
+record of where each finding stands. Tags: **[confirmed]** reproduced by execution or
 read unambiguously from the code · **[likely]** inferred from reading · **[proposal]** a recommended change.
 Every finding also carries one status: **resolved** (fixed, with the test that guards it) · **deferred**
 (real, not now, and why) · **rejected** (not a defect, or not worth the change) · **open** (still to
@@ -293,6 +294,40 @@ its recorded exit code. Its risks and nits were all taken:
   INT, TERM and HUP would otherwise outlive its kill. The quit dialog already says quitting kills running
   jobs; the close-tab transcript line now says "SIGKILL in 10s if still running (at once on quit)".
 
+### 2.14 Found by the cold review of the 2026-09-17 feature pass — **[confirmed, resolved]**
+
+A separate agent read the whole feature diff (`roadmap.md`) against the code, reproduced what it claimed, and
+ran the new tests against the old code to see which ones discriminate. Fixed in the same pass:
+
+- **An interrupted run was archived as having failed its expectation.** `expect_found` ran over the partial
+  log after Ctrl+C and the record said `found: false`; `report` suppressed it, `history` said
+  `(expect not met) interrupted`, `run` said both. The record was the false claim. An interrupted run now
+  makes no claim: `found: null`, which every reader treats as unchecked. A timeout is judged on what it
+  printed. Test: `tests/test_expect.py` (the interrupted case across writer, `history`, `--fields`, `report`).
+- **`history`'s listing worded an exit differently from `--fields` and `report`** (`exit 124` with no
+  `(timeout)`; both notes on an interrupt) and printed the raw ISO stamp. It now uses `exit_label` and
+  `format_time` like the other two. Test: `tests/test_history_views.py`.
+- **A `--fields` cell could hold a newline or the string `None`**, and the workspace overview clipped a note
+  but not a chain summary (573 characters, measured). One `CELL_WIDTH`, whitespace collapsed, both clipped.
+- **The chain-stop line was written twice** (CLI and TUI), differently. One `report.chain_outcome`.
+- Smaller: a note's Files cell is `—` like its exit and duration; `fieldlog note "" "…"` no longer writes
+  into `unassigned`; an unwritable folder is an error line, not a traceback; the status band's
+  `expect · not met` item goes last so a narrow band keeps the summary; `run_succeeded`'s docstring no
+  longer promises callers it does not have; a typo-nudge test that would have passed on the old code now
+  asserts that `not` nudges to `note`.
+
+Judgement calls from the same review, not taken:
+
+- **No write-side cap on a chain's joined `summary`.** The per-step summaries are capped; the readers whose
+  width matters (the overview, the TUI band) clip; `history` and `report` show it whole on its own line or
+  cell. A cap would lose the checklist. Recorded in `features.md` F9.
+- **`note_line` (first line) is not applied to a run's `summary`.** A summary is one line by construction
+  (`summary_from_match` collapses whitespace); the helper is for prose.
+- **`history` still reads `session.json` itself** while `report` and the overview use the tolerant
+  `load_runs`: a corrupt manifest exits 1 from `history <target>` and renders as "no runs" elsewhere. Two
+  behaviours, both defensible (the direct question deserves the error). Left as an open, minor
+  inconsistency — § 3.10.
+
 Behaviour changes the pass makes on purpose, for an operator reading the boot transcript: a `tool/preset`
 repeated inside one file is now last-wins plus an error (the old code kept *both* under one id when the
 repeat was inside a single entry); `name:` restated with a different value is now reported; an entry that
@@ -359,6 +394,31 @@ tools whose prompts end in nothing recognisable.
   own missing-widget case. One of the D3 guards.
 
 ---
+
+### 3.10 Two manifest readers — new, **[confirmed, open, minor]**
+
+`cli.handle_history` parses `session.json` itself and exits 1 on a corrupt file; `report.load_runs` (used by
+`report` and by `history`'s workspace overview) reads it as empty. See § 2.14. Unify only with a decision
+on which behaviour is wanted; the direct question arguably deserves the error.
+
+### 3.11 macOS support is unverified on a Mac — new, **[likely, open]**
+
+The 2026-09-17 macOS pass (`roadmap.md` group 3) was written and tested on Linux; the suite also passes
+with `sys.platform` forced to `darwin`. What only a Mac can confirm, in order of consequence:
+
+- `SIOCGIFADDR = 0xC0206921` and the address at `ifreq` offset 20 — derived from Darwin's headers
+  (`_IOWR('i', 33, struct ifreq)`), proven only by `tests/test_platform.py`'s loopback test on the
+  `macos-latest` CI leg. If wrong, `$LHOST` is empty on a Mac and presets using it are not runnable.
+- The Darwin flags in the shipped catalog: `ping -c 4 -t 6`, `-c 1 -t 2 -b $IFACE`, `-D -s 1472`,
+  `ping6 -c 4`, `scutil --dns`, `lsof -nP -iTCP -sTCP:LISTEN`. Each parses and resolves; none has been run.
+- Darwin's ping statistics line: the rule reads `4 packets received, 0.0% packet loss`; a wording not seen
+  costs the summary, not the run.
+- Whether `gtimeout` is on the `macos-latest` image (the test that needs it is monkeypatched; only the
+  real resolution goes unexercised).
+- The pty tests (`test_controlling_tty.py`, `test_kill_escalation.py`) and Textual's `run_test` on Darwin.
+
+Upgrade to **[confirmed]** when the macOS CI run is green; move anything it breaks into § 2.
+
 
 ## 4. Technical debt
 

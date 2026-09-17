@@ -19,10 +19,11 @@ from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches, WrongType
 from textual.widgets import ContentSwitcher, RichLog, Static
 
-from fieldlog.recipes import run_succeeded
+from fieldlog.recipes import run_passed
 from fieldlog import __version__ as VERSION
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
+from fieldlog.report import chain_outcome
 from fieldlog.runner import HIDDEN_REPLY, interrupt_job, kill_job, loggable_reply, run_job, send_stdin, strip_ansi
 from fieldlog.state import ActiveJob, save_pinned_recent
 from fieldlog.tui.helpers import copy_text_to_clipboard, truncate_right
@@ -92,7 +93,7 @@ class JobsMixin:
             exit_val, exit_color = "—", FAINT
         else:
             exit_val = str(job.exit_code)
-            exit_color = ACCENT if run_succeeded(job.exit_code, job.success_codes) else ERR
+            exit_color = ACCENT if run_passed(job.exit_code, job.success_codes, job.expect_found) else ERR
         items = [
             ("state", state, state_color),
             ("exit", exit_val, exit_color),
@@ -104,6 +105,11 @@ class JobsMixin:
         # place the TUI can say it: a tab strip has room for a label, not a finding.
         if job.summary:
             items.append(("summary", truncate_right(job.summary, 60), ACCENT))
+        # Last of all, so a narrow band drops it before the summary that says
+        # what was found instead. Only a miss is said; a check that was met is
+        # already the green exit code.
+        if job.expect_found is False:
+            items.append(("expect", "not met", ERR))
         return items
 
     def _refresh_status_band(self) -> None:
@@ -520,18 +526,11 @@ class JobsMixin:
             run_step=run_step, flags_overrides=self.flag_edits,
         )
         record = result.record
-        ran = len(record["steps"])
         if record["stopped_at"]:
-            last = record["steps"][-1]["exit_code"] if record["steps"] else result.exit_code
-            self.write_system_log(
-                f"[chain] {cid} · stopped at step {ran} {record['stopped_at']} (exit {last})",
-                style=ERR,
-            )
+            style = ERR
         else:
-            self.write_system_log(
-                f"[chain] {cid} · {ran}/{planned} steps · exit {result.exit_code}",
-                style=ACCENT if result.exit_code == 0 else WARN,
-            )
+            style = ACCENT if result.exit_code == 0 else WARN
+        self.write_system_log(f"[chain] {cid} · {chain_outcome(record, planned)}", style=style)
 
     async def _run(self, plan: LaunchPlan, rlog: RichLog, tab_id: str) -> None:
         job = plan.job
@@ -585,7 +584,7 @@ class JobsMixin:
                 job.end_time = time.time()
             for t in self.tabs:
                 if t.id == tab_id:
-                    t.status = "done" if run_succeeded(code, job.success_codes) else "failed"
+                    t.status = "done" if run_passed(code, job.success_codes, job.expect_found) else "failed"
                     break
             self._refresh_tab_strip()
             self._refresh_header()

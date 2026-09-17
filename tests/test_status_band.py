@@ -87,3 +87,33 @@ async def test_a_different_tab_rebuilds_the_band(tmp_workspace: Path):
 
         labels = [_text(c).split("\n")[0] for c in _cells(app)]
         assert labels == ["STATE", "RECIPES", "LINES"]
+
+
+@pytest.mark.asyncio
+async def test_a_missed_expectation_is_the_last_cell(tmp_workspace: Path):
+    """The band drops items right to left when it runs out of width, so the one
+    that only says `not met` goes after the summary that says what was found
+    instead."""
+    app = FieldlogApp(TargetSession(target="10.0.0.1", workspace_dir=tmp_workspace))
+    async with app.run_test(size=(160, 40)) as pilot:
+        job = ActiveJob(
+            id="01", recipe_id="x", name="x #01", log_path=tmp_workspace / "x.log",
+            start_time=time.time(), exit_code=0, expect="x", expect_found=False,
+        )
+        app.jobs["7"] = job
+        app.tabs.append(TabDescriptor(
+            id="job-7", label="x #01", status="active", tool_id="x", job_id="7",
+        ))
+        app.active_tab_id = "job-7"
+
+        app._refresh_status_band()
+        await pilot.pause()
+        cells = _cells(app)
+        assert [_text(c).split("\n")[0] for c in cells][-1] == "EXPECT"
+        assert _text(cells[-1]).endswith("not met")
+
+        # A check that was met says nothing: the exit code beside it is green.
+        job.expect_found = True
+        app._refresh_status_band()
+        await pilot.pause()
+        assert "EXPECT" not in [_text(c).split("\n")[0] for c in _cells(app)]

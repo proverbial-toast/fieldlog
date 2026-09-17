@@ -14,6 +14,7 @@ import os
 import re
 import socket
 import struct
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,22 @@ if TYPE_CHECKING:
     from fieldlog.archive import ArtifactDelta
 
 DEFAULT_ARTIFACT_ROOT = ""  # empty: logs live in the target workspace raw/ dir
+
+# The first wired interface is named for the platform, not for the box: a Mac
+# has en0 where Linux has eth0. Chosen once here so every surface — the CLI's
+# fallbacks, its help text and the TUI's picker — says the same name.
+DEFAULT_INTERFACE = "en0" if sys.platform == "darwin" else "eth0"
+
+# Loopback under either name. It never carries a $LHOST worth having, so the
+# interface picker sinks it to the bottom and never starts on it.
+LOOPBACK_NAMES = ("lo", "lo0")
+
+# Darwin's SIOCGIFADDR is _IOWR('i', 33, struct ifreq) rather than Linux's
+# 0x8915. Its `ifreq` is 16 bytes of interface name followed by a sockaddr_in
+# whose address still lands at offset 20: Darwin spends one byte each on
+# sa_len and sa_family where Linux spends two on the family alone. So the
+# [20:24] slice below is right on both, and only the request number differs.
+SIOCGIFADDR = 0xC0206921 if sys.platform == "darwin" else 0x8915
 
 
 LAST_SCOPE_FILE = ".last-scope.json"
@@ -111,7 +128,7 @@ def get_interface_ip(ifname: str) -> str:
             ip = socket.inet_ntoa(
                 fcntl.ioctl(
                     s.fileno(),
-                    0x8915,  # SIOCGIFADDR
+                    SIOCGIFADDR,
                     struct.pack("256s", ifname[:15].encode("utf-8")),
                 )[20:24]
             )
@@ -165,7 +182,7 @@ class TargetSession:
     target: str = ""                          # address or subnet -> $TARGET
     hostname: str = ""                        # dns name -> $HOST
     lhost: str = ""                           # address the operator set -> $LHOST ('' follows the interface)
-    interface: str = "eth0"                   # local interface name -> $IFACE
+    interface: str = DEFAULT_INTERFACE        # local interface name -> $IFACE
     workspace_dir: Path = field(default_factory=lambda: Path("./targets"))
     artifact_root: str = DEFAULT_ARTIFACT_ROOT
 
@@ -373,6 +390,11 @@ class ActiveJob:
     # The named groups that rule found, so a reader can trend a value across
     # runs without parsing the log again.
     fields: Dict[str, str] = field(default_factory=dict)
+    # The preset's `expect:` regex (see recipes.expect_rule) and whether the
+    # finished log held it. `expect_found` stays None until the run ends, and
+    # for good on a preset that expects nothing.
+    expect: Optional[str] = None
+    expect_found: Optional[bool] = None
     # The preset's `success:` codes. None means the default, 0 alone.
     success_codes: Optional[list] = None
     # The preset's `scan:` flag — find this run's artifacts by scanning the

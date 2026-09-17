@@ -41,34 +41,53 @@ recorded there (§ 2–4). Landed:
 
 The suite is now 438 tests in 41 files; `ruff check` is clean. Committed to `main` on 2026-09-17.
 
+## Done in the 2026-09-17 feature pass (`roadmap.md`)
+
+The proposals were read as one capability — the record carries its meaning, and every reader shows it —
+and built from the archive outward. F1 (history in the TUI) was deliberately not built: the maintainer's
+path reads results with `history` and `report`, not in the TUI.
+
+| Item | Reference |
+|---|---|
+| `expect:` — a regex the log must match for the run to pass; `run_passed` is the one reader; record carries `expect: {pattern, found}` | F3, O §8 |
+| Chain summary records carry `summary`; step entries carry `summary` and `expect`; the chain-stop line says `expect not met` | F9, O §7 |
+| `history --recipe`, `history --fields` (trend table), the overview shows each folder's last record; `report` gains a Summary column | F8, O §2, O §12 |
+| `fieldlog note <target> "text"` — a note record, no `amend_record` by design | F2 (CLI half), D §6 |
+| The TUI's System transcript is appended to `<workspace>/fieldlog.log` | F10, O §10 |
+| `show` prints a preset's contract (`success`, `parse`, `expect`) when set | O §5 |
+| macOS: per-platform `SIOCGIFADDR`, `DEFAULT_INTERFACE` (`en0`), `timeout`/`gtimeout` with a refusal, the `platform:` catalog key, Darwin ping/traceroute twins and `scutil`/`lsof`, `macos-latest` in CI | roadmap group 3, D §11 |
+
+The suite is 532 tests in 47 files; `ruff check` is clean.
+
 ---
 
-## Next: finish the field notebook (D §1)
+## Next
 
-1. **F1 History in the TUI** — M. The biggest gap between the pitch and the product. Do this before anything
-   that adds more to the record, so that what is added is visible where the work happens.
-2. **F3 `expect:`** — M. Turns recipes into checks and chains into checklists. Design first: one reader
-   function for "did this run pass" (codes + verdict) so the R1 mistake is not repeated.
-3. **F9 chain summaries** and **F8 trends** — S each. Both are readers of data that now exists.
-4. **F4 checksums + `verify`** — S. Free at write time; the verifier is the only new code.
-5. **F2 second half** — `fieldlog note`, `amend_record`, a TUI note action — S–M. Decide the amendment
-   model (in-place vs. amendment record, D §6) before writing `amend_record`.
-6. **F10 session transcript** — S.
+1. **Push, and read the first macOS CI run.** Nothing Darwin-specific has run on a Mac; `problems.md` § 3.11
+   lists what only that run can confirm.
+2. **Use it.** Every item above adds to the record or reads it back; a week of real runs will say whether
+   `expect:` earns its risk (`roadmap.md` § 5) and which `history --fields` columns matter.
+3. **F4 checksums + `verify`** — S. Free at write time; build the verifier when there is a hand-off to
+   verify.
+4. **F5 workspace report / export** — S–M. At the first multi-host engagement.
+5. **The TUI halves left out on purpose** — F1 history in the TUI, a note action (O §15), the previous
+   value beside the current in the status band (F8). Only if the maintainer's path changes.
 
 ## Then: hygiene that makes the above safer
 
-7. **D11 pane tests** — M spread over time. The stdin bar, status band and scope form now have them
+6. **D11 pane tests** — M spread over time. The stdin bar, status band and scope form now have them
    (2026-09-17); the tree cursor, variant keys and layout switch do not.
-8. **D3 narrow the broad `except` guards** — S each, as panes are touched. `_repaint` is the shape.
-9. **P §3.7** palette chain rows could name the blocking step — S; `check_chain` already carries it.
+7. **D3 narrow the broad `except` guards** — S each, as panes are touched. `_repaint` is the shape.
+8. **P §3.7** palette chain rows could name the blocking step — S; `check_chain` already carries it.
 
 ## Later: the larger directions
 
-10. **F5 workspace report and export** — S–M. Needed the moment fieldlog is used on an engagement with more
-    than one host.
-11. **F6 ad-hoc runs and save-as-recipe** — M. Closes the loop between field work and the catalog.
-12. **D §2 vantage points** — L. The first change to the run model; do it only once the record is complete.
-13. **D §5 automation surface** — M. After the injection footguns have become refusals.
+9. **F6 ad-hoc runs and save-as-recipe** — M. Closes the loop between field work and the catalog; a second
+   source of truth, so the expensive kind.
+10. **D §2 vantage points** — L. The first change to the run model; do it only once the record is complete.
+11. **D §5 automation surface** — M. After the injection footguns have become refusals. `expect:` makes a
+    chain's exit status meaningful to CI, which is most of what this needs.
+12. **D §7 structured parsers** — M. The day a regex `parse:`/`expect:` rule bites on a JSON-speaking tool.
 
 ## Not recommended now
 
@@ -78,8 +97,7 @@ The suite is now 438 tests in 41 files; `ruff check` is clean. Committed to `mai
   notebook work above rather than alongside hygiene.
 - **F12 repeat mode** — deferred; F8 makes it more attractive later.
 - **A TUI rewrite around a repaint model (D1)** — the mixin split made the code navigable; a full
-  invalidation model is worth doing only alongside F1, which is the next big TUI feature and would be the
-  first consumer.
+  invalidation model is worth doing only alongside F1, which is now itself deferred.
 
 ---
 

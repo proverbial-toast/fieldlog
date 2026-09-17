@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fieldlog.recipes import run_succeeded
+from fieldlog.recipes import run_passed
 
 DEFAULT_TAIL = 40
 
@@ -54,10 +54,17 @@ def human_size(num_bytes: object) -> str:
     return f"{size / (1024 * 1024):.1f} MB"
 
 
-def exit_label(code: object, interrupted: bool = False, ok: Optional[bool] = None) -> str:
+def exit_label(
+    code: object,
+    interrupted: bool = False,
+    ok: Optional[bool] = None,
+    expect_found: Optional[bool] = None,
+) -> str:
     """Plain reading of an exit code, for headings. `interrupted` is the
     operator's SIGINT, which the code itself no longer implies; `ok` is the
-    recipe's own verdict, so a declared success does not read as a failure."""
+    recipe's own verdict, so a declared success does not read as a failure;
+    `expect_found` is its `expect:` rule, which is why an exit 0 can still be
+    the thing that failed."""
     try:
         value = int(code)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -65,30 +72,98 @@ def exit_label(code: object, interrupted: bool = False, ok: Optional[bool] = Non
     note = "interrupted" if interrupted else EXIT_NOTES.get(value)
     if note is None and ok and value != 0:
         note = "ok"
+    if note is None and expect_found is False:
+        note = "expect not met"
     return f"{value} ({note})" if note else str(value)
 
 
-def exit_cell(code: object, interrupted: bool = False, ok: Optional[bool] = None) -> str:
+def exit_cell(
+    code: object,
+    interrupted: bool = False,
+    ok: Optional[bool] = None,
+    expect_found: Optional[bool] = None,
+) -> str:
     """Table form: a successful run stays quiet, a failure is bold. An interrupt
     annotates the code without making a 0 read as a failure."""
-    label = exit_label(code, interrupted, ok)
+    label = exit_label(code, interrupted, ok, expect_found)
     good = ok if ok is not None else exit_label(code) == "0"
     return label if good else f"**{label}**"
 
 
-def record_ok(record: dict) -> bool:
-    """Whether a run succeeded, by the rule its own recipe declared.
+def record_expect_found(record: dict) -> Optional[bool]:
+    """What the record's `expect:` check found, None when it made none.
 
-    A record carries `success:` only when its preset set one, so a record from
-    before the field existed — or from a preset without it — reads as exit 0.
+    Junk in the key is read as no check rather than trusted, the same way
+    `record_ok` ignores a `success` that is not a list of codes.
+    """
+    expect = record.get("expect")
+    if isinstance(expect, dict) and isinstance(expect.get("found"), bool):
+        return expect["found"]
+    return None
+
+
+def record_ok(record: dict) -> bool:
+    """Whether a run passed, by the rules its own recipe declared.
+
+    A record carries `success:` and `expect` only when its preset set them, so
+    a record from before the fields existed — or from a preset without them —
+    reads as exit 0.
     """
     codes = record.get("success")
-    return run_succeeded(record.get("exit_code", 0), codes if isinstance(codes, list) else None)
+    return run_passed(
+        record.get("exit_code", 0),
+        codes if isinstance(codes, list) else None,
+        record_expect_found(record),
+    )
 
 
 def record_interrupted(record: dict) -> bool:
     """A record carries the flag only when the operator asked for the stop."""
     return bool(record.get("interrupted"))
+
+
+def record_kind(record: dict) -> str:
+    """What a record is: a `run`, a `chain` summary, or the operator's own `note`.
+
+    Every reader branches on this one definition rather than testing for `steps`
+    or for a recipe named `note` itself. What tells a note from a run is that
+    nothing ran: a run of a recipe that happens to be called `note` has a
+    `command`, and a note never does.
+    """
+    steps = record.get("steps")
+    if isinstance(steps, list) and steps:
+        return "chain"
+    if record.get("recipe") == "note" and "command" not in record:
+        return "note"
+    return "run"
+
+
+def chain_outcome(record: dict, planned: int) -> str:
+    """What a chain amounted to, in one line — the same words wherever it is said.
+
+    A chain that stopped names the step it stopped on and that step's own exit
+    code, because an exit of 0 that stopped a chain reads as a fieldlog bug
+    unless the line also says what the step missed. `planned` is how many steps
+    the chain has, which the record itself does not carry.
+    """
+    steps = [s for s in (record.get("steps") or []) if isinstance(s, dict)]
+    ran = len(steps)
+    stopped = str(record.get("stopped_at") or "").strip()
+    if stopped:
+        code = steps[-1].get("exit_code", 0) if steps else record.get("exit_code", 0)
+        unmet = ", expect not met" if steps and record_expect_found(steps[-1]) is False else ""
+        return f"stopped at step {ran} ({stopped} exit {code}{unmet})"
+    return f"{ran}/{planned} steps · exit {record.get('exit_code', 0)}"
+
+
+def note_line(record: dict) -> str:
+    """A note's first line — what a table cell or an overview row has room for.
+
+    The whole note is still there for the reader who opens the record; this is
+    the one line that has to distinguish it from the note above it.
+    """
+    lines = str(record.get("note", "") or "").splitlines()
+    return lines[0] if lines else ""
 
 
 def format_time(stamp: object) -> str:
@@ -273,6 +348,13 @@ def read_log_tail(path: Path, tail: int) -> tuple[List[str], int]:
         window *= 4
 
 
+def _quoted_note(note: str) -> List[str]:
+    """A note as a blockquote: the operator's own prose, so it is quoted rather
+    than escaped. Every line carries the marker, blank ones included, so a
+    multi-line note reads as one blockquote instead of two."""
+    return [f"> {line}" if line.strip() else ">" for line in note.splitlines()]
+
+
 def _artifact_line(artifact: dict) -> str:
     path = artifact.get("path", "")
     size = human_size(artifact.get("bytes", 0))
@@ -286,13 +368,15 @@ def _artifact_line(artifact: dict) -> str:
 
 def _step_table(record: dict, steps: List[dict]) -> List[str]:
     """A chain record has no log of its own; its steps each have theirs."""
-    lines = ["| Step | Recipe | Exit |", "|------|--------|------|"]
+    lines = ["| Step | Recipe | Exit | Summary |", "|------|--------|------|---------|"]
     for index, step in enumerate(steps, start=1):
         if not isinstance(step, dict):
             continue
+        summary = str(step.get("summary", "") or "")
         lines.append(
             f"| {index} | {escape_cell(step.get('recipe', 'unknown'))} "
-            f"| {exit_cell(step.get('exit_code', 0), ok=record_ok(step))} |"
+            f"| {exit_cell(step.get('exit_code', 0), ok=record_ok(step), expect_found=record_expect_found(step))} "
+            f"| {escape_cell(summary)} |"
         )
     stopped = str(record.get("stopped_at") or "").strip()
     if stopped:
@@ -307,9 +391,8 @@ def _render_output(
     full: bool,
     log_path: Optional[Path] = None,
 ) -> List[str]:
-    steps = record.get("steps")
-    if isinstance(steps, list) and steps:
-        return _step_table(record, steps)
+    if record_kind(record) == "chain":
+        return _step_table(record, record["steps"])
 
     raw = str(record.get("artifact_log", "") or "").strip()
     if not raw:
@@ -398,25 +481,55 @@ def render_report(
         lines += [f"Scope (from the latest run): {scope}", ""]
 
     lines += [
-        "| # | Recipe | Started | Duration | Exit | Files |",
-        "|---|--------|---------------|----------|------|-------|",
+        "| # | Recipe | Started | Duration | Exit | Files | Summary |",
+        "|---|--------|---------------|----------|------|-------|---------|",
     ]
     for record in runs:
-        artifacts = record.get("artifacts") or []
+        if record_kind(record) == "note":
+            # Nothing ran, so there is no code to report and no files to count;
+            # what the operator wrote is the row's own summary.
+            row_summary = note_line(record)
+            exit_text = files_text = "—"
+        else:
+            # A chain summary record's own `summary` is its steps' joined, so the
+            # table reads as the chain's checklist before a log is opened.
+            row_summary = str(record.get("summary", "") or "")
+            exit_text = exit_cell(
+                record.get("exit_code", 0),
+                record_interrupted(record),
+                record_ok(record),
+                record_expect_found(record),
+            )
+            files_text = str(len(record.get("artifacts") or []))
         lines.append(
             f"| {escape_cell(record.get('id', '??'))} "
             f"| {escape_cell(record.get('recipe', 'unknown'))} "
             f"| {format_time(record.get('start_time'))} "
             f"| {format_duration(record.get('duration_sec'))} "
-            f"| {exit_cell(record.get('exit_code', 0), record_interrupted(record), record_ok(record))} "
-            f"| {len(artifacts)} |"
+            f"| {exit_text} "
+            f"| {files_text} "
+            f"| {escape_cell(row_summary.replace('`', ''))} |"
         )
     lines.append("")
 
     for record in runs:
         rid = record.get("id", "??")
         recipe = record.get("recipe", "unknown")
-        label = exit_label(record.get("exit_code", 0), record_interrupted(record), record_ok(record))
+
+        if record_kind(record) == "note":
+            # A note has no command, no log and no verdict to render: when it
+            # was written, and what it says.
+            lines += [f"## #{rid} · note · {format_time(record.get('start_time'))}", ""]
+            lines += _quoted_note(str(record.get("note", "") or ""))
+            lines.append("")
+            continue
+
+        label = exit_label(
+            record.get("exit_code", 0),
+            record_interrupted(record),
+            record_ok(record),
+            record_expect_found(record),
+        )
         lines += [f"## #{rid} · {recipe} · exit {label}", ""]
         lines += _code_block(str(record.get("command", "") or ""))
         lines.append("")
@@ -437,12 +550,16 @@ def render_report(
             # and tool output never becomes markup in this file.
             lines += [f"Summary: `{summary.replace('`', '')}`", ""]
 
+        if record_expect_found(record) is False:
+            # Only the miss is worth a line: a check that was met is already
+            # what the heading reads as. The pattern says what was looked for,
+            # so a false failure is readable as one beside the log below.
+            pattern = str((record.get("expect") or {}).get("pattern", "") or "")
+            lines += [f"Expected: `{pattern.replace('`', '')}`", ""]
+
         note = str(record.get("note", "") or "")
         if note:
-            # A note is the operator's own prose, so it is quoted rather than
-            # escaped. Every line carries the marker, blank ones included, so a
-            # multi-line note reads as one blockquote instead of two.
-            lines += [f"> {line}" if line.strip() else ">" for line in note.splitlines()]
+            lines += _quoted_note(note)
             lines.append("")
 
         artifacts = [a for a in (record.get("artifacts") or []) if isinstance(a, dict)]

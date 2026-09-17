@@ -1,7 +1,9 @@
 # fieldlog — architecture
 
 **Status:** reference document, written 2026-09-16 from the code on branch
-`fix/archive-correctness-and-tui-split`, after the changes described in `problems.md` § "Fixed in this pass".
+`fix/archive-correctness-and-tui-split`, after the changes described in `problems.md` § "Fixed in this pass";
+updated 2026-09-17 for the feature pass described in `roadmap.md` (`expect:`, chain summaries, the note
+record, `history` views, the session transcript).
 Everything here is **[confirmed]** unless tagged otherwise.
 
 fieldlog runs catalogued diagnostic commands against a target and keeps a per-target archive of every run.
@@ -18,7 +20,7 @@ fieldlog/__main__.py ─► cli.main
         ┌─────────────────┴──────────────────────┐
         ▼                                        ▼
      cli.py                                   app.py  (FieldlogApp = 6 mixins + textual.App)
-  list · show · run · history                    ├─ tui/catalog.py   lookups, blocked verdicts, reload, manager
+  list · show · run · history · note             ├─ tui/catalog.py   lookups, blocked verdicts, reload, manager
   report · doctor · tui                          ├─ tui/tree.py      the RECIPES list and its cursor
         │                                        ├─ tui/variants.py  the VARIANTS pane
         │                                        ├─ tui/args.py      substitution, token view, raw editor
@@ -40,16 +42,23 @@ fieldlog/__main__.py ─► cli.main
   is_blocked, parse,   $VAR grammar         session.json writer     manifest record
   success, search
       ▲
-  report.py ── pure Markdown from session.json (imports only recipes.run_succeeded)
+  report.py ── record readers (record_ok, record_kind, …) + pure Markdown from session.json
+              (imports only recipes.run_passed; cli.py and tui/jobs.py import its readers)
 ```
 
-The graph is acyclic. One edge points the "wrong" way and is worth knowing about:
+The graph is acyclic. Two edges are worth knowing about:
 
 - `recipes.py` imports `template_vars` from `state.py` (the `$VAR` grammar lives with the session model, but
   the catalog needs it to know which variables a preset uses). `TargetSession` is a `TYPE_CHECKING` import only.
+- `tui/jobs.py` imports `record_expect_found` from `report.py` (2026-09-17): the chain worker's System line
+  reads a step entry the way every other reader does. `report.py` is the home of the record readers
+  (`record_ok`, `record_kind`, `record_expect_found`, `chain_outcome`, `note_line`) because it was the first reader; nothing
+  in it imports Textual, so the edge is cheap.
 
 `tui/theme.py` imports nothing of fieldlog's own (guarded by `tests/test_theme_is_pure.py`); the one
-palette hint that needed the catalog path lives with the palette in `tui/modals.py`.
+palette hint that needed the catalog path lives with the palette in `tui/modals.py`. `transcript.py` is
+stdlib-only and is imported by `app.py` alone: it appends the TUI's System-tab lines to
+`<workspace>/fieldlog.log` (§ 8).
 
 Textual is imported only under `app.py` and `tui/`; `cli.py` imports `fieldlog.app` lazily inside the `tui`
 branch, so `fieldlog list -q` in a pipeline never pays for it (measured in the repo's own comments: a catalog
@@ -65,8 +74,16 @@ to the cwd. Within a directory files load in name order. The same basename in bo
 the local file wins and the config one is not read at all (reported as "shadowed"). Editor leftovers
 (`*~ .swp .swo .bak .orig .rej`) and dotfiles are skipped.
 
-**Shape.** A tool is `{id, name?, bin?, presets: [{id, name?, flags, bin?, outdir?, parse?, summary?,
-success?, scan?}]}`. `normalize_recipe` fills `bin` from `id`, turns a bare `bin: true` back into the string
+**Shape.** A tool is `{id, name?, bin?, platform?, presets: [{id, name?, flags, bin?, outdir?, parse?,
+summary?, success?, expect?, scan?, platform?}]}`.
+
+**Platforms.** `platform:` (a name or a list — `linux`, `darwin`; the vocabulary is open and compared
+against the first word of `sys.platform`) makes a tool or a preset exist only on those systems. It is
+applied in `_read_file`, before merging, so an entry for another platform is not written at all — the same
+`tool/preset` id once per platform in one file is one entry in the catalog, never a duplicate — and `list`,
+`doctor` and the TUI only ever see this platform's catalog. An empty value is the same as absent; a value
+that is not a name is reported by `_validate_platform` and ignored. `load_catalog(..., platform=)` is how
+tests read the shipped catalog as a Mac would. Guarded by `tests/test_platform.py`. `normalize_recipe` fills `bin` from `id`, turns a bare `bin: true` back into the string
 `"true"` (YAML reads it as a boolean), and synthesises a single `default` preset for a tool written with
 top-level `flags`. A chain is `{id, name?, steps: [<recipe id> | {recipe, continue?}]}`.
 
@@ -84,8 +101,9 @@ chain, recorded in `overrides` across files and in `errors` inside one. Guarded 
 **Validation after everything is merged**, so a base chain may name a drop-in's preset:
 `_validate_chains` drops a chain whose id collides with a tool, has no steps, or names an unknown recipe;
 `_validate_parsers` drops a `parse:` rule whose regex does not compile or whose `summary:` template names a
-group the regex lacks (the preset survives, without a summary); `_validate_success` normalises `success:` to a
-list of ints in 0..255 and drops anything else. Every rejection lands in `catalog.errors` with the file and,
+group the regex lacks (the preset survives, without a summary); `_validate_expect` drops an `expect:` regex
+that does not compile (the preset survives, without its check) and quietly discards an empty one;
+`_validate_success` normalises `success:` to a list of ints in 0..255 and drops anything else. Every rejection lands in `catalog.errors` with the file and,
 for YAML errors, the line. A bad file costs that file; a bad rule costs the rule. This fail-soft policy is
 applied consistently and is one of the two things the earlier reviews said to leave alone.
 
@@ -111,18 +129,25 @@ the command").
 **Summaries and fields.** `parse:` is a regex run over the last 64 KB of the finished log; the *last* match
 wins (a `-c 4` ping writes four lines that look like its closing stats). `summary:` is a `str.format` template
 over the named groups; without it the whole match is the summary. The named groups themselves are kept on the
-record as `fields` (this pass). `success:` lists the exit codes that count as success (default `[0]`);
-`run_succeeded(code, codes)` is the single definition every reader uses.
+record as `fields`. `success:` lists the exit codes that count as success (default `[0]`);
+`run_succeeded(code, codes)` is that half of the verdict. `expect:` is a regex that must match the same
+64 KB tail for the run to *pass* — any match, not the last (`expect_found`); the record keeps
+`expect: {pattern, found}` beside the raw exit code, with `found: null` for an interrupted run, which made
+no claim (a timeout is judged on what it printed). **`run_passed(code, codes, found)`** —
+`run_succeeded` and `found is not False` — is the one definition of a passing run, used by the CLI's exit
+status, the chain stop policy, the TUI tab and band, and `report.record_ok` (which `history` also reads).
 
 ## 3. Scope and paths (`state.py`)
 
-`TargetSession(target, hostname, lhost, interface, workspace_dir, artifact_root)` is the scope. Derived values:
+`TargetSession(target, hostname, lhost, interface, workspace_dir, artifact_root)` is the scope. `interface`
+defaults to `DEFAULT_INTERFACE` (`eth0`, `en0` on Darwin), one constant every surface reads; `LOOPBACK_NAMES`
+(`lo`, `lo0`) is what the TUI's picker never starts on. Derived values:
 
 | Property | Meaning |
 |---|---|
 | `target_kind` | `subnet` (`/N` suffix), `address` (parses with `ipaddress`), `user@host`, else `hostname` |
 | `dns_name` | `hostname` if set; else the target when it is a plain hostname; else `''`. Nothing else is inferred. |
-| `effective_lhost()` | the set `lhost`, else the interface's IPv4 from `SIOCGIFADDR` (2 s cache). Resolved at spawn, never stored, so a VPN that comes up later lands the right address. |
+| `effective_lhost()` | the set `lhost`, else the interface's IPv4 from `SIOCGIFADDR` (2 s cache; the ioctl number is chosen per platform, the `ifreq` offset is the same on Linux and Darwin). Resolved at spawn, never stored, so a VPN that comes up later lands the right address. |
 | `slug` | `scope_dir(hostname or target)`: `/`→`_`, anything outside `[A-Za-z0-9._-]`→`-` |
 | `target_dir` | `<workspace>/<slug>/` — where `session.json` lives |
 | `log_dir(root)` | `<artifact_root>/<slug>/` when a log destination is set, else `<target_dir>/raw/` |
@@ -159,9 +184,11 @@ out_dir, note)` → `LaunchPlan(job, command, env, timeout, warnings)`** — the
 4. `format_command`: prepend `bin` unless the flags already start with it or with a wrapper
    (`timeout sudo doas env nice`);
 5. create `$OUTDIR` if the template mentions it or the preset says `outdir: true`;
-6. optional `timeout -k 5 Ns sh -c '<exec form>'` wrapper;
-7. capture everything the runner and the UI will need onto `ActiveJob` (paths, stamp, parse rule, success
-   codes, scan flag, chain position, note) so a later scope change cannot rewrite a running job's display.
+6. optional `timeout -k 5 Ns sh -c '<exec form>'` wrapper — the binary is `recipes.timeout_binary()`,
+   coreutils `timeout` or Homebrew's `gtimeout`; `run` refuses `--timeout` when neither is installed rather
+   than run unbounded (a dry run still previews);
+7. capture everything the runner and the UI will need onto `ActiveJob` (paths, stamp, parse rule, expect
+   rule, success codes, scan flag, chain position, note) so a later scope change cannot rewrite a running job's display.
 
 **C. `run_job(command, job, session, sink, on_state, env, echo)`** — the systems core:
 
@@ -181,8 +208,8 @@ out_dir, note)` → `LaunchPlan(job, command, env, timeout, warnings)`** — the
   keyboard into it only when the text ends like a prompt (`?`, `:`, `]`, `)`) or the block has lasted
   `STDIN_FOCUS_AFTER` (1 s). `send_stdin` writes the reply and injects a `› reply`
   note — or `› (reply hidden)` unless the reply is one of the prompt's bracketed choices (`[y/N]`);
-- on exit: `shell_exit_code` (signal death → 128+N), summary and fields from the log tail, artifact
-  attribution (§6), then `_append_manifest` builds the record, stores it on `job.record`, and
+- on exit: `shell_exit_code` (signal death → 128+N), then one read of the log tail for both the summary
+  and fields (`parse:`) and the expectation (`expect:`), artifact attribution (§6), then `_append_manifest` builds the record, stores it on `job.record`, and
   `archive.append_record` writes it;
 - on cancellation (the TUI quitting): closing the pty master hangs up the child's controlling terminal
   (SIGHUP, the end of most tools), then SIGTERM to the process group — or SIGKILL if `kill_job` had already
@@ -193,11 +220,13 @@ Interrupt is `os.killpg(SIGINT)` (`interrupt_job`); the TUI's kill adds SIGKILL 
 **D. `run_chain(session, catalog, chain, *, run_step, timeout, flags_overrides, note)`** — inverted control.
 The driver plans each step lazily (a halted chain reserves no numbers for steps that never ran), shares the
 first step's `$OUTDIR` with every later step, and calls the front-end's `run_step(plan) -> exit code`
-coroutine — the CLI streams to the terminal, the TUI opens a tab. Policy: stop at the first step that is not a
-success unless it says `continue: true`; an interrupt stops the chain with code 130 whatever the step says;
-the chain's exit code is the first non-success it saw. The summary record (`recipe: chain/<id>`, `steps:
-[{id, recipe, exit_code, success?}]`, `stopped_at`, shared `out_dir`) claims its run number **last**, so step
-numbers are contiguous.
+coroutine — the CLI streams to the terminal, the TUI opens a tab. Policy: stop at the first step that did not
+pass (`run_passed`: exit code and expectation) unless it says `continue: true`; an interrupt stops the chain
+with code 130 whatever the step says; the chain's exit code is the first failing step's code, or 1 when that
+step exited 0 and only its expectation failed. The summary record (`recipe: chain/<id>`, `steps: [{id,
+recipe, exit_code, success?, summary?, expect?}]`, `stopped_at`, shared `out_dir`, and `summary` — the
+steps' summaries prefixed with their tool id and joined with `→`, when any step had one) claims its run
+number **last**, so step numbers are contiguous.
 
 ## 5. State
 
@@ -206,7 +235,7 @@ numbers are contiguous.
 | Scope | `TargetSession` | process; the TUI persists it to `<workspace>/.last-scope.json` whenever the `T` form is saved and again on unmount (only an operator-set `lhost` is saved) |
 | Job | `ActiveJob` — id, paths, pty fd, queue, counts, exit, summary, fields, note, record, prompt state | one run; the TUI drops it with its tab |
 | Catalog | `Catalog` in the process; `Shift+R` reloads | process |
-| Durable | `<workspace>/<slug>/session.json`, `raw/`, `.run-counter`, `.session.lock`; `<workspace>/.pinned-recent.json` | forever |
+| Durable | `<workspace>/<slug>/session.json`, `raw/`, `.run-counter`, `.session.lock`; `<workspace>/.pinned-recent.json`; `<workspace>/fieldlog.log` (the TUI's transcript) | forever |
 
 Process-global caches: the interface IP (2 s), the `$PATH` directory listings and the `is_tool_installed`
 LRU (cleared together by `clear_tool_cache`).
@@ -220,6 +249,7 @@ N jobs as non-exclusive Textual workers. Cross-process safety is on disk (§6).
 <workspace>/                          ./targets by default
 ├── .last-scope.json                  TUI's remembered scope
 ├── .pinned-recent.json               pinned + last six launched from the TUI
+├── fieldlog.log                      the TUI's System transcript, one stamped line per event
 └── <slug>/                           dns name if set, else the target
     ├── session.json                  JSON array, one record per run and per chain summary
     ├── .run-counter                  highest run number handed out (≥ highest recorded)
@@ -243,7 +273,12 @@ older whole-folder before/after diff (`detect_artifact_deltas`), which is only a
 serialised. Each artifact carries `path` (relative to the target folder, absolute when outside it), `bytes`,
 `lines` (None for binary) and `binary`.
 
-**A record** (all times naive local ISO-8601):
+**A note record** (`fieldlog note`) is `{id, recipe: "note", note, start_time}` and nothing else: no
+command, exit code, log or artifacts. It takes a run number from the same counter. `report.record_kind`
+tells the three kinds apart — `chain` (a non-empty `steps`), `note` (`recipe == "note"` and no `command`),
+else `run` — and every reader branches on it.
+
+**A run record** (all times naive local ISO-8601):
 
 ```json
 {"id": "04", "recipe": "ping/quick", "command": "ping -c 4 -W 1 10.0.0.1",
@@ -254,22 +289,31 @@ serialised. Each artifact carries `path` (relative to the target folder, absolut
  "artifacts": [{"path": "raw/20260916T120000_ping_quick_04.log", "lines": 9, "bytes": 425}]}
 ```
 
-Optional keys: `interrupted`, `note`, `success`, `chain: {id, step, of}`. A chain summary has `steps`,
-`stopped_at`, an empty `artifact_log` and no artifacts.
+Optional keys: `interrupted`, `note`, `success`, `expect: {pattern, found}`, `chain: {id, step, of}`. A chain
+summary has `steps`, `stopped_at`, an empty `artifact_log`, no artifacts, and `summary` when any step had one.
 
 ## 7. Readers of the archive
 
-- `history` lists folders (with run counts) or one folder's runs: id, recipe, exit (with `(ok)` when a
-  declared success is non-zero), duration, start, summary, note, artifacts. `--json` dumps the records.
-  `find_target_dir` accepts the folder name or the target the runs were made against (it scans manifests on
-  a miss).
-- `report` renders Markdown: a summary table, then a section per run with the command, timings, summary,
-  note, artifacts and a code-fenced tail of the log (default 40 lines; `--full`). A log over 4 MB is read from
+- `history` with no argument lists folders with their run count and last record (time, recipe, summary or
+  note); with one, that folder's records: id, recipe, exit (with `(ok)` when a declared success is non-zero,
+  `(expect not met)` for a missed expectation — the same `exit_label` and `format_time` as `report`),
+  duration, start, summary, note, artifacts; a note record shows its time and text only. `--recipe <key>` keeps one recipe (exact; `chain/<id>` and `note` count).
+  `--fields` prints a table instead — `#`, started, exit label, then one column per field name in first-seen
+  order — the trend view. `--json` dumps the (filtered) records. `find_target_dir` accepts the folder name or
+  the target the runs were made against (it scans manifests on a miss).
+- `note` writes a note record through `archive.append_note`; the folder is resolved as `history` resolves it
+  and created when the name is new.
+- `report` renders Markdown: a summary table (with a Summary column), then a section per run with the
+  command, timings, summary, the expectation when it was missed, note, artifacts and a code-fenced tail of
+  the log (default 40 lines; `--full`). Exit cells and headings read `0 (expect not met)` for a missed
+  expectation and are bold for any run `record_ok` rejects. A log over 4 MB is read from
   the end in a growing window rather than whole. Fences are chosen longer than any backtick run in the output;
   table cells escape `|`. Chain summaries render as a step table. `--since N` filters by run number.
 - `doctor` runs `is_blocked` over the whole catalog against a scope and buckets the reasons (missing binary
   vs. scope value), with `--json`.
-- The TUI reads nothing back from the archive (see `opportunities.md`).
+- The TUI reads nothing back from the archive (see `opportunities.md`), but it writes one more thing to
+  it: every System-tab line, through `write_system_log` → `transcript.append_transcript`, to
+  `<workspace>/fieldlog.log`. An unwritable workspace is said once in the System tab and then left alone.
 
 ## 8. The TUI
 
@@ -301,13 +345,16 @@ writing to disk with nothing in the app reading it again.
 unit tests (parsing, scope characters, arg tokens, path lookup); filesystem integration tests on a
 `tmp_workspace` fixture that run real `true`/`false`/`echo`/`sh` tools through `plan_launch` + `run_job` or
 `handle_run`; and async tests that drive the real app through `app.run_test()`. `test_app_structure.py`
-guards the mixin assembly. CI: ruff + pytest on 3.11/3.12/3.13, plus a job that builds the wheel, installs it
-clean and imports `fieldlog.app` (a hand-listed `packages` once shipped without `fieldlog.tui`).
+guards the mixin assembly. CI: ruff + pytest on 3.11/3.12/3.13 on Ubuntu and macOS (the macOS leg is what
+proves the Darwin ioctl number, through the loopback test in `tests/test_platform.py`), plus a job that
+builds the wheel, installs it clean and imports `fieldlog.app` (a hand-listed `packages` once shipped without
+`fieldlog.tui`).
 
 ## 10. Invariants worth protecting
 
 1. **One launch path.** Neither front-end builds a command; `plan_launch` does.
-2. **The exit code is the tool's own.** Verdicts (`success:`) are recorded beside it, never in place of it.
+2. **The exit code is the tool's own.** Verdicts (`success:`, `expect:`) are recorded beside it, never in
+   place of it, and `run_passed` is the one place they are combined.
 3. **Paths are captured at spawn; `$LHOST` is resolved at spawn.** Opposite choices, both deliberate.
 4. **Scope values are allowlisted.** Anything interpolated into the shell goes through `is_blocked`.
 5. **Fail-soft catalog.** A bad file, rule or value costs itself, never the catalog.

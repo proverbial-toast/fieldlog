@@ -30,6 +30,7 @@ from __future__ import annotations
 import socket
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from rich.text import Text
@@ -57,12 +58,15 @@ from fieldlog.recipes import (
     load_catalog,
 )
 from fieldlog.state import (
+    DEFAULT_INTERFACE,
+    LOOPBACK_NAMES,
     ActiveJob,
     TargetSession,
     get_interface_ip,
     load_pinned_recent,
     save_last_scope,
 )
+from fieldlog.transcript import TRANSCRIPT_FILE, append_transcript
 from fieldlog.tui.helpers import (
     parse_iface_field,
     truncate_right,
@@ -109,11 +113,11 @@ def list_box_interfaces() -> List[Tuple[str, str]]:
     except Exception:
         pass
     if not ifaces:
-        ifaces = [("eth0", "")]
+        ifaces = [(DEFAULT_INTERFACE, "")]
 
     def sort_key(item: Tuple[str, str]) -> Tuple[int, str]:
         name, ip = item
-        if name == "lo":
+        if name in LOOPBACK_NAMES:
             return (3, name)
         return (1, name) if ip else (2, name)
 
@@ -122,12 +126,16 @@ def list_box_interfaces() -> List[Tuple[str, str]]:
 
 
 def default_interface() -> str:
-    """The interface to start on when none is named: `eth0` if it has an IPv4
-    address, else the first other interface that has one (never `lo`), else `eth0`."""
+    """The interface to start on when none is named: `DEFAULT_INTERFACE` if it has an
+    IPv4 address, else the first other interface that has one (never loopback), else
+    `DEFAULT_INTERFACE`."""
     fallback = TargetSession.interface
     if get_interface_ip(fallback):
         return fallback
-    return next((name for name, ip in list_box_interfaces() if name != "lo" and ip), fallback)
+    return next(
+        (name for name, ip in list_box_interfaces() if name not in LOOPBACK_NAMES and ip),
+        fallback,
+    )
 
 
 # ---- Modals ----------------------------------------------------------------
@@ -180,7 +188,7 @@ class TargetModal(ModalScreen[bool]):
                         )
                 yield Input(
                     value=f"{s.interface} / {s.lhost}" if s.lhost else s.interface,
-                    placeholder="or type an interface · eth0 / 192.168.1.50",
+                    placeholder=f"or type an interface · {DEFAULT_INTERFACE} / 192.168.1.50",
                     id="in-iface",
                 )
 
@@ -378,6 +386,7 @@ class FieldlogApp(
         self.tabs: List[TabDescriptor] = [TabDescriptor("system", "[System]", "system", "system")]
         self.active_tab_id: str = "system"
         self.system_log_lines: List[str] = []
+        self._transcript_ok: bool = True
 
         self.selected_tool_id: str = "ping"
         self.selected_preset_id: str = "sweep"
@@ -426,6 +435,7 @@ class FieldlogApp(
         self.system_log_lines.append(text)
         if len(self.system_log_lines) > self.SYSTEM_LOG_MAX:
             del self.system_log_lines[: len(self.system_log_lines) - self.SYSTEM_LOG_MAX]
+        self._persist_transcript(text)
         try:
             log = self.query_one("#log-system", RichLog)
             width = log.scrollable_content_region.width or self._log_width()
@@ -437,6 +447,26 @@ class FieldlogApp(
                 self._refresh_status_band()
             except Exception:
                 pass
+
+    def _persist_transcript(self, text: str) -> None:
+        """Append one System line to the workspace transcript, or give up for good.
+
+        The workspace is fixed for the app's life (the [T] modal edits the scope,
+        never where it is kept), so every write goes to the same file. An
+        unwritable workspace is said once and then left alone: the flag is
+        cleared *before* the warning is written, so the nested write_system_log
+        skips the file here and cannot recurse.
+        """
+        if not self._transcript_ok:
+            return
+        try:
+            append_transcript(self.session.workspace_dir, text)
+        except OSError as exc:
+            self._transcript_ok = False
+            path = Path(self.session.workspace_dir) / TRANSCRIPT_FILE
+            self.write_system_log(
+                f"[transcript] not written · {display_path(path)} · {exc.strerror or exc}", style=WARN
+            )
 
     @contextmanager
     def _repaint(self, what: str):

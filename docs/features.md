@@ -37,7 +37,11 @@ change); an archived tab must never be confused with a live job by the status ba
 
 ---
 
-## F2. Notes as first-class records
+## F2. Notes as first-class records — **[built 2026-09-17, CLI half]**
+
+`fieldlog note <target> "text"` writes a note record (`archive.append_note`); `history` and `report` render
+it. **Not built, on purpose:** `amend_record` — a note is a new record, never an edit (`roadmap.md` § 2) —
+and the TUI note action. Guarded by `tests/test_note_command.py`.
 
 **What.** Beyond `--note` on `run` (this pass): `fieldlog note <target> "text"` appends a note record
 (`recipe: "note"`, no command, no log); in the TUI, `N` on a finished tab attaches a note to that run
@@ -66,7 +70,10 @@ takes one, so `history` counts rise — document it as the chain summary is docu
 
 ---
 
-## F3. `expect:` — a semantic verdict from output
+## F3. `expect:` — a semantic verdict from output — **[built 2026-09-17]**
+
+Built as proposed, minus `fail_if:` over `fields` (one dialect; see `roadmap.md` § 2). The record carries
+`expect: {pattern, found}`; `recipes.run_passed` is the one reader. Guarded by `tests/test_expect.py`.
 
 **What.** A preset field `expect: <regex>` that must match the finished log (same last-64-KB window as
 `parse`), and/or `fail_if: {field: <regex>}` over `fields`. When it fails, the record carries
@@ -187,7 +194,10 @@ security note (`problems.md` § 2.2) applies.
 
 ---
 
-## F8. Trends over `fields`
+## F8. Trends over `fields` — **[built 2026-09-17, CLI half]**
+
+`history --recipe <key> --fields`. The `report` half became the Summary column; the TUI half (previous value
+beside the current) is not built. Guarded by `tests/test_history_views.py`.
 
 **What.** `fieldlog history <target> --recipe ping/quick --fields` prints a table with one column per field
 across runs; `report` adds the fields to the summary table when every run of a recipe has them; the TUI
@@ -209,7 +219,11 @@ one lookup of the previous record for the same recipe when a job finishes (F1's 
 
 ---
 
-## F9. Chain summaries
+## F9. Chain summaries — **[built 2026-09-17]**
+
+The summary record carries `summary`; each step entry carries `summary` and `expect`. `fields` were
+deliberately not joined onto the chain record (`roadmap.md` § 2). The joined summary is not capped at write
+time: readers whose width matters clip it (`problems.md` § 2.14). Guarded by `tests/test_expect.py`.
 
 **What.** The chain summary record carries `summary` (the steps' summaries joined with `→`) and `fields`
 (namespaced by step, `{"ping/quick.loss": "0"}`), so `history` shows what a chain found, not only that it ran.
@@ -219,7 +233,10 @@ fields are on it. **Difficulty.** S. **Risks.** Long summaries; cap like `PARSE_
 
 ---
 
-## F10. A persisted session transcript
+## F10. A persisted session transcript — **[built 2026-09-17]**
+
+`fieldlog/transcript.py`; every `write_system_log` line lands in `<workspace>/fieldlog.log`. Guarded by
+`tests/test_transcript.py`.
 
 **What.** `<workspace>/fieldlog.log` receives every System-tab line with a timestamp.
 

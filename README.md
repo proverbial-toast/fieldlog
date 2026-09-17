@@ -24,12 +24,17 @@ targets/192.168.1.20/
 
 ## Requirements
 
-- Linux (the runner uses a pty and `SIOCGIFADDR`)
+- Linux or macOS (the runner uses a pty; Windows is not supported — WSL works)
 - Python 3.11 or newer
 - The tools themselves: ping, curl, dig, traceroute and so on. fieldlog does not
   bundle them. A tool missing from `$PATH` is listed but marked as unavailable.
 - Root, or the right capabilities, for tools that need it (tcpdump, arp-scan,
   `ping -f`). fieldlog does not escalate; write `sudo` into the recipe if you want it.
+
+Two things differ on macOS. `--timeout` needs coreutils `timeout`, which Homebrew
+installs as `gtimeout` (`brew install coreutils`); without either, `run` refuses
+the flag rather than running the job unbounded. And the copy keys write OSC 52,
+which Terminal.app does not support — iTerm2 and others do (see [Keys](#keys)).
 
 ## Install
 
@@ -71,16 +76,17 @@ fieldlog tui -t 192.168.1.0/24 -H router1 -i eth0 -w ~/audits
 
 The scope is remembered per workspace in `<workspace>/.last-scope.json`, so a
 bare `fieldlog` resumes where you left off; any flag you pass overrides the
-remembered value. If no interface is passed or remembered, the TUI starts on
-`eth0` if it has an IPv4 address, else on the first other interface that has
-one (never `lo`). An interface you name is kept even with no address yet, such
-as a VPN that comes up later. `T` changes all of it at runtime.
+remembered value. If no interface is passed or remembered, the TUI starts on the
+platform's default (`eth0` on Linux, `en0` on macOS) if it has an IPv4 address,
+else on the first other interface that has one (never loopback). An interface you
+name is kept even with no address yet, such as a VPN that comes up later. `T`
+changes all of it at runtime.
 
 `$LHOST` is the address the interface has when a job starts, unless you set one:
 with `-l`, or by typing `tun0 / 10.8.0.2` in the interface field of `T`. Typing
 just `tun0`, or clicking an interface in the list, goes back to its own address.
 Only an address you set is remembered. `fieldlog run` never switches
-interfaces: without `-i` it uses `eth0`.
+interfaces: without `-i` it uses that same default.
 
 ### Keys
 
@@ -125,7 +131,10 @@ pinned and recent entries. Both lists are kept per workspace in
 
 Every run opens its own tab and runs at once; start ping and curl and both hit
 the wire together. `Ctrl+C` interrupts only the tab you are on, and the tab
-then shows whatever exit code the tool returned, marked `interrupted`.
+then shows whatever exit code the tool returned, marked `interrupted`. The
+System tab keeps fieldlog's own running commentary — spawns, kills, detaches,
+scope changes, reloads — and its lines are also appended, each with the time it
+happened, to `<workspace>/fieldlog.log`.
 
 If a job stops at a prompt (`[y/N]`, a passphrase), a reply field appears under
 its output: type the answer and press `Enter`, or click one of the chips
@@ -158,7 +167,7 @@ fieldlog list --runnable                 # only tools found in $PATH
 fieldlog list -q                         # tool/preset IDs and chain ids, one per line, nothing else (for fzf / xargs)
 fieldlog list --json
 
-fieldlog show ping                       # a tool's first preset
+fieldlog show ping                       # a tool's first preset, with its contract (success, parse, expect) when set
 fieldlog show ping/quick -t 192.168.1.20 -H router1     # with the variables filled in
 fieldlog show reach -t 192.168.1.20      # a chain: every step's resolved command
 
@@ -170,9 +179,12 @@ fieldlog run ping/quick 192.168.1.20 --dry-run      # print command, env and pat
 fieldlog run ping/quick 192.168.1.20 --extra-args "-c 1"
 fieldlog run reach 192.168.1.20                     # a chain: its recipes in order
 
-fieldlog history                         # target folders in the workspace, with run counts
+fieldlog history                         # target folders, with run counts and each folder's last run
 fieldlog history 192.168.1.20            # runs for one folder
 fieldlog history router1 --json
+fieldlog history router1 --recipe ping/quick --fields    # one column per parsed field, across runs
+
+fieldlog note router1 "customer confirmed the outage at 14:10"   # a timestamped note in the archive
 
 fieldlog report 192.168.1.20                        # every run as Markdown on stdout
 fieldlog report router1 --tail 10                   # 10 lines of each log instead of 40
@@ -197,6 +209,18 @@ after `fieldlog run ping/quick 192.168.1.20 -H router1`, use
 `fieldlog history router1`, because `history 192.168.1.20` finds nothing.
 `fieldlog history` with no name lists the folders.
 
+`fieldlog note <name> "text"` writes the operator's own words into a target's
+archive: a record with `recipe: "note"`, the text and a timestamp, and a run
+number of its own — like a chain's summary record, so `history`'s counts rise
+with it. It takes the folder or the target as its first argument, the same
+lookup `history` uses, and creates the folder when the name is new, so
+"starting on box.htb" can be written before the first run against it. Both
+arguments are positional — there is no `-t` for the first — and it takes `-w`
+and `--json`. `history` and `report` then show the note in the timeline, in its
+place among the runs. A note about one particular run is either `--note` on the
+run itself or a note that names it: a note is a new record, never an edit of
+one already written.
+
 `doctor` (alias `check`) reads the whole catalog against a scope and reports what
 is runnable, what is missing from `$PATH`, and which scope values would unlock
 the rest — a preflight before a job. Each verdict is the same
@@ -210,7 +234,7 @@ disk and exits 0.
 |--------|---------|
 | `-t`, `--target` | Target IP, CIDR, hostname or ssh `user@host`. Or pass it as the second argument |
 | `-H`, `--host` | DNS name (`$HOST`, `$TARGET_HOST`) |
-| `-i`, `--interface` | Interface name (`$IFACE`). Default `eth0`, even if it has no address: `run` never switches like the TUI does |
+| `-i`, `--interface` | Interface name (`$IFACE`). Default `eth0` on Linux, `en0` on macOS, even if it has no address: `run` never switches like the TUI does |
 | `-l`, `--lhost` | Local IP (`$LHOST`). Default: the interface's IPv4 address. Presets using `$LHOST` are not runnable without one |
 | `-w`, `--workspace` | Archive root (default `./targets`) |
 | `--artifact-root DIR` | Write logs and `$OUTDIR` under `DIR/<name>/` instead of the workspace |
@@ -221,10 +245,12 @@ disk and exits 0.
 | `-q`, `--quiet` | Tool output only, no banner or summary |
 | `--json` | Print the run record (or the chain summary record) as JSON when done. On an execution error before the archive was written, a short `{"error": true}` record instead |
 
-`show` accepts `-t`, `-H`, `-i` and `-l`. `history` accepts `-t`, `-w` and
-`--json`. `list` accepts `-r`/`--runnable`, `-V`/`--verbose`, `-q`/`--names`
-and `--json`. `doctor` accepts `-t`, `-H`, `-i`, `-l`, `-v`/`--verbose` and
-`--json`.
+`show` accepts `-t`, `-H`, `-i` and `-l`. `history` accepts `-t`, `-w`,
+`--json`, `--recipe` (one recipe key, `chain/<id>` or `note`, exact) and
+`--fields` (a table with one column per parsed field; with `--json` it changes
+nothing, the records already carry `fields`). `list` accepts `-r`/`--runnable`,
+`-V`/`--verbose`, `-q`/`--names` and `--json`. `doctor` accepts `-t`, `-H`,
+`-i`, `-l`, `-v`/`--verbose` and `--json`.
 
 ### `report` options
 
@@ -237,9 +263,10 @@ and `--json`. `doctor` accepts `-t`, `-H`, `-i`, `-l`, `-v`/`--verbose` and
 | `--full` | Include each log in full |
 | `--since ID` | Only runs numbered `ID` or higher |
 
-A report is one Markdown document: a summary table of every run, then a
-section per run with its command, timings, artifacts and log output. A chain's
-summary record renders as a step table. With `-o`, stdout stays empty and the
+A report is one Markdown document: a summary table of every run — its exit,
+file count and summary — then a section per run with its command, timings,
+artifacts and log output. A chain's summary record renders as a step table,
+each step with its verdict and its own summary. With `-o`, stdout stays empty and the
 confirmation goes to stderr, so the command is safe to pipe. Binary artifacts
 are listed, never quoted.
 
@@ -281,7 +308,18 @@ recipes:
 | `parse` | preset | no | Regex run over the finished log; what it finds becomes the run's `summary` (see below) |
 | `summary` | preset | no | Template filled from `parse`'s named groups. Without it the whole match is used |
 | `success` | preset | no | Exit codes this recipe calls a success (see below). Default: `0` alone |
+| `expect` | preset | no | Regex the finished log must match for the run to pass (see below) |
 | `scan` | preset | no | `true` records every file that changed under the target folder, not just `$OUTDIR` (see below) |
+| `platform` | tool or preset | no | `linux`, `darwin` or a list; the entry exists only on those platforms (see below) |
+
+A recipe that needs different flags on different systems is written once per
+platform under the same id: `platform:` is applied when the file is read, so only
+the entry for this system is ever in the catalog, and the other is not a repeated
+definition. On a tool it carries every preset with it; a tool left with no presets
+goes too. What `list`, `show` and `doctor` report is always this platform's
+catalog — the shipped `ping/quick` is `-W 1` on Linux and `-t 6` on macOS, and
+`ss`, `ethtool` and `resolvectl` are simply absent there, where `lsof` and
+`scutil` stand in.
 
 ### How the command is built
 
@@ -363,6 +401,40 @@ print their usage and exit 2:
 - Usage text and errors usually go to stderr. fieldlog merges stderr into the
   run log, so it is captured whatever the exit code turns out to be.
 
+### Expectations
+
+`expect:` is a regex that has to match the finished log — the same last 64 KB
+`parse` reads — for the run to pass. It is for the tools whose exit code says
+nothing about what they found:
+
+```yaml
+- id: chain
+  flags: "s_client -connect $HOST:443 -showcerts"
+  parse: 'Verify return code: (?P<code>\d+) \((?P<what>[^)]+)\)'
+  summary: "verify: {what}"
+  expect: 'Verify return code: 0 \(ok\)'   # openssl exits 0 on a bad chain too
+```
+
+- The exit code stays the tool's own. The record carries the check beside it as
+  `"expect": {"pattern": "…", "found": true}`, so a reader next year sees both
+  what was checked and how it went.
+- Any match counts, anywhere in the window; there is no last-match rule to think
+  about as there is for `parse:`.
+- One rule, the same readers as `success:`: `fieldlog run` exits 1 for a tool
+  that exited 0 but missed its expectation, `history` and `report` read
+  `0 (expect not met)`, a chain stops at that step unless it says
+  `continue: true`, and the TUI's tab shows failed.
+- An interrupted run (`Ctrl+C`) makes no claim about its expectation: the tool
+  never got to print its closing line, so the record stores
+  `"found": null` and every reader treats it as unchecked rather than as a
+  miss. A timed-out run is not exempt — the log it left is what the tool
+  printed, and the run fails on exit 124 anyway.
+- A regex that does not compile is reported at load; the preset still runs,
+  without the check.
+- An expectation that is too specific fails good runs, and a run that failed for
+  no reason is worse than one nobody checked. Anchor on the tool's own closing
+  line, and prefer `success:` wherever the exit code already says it.
+
 ### Variables
 
 fieldlog fills these in before running and shows the result in previews.
@@ -416,19 +488,24 @@ chains:
 | `recipe` | step | yes | `tool/preset`, in the mapping form |
 | `continue` | step | no | `true` keeps the chain going when this step fails |
 
-- A chain stops at the first non-zero exit unless that step says
+- A chain stops at the first step that does not pass — a non-zero exit outside
+  its `success:` codes, or a missed `expect:` — unless that step says
   `continue: true`. `Ctrl+C` always stops it. The chain's own exit status is the
-  first non-zero one it saw, including one from a step it continued past, or 130
-  if it was interrupted. So a chain whose `continue: true` step failed still
-  exits non-zero, even when every later step succeeds.
+  first failing step's code — 1 when that step exited 0 and only missed its
+  expectation — including one from a step it continued past, or 130 if it was
+  interrupted. So a chain whose `continue: true` step failed still exits
+  non-zero, even when every later step succeeds.
 - A chain is runnable only when every step is. The reason names the step.
 - Every step shares one `$OUTDIR` — the first step's — so side files from one
   chain land together. Logs stay separate, one per step.
 - Each step is archived as its own run record, tagged with its position. When
   the chain ends, it appends one summary record named `chain/<id>` to the same
-  `session.json`: each step's run number and exit code, where it stopped, and
-  the shared `$OUTDIR`. The summary takes a run number of its own, so a
-  three-step chain that runs to the end adds four runs to `history`'s count.
+  `session.json`: each step's run number, exit code, `summary` and `expect`,
+  where it stopped, and the shared `$OUTDIR`. The summary record carries a
+  `summary` of its own when any step had one — each step's, prefixed with its
+  tool and joined with `→`, so `report` reads the chain as a checklist. The
+  summary takes a run number of its own, so a three-step chain that runs to
+  the end adds four runs to `history`'s count.
 - Steps are checked once every file is merged, so a built-in chain may name a
   preset that a drop-in adds. A chain with a bad id, no steps, or an unknown
   recipe is skipped with a message; the rest of the catalog still loads.
@@ -515,6 +592,7 @@ The tests behind these points are in
 targets/
 ├── .last-scope.json                # the TUI's remembered scope for this workspace
 ├── .pinned-recent.json             # pinned and recent recipes
+├── fieldlog.log                    # the TUI's session transcript: every System-tab line, timestamped
 └── <name>/                         # DNS name if set, else the target ("/" becomes "_")
     ├── session.json                # JSON array, one record per run, appended under a lock
     ├── .run-counter                # highest run number handed out
@@ -545,10 +623,24 @@ A run record:
 Optional keys: `"interrupted": true` when the operator sent SIGINT, `"summary"`
 when the preset has a `parse` rule that matched, `"fields"` with that match's
 named groups, `"note"` when `--note` was given, `"success"` listing the exit
-codes its preset calls a success, `"chain": {"id", "step", "of"}`
+codes its preset calls a success, `"expect": {"pattern": "…", "found": true}`
+when it has an `expect:` rule, `"chain": {"id", "step", "of"}`
 on a chain step, `"binary": true` on an artifact that is not text. The
 `environment` block leaves out `HOST` and `OUTDIR`: both are exported to the
 job, but they always equal `TARGET_HOST` and `OUT_DIR`.
+
+A note record (`fieldlog note`):
+
+```json
+{
+  "id": "07",
+  "recipe": "note",
+  "note": "customer confirmed the outage at 14:10",
+  "start_time": "2026-09-17T14:12:03.123456"
+}
+```
+
+Nothing ran, so a note carries no command, no exit code and no artifacts.
 
 - The folder name is built in two steps. First `/` becomes `_`, so the subnet
   `192.168.1.0/24` gets the folder `192.168.1.0_24`. Then any character still
@@ -589,6 +681,13 @@ job, but they always equal `TARGET_HOST` and `OUT_DIR`.
 - Run numbers are per target folder, claimed under `.session.lock`, and the
   highest number handed out is kept in `.run-counter`, so a CLI run beside the
   TUI never reuses one. A dry run claims nothing.
+- `<workspace>/fieldlog.log` is the session transcript: every line the TUI
+  writes to its System tab — kill and detach decisions, scope changes, reloads,
+  args resets and the boot preflight — appended with the local time it happened,
+  to the second. One entry per event, one file per workspace, and no rotation:
+  the file grows with the operator's own activity, and a long day of it is tens
+  of KB. A workspace that cannot be written is said once in the System tab, and
+  the session carries on.
 - Log filenames and record timestamps use local time.
 
 ## Scope

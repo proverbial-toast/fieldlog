@@ -22,8 +22,21 @@ from rich.console import Console
 from rich.markup import escape
 
 from fieldlog import __version__
-from fieldlog.archive import load_target_history
-from fieldlog.report import DEFAULT_TAIL, load_runs, record_ok, render_report, run_number
+from fieldlog.archive import append_note
+from fieldlog.report import (
+    DEFAULT_TAIL,
+    chain_outcome,
+    exit_label,
+    format_time,
+    load_runs,
+    note_line,
+    record_expect_found,
+    record_interrupted,
+    record_kind,
+    record_ok,
+    render_report,
+    run_number,
+)
 from fieldlog.recipes import (
     Catalog,
     Verdict,
@@ -33,22 +46,27 @@ from fieldlog.recipes import (
     chain_steps,
     check_chain,
     check_recipe,
+    expect_rule,
     find_chain,
     find_recipe,
     is_blocked,
     format_command,
     is_tool_installed,
     load_catalog,
-    run_succeeded,
+    parse_rule,
+    run_passed,
     score,
     search,
     steps_label,
+    success_codes,
+    timeout_binary,
 )
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
 from fieldlog.runner import interrupt_job, run_job
 from fieldlog.state import (
     DEFAULT_ARTIFACT_ROOT,
+    DEFAULT_INTERFACE,
     SCOPE_VARS,
     TargetSession,
     load_last_scope,
@@ -69,6 +87,7 @@ SUBCOMMANDS = {
     "history",
     "log",
     "runs",
+    "note",
     "report",
     "doctor",
     "check",
@@ -111,7 +130,7 @@ def dispatch_argv(argv: Optional[List[str]] = None) -> Tuple[str, List[str]]:
     if first in ("check",):
         return "cli", ["doctor"] + argv[1:]
 
-    if first in ("list", "show", "run", "history", "report", "doctor") or first in ROOT_FLAGS:
+    if first in ("list", "show", "run", "history", "note", "report", "doctor") or first in ROOT_FLAGS:
         return "cli", argv
 
     # Any other bare token defaults to prepending 'run'
@@ -178,6 +197,15 @@ def build_parser() -> argparse.ArgumentParser:
     hist_p.add_argument("-t", "--target", dest="target_flag", default="", help="Target name or folder")
     hist_p.add_argument("-w", "--workspace", default="", help="Target workspace root (default: ./targets)")
     hist_p.add_argument("--json", action="store_true", help="Emit history records as JSON")
+    hist_p.add_argument("--recipe", default="", help="Only records of this recipe key, or 'chain/<id>', or 'note'")
+    hist_p.add_argument("--fields", action="store_true", help="One row per run, one column per parsed field")
+
+    # note
+    note_p = subparsers.add_parser("note", help="Write a dated note into a target's archive")
+    note_p.add_argument("target", help="Target name or folder (e.g. '10.10.11.50')")
+    note_p.add_argument("text", help="The note itself, in quotes")
+    note_p.add_argument("-w", "--workspace", default="", help="Target workspace root (default: ./targets)")
+    note_p.add_argument("--json", action="store_true", help="Emit the note record as JSON")
 
     # report
     report_p = subparsers.add_parser("report", help="Render a target's runs as a Markdown report")
@@ -198,7 +226,10 @@ def build_parser() -> argparse.ArgumentParser:
     doc_p.add_argument("target", nargs="?", default="", help="Target IP, CIDR, hostname or ssh user@host")
     doc_p.add_argument("-t", "--target", dest="target_flag", default="", help="Target (or pass it as the argument)")
     doc_p.add_argument("-H", "--host", "--hostname", dest="host", default="", help="DNS name ($HOST)")
-    doc_p.add_argument("-i", "-I", "--interface", default="", help="Interface ($IFACE); default eth0")
+    doc_p.add_argument(
+        "-i", "-I", "--interface", default="",
+        help=f"Interface ($IFACE); default {DEFAULT_INTERFACE}",
+    )
     doc_p.add_argument("-l", "--lhost", default="", help="Local address ($LHOST)")
     doc_p.add_argument("-v", "--verbose", action="store_true", help="Show every preset's status and reason")
     doc_p.add_argument("--json", action="store_true", help="Emit the report as JSON")
@@ -448,7 +479,7 @@ def preview_session(args: argparse.Namespace) -> TargetSession:
     return TargetSession(
         target=args.target.strip() if args.target else "",
         hostname=args.host.strip() if args.host else "",
-        interface=args.interface.strip() if args.interface else "eth0",
+        interface=args.interface.strip() if args.interface else DEFAULT_INTERFACE,
         lhost=args.lhost.strip() if args.lhost else "",
     )
 
@@ -498,6 +529,20 @@ def handle_show(args: argparse.Namespace, catalog: Catalog) -> int:
         console.print(f"  [bold]Binary:[/bold]      [green]✓ {escape(bin_name)} (installed in $PATH)[/green]")
     else:
         console.print(f"  [bold]Binary:[/bold]      [red]✗ {escape(bin_name)} (missing from $PATH)[/red]")
+
+    # What the preset promises about its own run, when it promises anything: a
+    # recipe without a contract prints exactly what it always printed.
+    codes = success_codes(preset)
+    if codes:
+        console.print(f"  [bold]Success:[/bold]     {escape(', '.join(str(c) for c in codes))}")
+    rule = parse_rule(preset)
+    if rule:
+        console.print(f"  [bold]Parse:[/bold]       {escape(rule['parse'])}")
+        if rule["summary"]:
+            console.print(f"  [bold]Summary:[/bold]     {escape(rule['summary'])}")
+    expect = expect_rule(preset)
+    if expect:
+        console.print(f"  [bold]Expect:[/bold]      {escape(expect)}")
 
     # The preset's own bin, when it has one — the binary that actually runs.
     console.print(f"\n[bold]Raw Flags:[/bold]\n  {escape(format_command(bin_name, raw_flags))}")
@@ -617,7 +662,7 @@ async def execute_cli_job(
     # The verdict is for display here; what this returns is always the tool's
     # own code, so a chain step's record and its own run record agree. The
     # caller turns the code into fieldlog's exit status (see handle_run).
-    ok = run_succeeded(code, job.success_codes)
+    ok = run_passed(code, job.success_codes, job.expect_found)
 
     if as_json:
         if not emit_json:
@@ -647,6 +692,9 @@ async def execute_cli_job(
         status_label = f"[DONE:{code}]" if ok else f"[FAIL:{code}]"
         if job.interrupted:
             status_label += " (interrupted)"
+        if job.expect_found is False:
+            # The code says the tool was happy; this says the run was not.
+            status_label += " (expect not met)"
         art_count = delta.total_files if delta else 1
         lines_count = delta.total_lines if delta else job.lines_count
         bytes_count = delta.total_bytes if delta else job.bytes_count
@@ -668,11 +716,26 @@ def run_session(args: argparse.Namespace) -> TargetSession:
     return TargetSession(
         target=(getattr(args, "target_flag", "") or getattr(args, "target", "")).strip(),
         hostname=getattr(args, "host", "").strip(),
-        interface=getattr(args, "interface", "") or "eth0",
+        interface=getattr(args, "interface", "") or DEFAULT_INTERFACE,
         lhost=getattr(args, "lhost", ""),
         workspace_dir=Path(args.workspace) if getattr(args, "workspace", None) else Path("./targets"),
         artifact_root=getattr(args, "artifact_root", "") or DEFAULT_ARTIFACT_ROOT,
     )
+
+
+def timeout_unavailable(args: argparse.Namespace) -> str:
+    """The error for `--timeout` on a box with no coreutils `timeout`, else ''.
+
+    Refusing is the honest answer: the alternative is a job that runs unbounded,
+    which is the one thing the flag was asked for to prevent. A dry run is
+    exempt — it reserves nothing, runs nothing, and previewing the wrapper it
+    would use is still worth reading on a box where it is not installed yet.
+    """
+    if not getattr(args, "timeout", None) or getattr(args, "dry_run", False):
+        return ""
+    if timeout_binary():
+        return ""
+    return "Error: --timeout needs coreutils timeout in $PATH (macOS: brew install coreutils).\n"
 
 
 def print_dry_run(plan: LaunchPlan, step: str = "") -> None:
@@ -723,6 +786,11 @@ def handle_run_chain(args: argparse.Namespace, catalog: Catalog, chain: dict) ->
         sys.stderr.write(f"Error: Cannot run chain '{chain['id']}': {reason}\n")
         return 1
 
+    problem = timeout_unavailable(args)
+    if problem:
+        sys.stderr.write(problem)
+        return 1
+
     console = Console()
 
     async def run_step(plan: LaunchPlan) -> int:
@@ -748,19 +816,13 @@ def handle_run_chain(args: argparse.Namespace, catalog: Catalog, chain: dict) ->
     if as_json:
         print(json.dumps(record, indent=2))
     elif not quiet:
-        ran = len(record["steps"])
-        if record["stopped_at"]:
-            last_code = record["steps"][-1]["exit_code"] if record["steps"] else result.exit_code
-            console.print(
-                f"[red]{TAG} chain {escape(chain['id'])} · stopped at step {ran} "
-                f"({escape(record['stopped_at'])} exit {last_code})[/red]"
-            )
-        else:
-            style = "green" if result.exit_code == 0 else "red"
-            console.print(
-                f"[{style}]{TAG} chain {escape(chain['id'])} · {ran}/{len(steps)} steps · "
-                f"exit {result.exit_code}[/{style}]"
-            )
+        # A chain that stopped is red whatever its code; one that ran through is
+        # read on its code, as a single run's status line is.
+        style = "red" if record["stopped_at"] or result.exit_code != 0 else "green"
+        console.print(
+            f"[{style}]{TAG} chain {escape(chain['id'])} · "
+            f"{escape(chain_outcome(record, len(steps)))}[/{style}]"
+        )
     return result.exit_code
 
 
@@ -780,6 +842,11 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
     blocked, reason = is_blocked(tool, preset, session)
     if blocked:
         sys.stderr.write(f"Error: Cannot run '{tool['id']}/{preset['id']}': {reason}\n")
+        return 1
+
+    problem = timeout_unavailable(args)
+    if problem:
+        sys.stderr.write(problem)
         return 1
 
     dry_run = getattr(args, "dry_run", False)
@@ -811,8 +878,11 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
         )
     )
     # The recipe's verdict is fieldlog's exit status; the archive keeps the
-    # tool's own code either way, so nothing in it is fabricated.
-    return 0 if run_succeeded(code, plan.job.success_codes) else code
+    # tool's own code either way, so nothing in it is fabricated. The tool's own
+    # code is the exit status of a failure, except that a tool that exited 0
+    # against a failed expectation cannot be reported as 0.
+    passed = run_passed(code, plan.job.success_codes, plan.job.expect_found)
+    return 0 if passed else (code if code != 0 else 1)
 
 
 def target_folders(workspace: Path) -> List[Path]:
@@ -864,24 +934,163 @@ def no_such_target(workspace: Path, name: str) -> str:
     return f"No runs for '{name}' in {workspace}. Target folders: {listed}\n"
 
 
+# How wide a one-line cell of tool or operator text may be in the CLI: a note's
+# own words or a run's summary in the workspace overview, a parsed field in the
+# `--fields` table. Enough to tell one row from the next without pushing it over.
+CELL_WIDTH = 60
+
+
+def overview_line(folder: Path, runs: List[dict], width: int = 0) -> str:
+    """One folder as the overview lists it: its name, its run count, and what
+    the last thing in it was.
+
+    The count alone said nothing about whether a folder was worked on this
+    morning or in June, which is what the operator is choosing between.
+    """
+    count = f"{len(runs)} run{'' if len(runs) == 1 else 's'}"
+    line = f"  [bold]{escape(folder.name.ljust(width))}[/bold] [dim]{count}[/dim]"
+    if not runs:
+        return line
+
+    last = runs[-1]
+    line += (
+        f" [dim]· last {escape(format_time(last.get('start_time')))} "
+        f"{escape(str(last.get('recipe', 'unknown')))}[/dim]"
+    )
+    if record_kind(last) == "note":
+        tail = clip(note_line(last), CELL_WIDTH)
+    else:
+        # A chain's summary is its steps' joined, so it is the one most likely
+        # to run past the row; it is clipped on the same rule as a note.
+        tail = clip(str(last.get("summary", "") or ""), CELL_WIDTH)
+    if tail:
+        line += f" [cyan]· {escape(tail)}[/cyan]"
+    return line
+
+
+def history_overview(workspace: Path) -> int:
+    """Every target folder in a workspace, with its count and its last record.
+
+    Each folder's manifest is read once — `load_runs` gives the count and the
+    last record together, so the line costs no more than the count used to.
+    """
+    if not workspace.exists():
+        sys.stderr.write(f"No targets found in {workspace}\n")
+        return 1
+    folders = target_folders(workspace)
+    if not folders:
+        sys.stderr.write(f"No target folders found under {workspace}\n")
+        return 0
+
+    console = Console()
+    console.print(f"[bold cyan]Available Targets in {escape(str(workspace))}:[/bold cyan]")
+    width = max(len(d.name) for d in folders)
+    for folder in folders:
+        console.print(overview_line(folder, load_runs(folder), width))
+    return 0
+
+
+# The columns every `--fields` table opens with, before the fields themselves.
+FIELD_TABLE_HEAD = ("#", "started", "exit")
+
+
+def field_table(records: List[dict]) -> Tuple[List[str], List[List[str]]]:
+    """(header, rows) for `history --fields`: the fixed columns, then every
+    field name any of these records carries.
+
+    First-seen order, not sorted: a preset's `parse:` rule names its groups in
+    the order the tool prints them, and a trend reads best in that same order.
+    A record without a given field leaves the cell blank rather than inventing
+    a zero for it.
+    """
+    names: List[str] = []
+    for record in records:
+        fields = record.get("fields")
+        if isinstance(fields, dict):
+            names += [name for name in fields if name not in names]
+
+    rows: List[List[str]] = []
+    for record in records:
+        fields = record.get("fields")
+        fields = fields if isinstance(fields, dict) else {}
+        if record_kind(record) == "note":
+            # Nothing ran, so there is no code to label.
+            verdict = "—"
+        else:
+            verdict = exit_label(
+                record.get("exit_code", 0),
+                record_interrupted(record),
+                record_ok(record),
+                record_expect_found(record),
+            )
+        rows.append([
+            str(record.get("id", "??")),
+            format_time(record.get("start_time")),
+            verdict,
+            # One line, never `None`, never wider than the column allows: a
+            # field is raw tool output, and a newline in it would break the row.
+            *[clip(" ".join(str(fields.get(name) or "").split()), CELL_WIDTH) for name in names],
+        ])
+    return list(FIELD_TABLE_HEAD) + names, rows
+
+
+def print_field_table(console: Console, records: List[dict]) -> None:
+    """Print the fields table: plain ljust columns, each as wide as the widest
+    thing in it, two spaces apart, no borders."""
+    header, rows = field_table(records)
+    widths = [max([len(head)] + [len(row[index]) for row in rows]) for index, head in enumerate(header)]
+
+    def line(cells: List[str]) -> str:
+        return escape("  ".join(c.ljust(w) for c, w in zip(cells, widths)).rstrip())
+
+    console.print(f"  [bold dim]{line(header)}[/bold dim]")
+    for row in rows:
+        console.print(f"  {line(row)}")
+
+
+def handle_note(args: argparse.Namespace) -> int:
+    """Write the operator's own words into a target's archive.
+
+    The folder is resolved the way `history` resolves it, and a name that
+    matches nothing starts a folder: "starting on box.htb" is written before
+    the first run against it, not after.
+    """
+    text = (getattr(args, "text", "") or "").strip()
+    if not text:
+        sys.stderr.write("Error: a note needs some text.\n")
+        return 1
+
+    target = (getattr(args, "target", "") or "").strip()
+    if not target:
+        # `scope_dir("")` names the workspace root itself, which is not a target
+        # folder — the note would land where no reader looks for it.
+        sys.stderr.write("Error: a note needs a target.\n")
+        return 1
+
+    workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path("./targets")
+    target_dir = find_target_dir(workspace, target) or workspace / scope_dir(target)
+
+    try:
+        record = append_note(target_dir, text)
+    except OSError as exc:
+        # A folder that cannot be made or written — a file sitting where it
+        # belongs, a full or read-only disk — is an answer, not a traceback.
+        sys.stderr.write(f"Error: could not write the note to {target_dir}: {exc}\n")
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(record, indent=2))
+        return 0
+    Console().print(f"note #{escape(str(record['id']))} · {escape(target_dir.name)}")
+    return 0
+
+
 def handle_history(args: argparse.Namespace) -> int:
     target = (getattr(args, "target_flag", "") or getattr(args, "target", "")).strip()
     workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path("./targets")
 
     if not target:
-        if not workspace.exists():
-            sys.stderr.write(f"No targets found in {workspace}\n")
-            return 1
-        subdirs = [d for d in workspace.iterdir() if d.is_dir() and not d.name.startswith(".")]
-        if not subdirs:
-            sys.stderr.write(f"No target folders found under {workspace}\n")
-            return 0
-        console = Console()
-        console.print(f"[bold cyan]Available Targets in {escape(str(workspace))}:[/bold cyan]")
-        for d in sorted(subdirs, key=lambda p: p.name):
-            hist = load_target_history(d)
-            console.print(f"  [bold]{escape(d.name)}[/bold] ({hist.total_runs} runs)")
-        return 0
+        return history_overview(workspace)
 
     target_dir = find_target_dir(workspace, target)
     if target_dir is None:
@@ -896,6 +1105,13 @@ def handle_history(args: argparse.Namespace) -> int:
         return 1
 
     runs = raw_manifest if isinstance(raw_manifest, list) else raw_manifest.get("runs", []) if isinstance(raw_manifest, dict) else []
+    runs = [r for r in runs if isinstance(r, dict)]
+
+    # An exact key, chain summaries (`chain/<id>`) and notes included: a prefix
+    # match would make `ping` mean the tool here and the preset everywhere else.
+    key = (getattr(args, "recipe", "") or "").strip()
+    if key:
+        runs = [r for r in runs if r.get("recipe") == key]
 
     if getattr(args, "json", False):
         print(json.dumps(runs, indent=2))
@@ -903,23 +1119,41 @@ def handle_history(args: argparse.Namespace) -> int:
 
     console = Console()
     console.print(f"\n[bold cyan]Run History for {escape(target)} ({escape(str(target_dir))}):[/bold cyan]\n")
+
+    if not runs:
+        # The folder is the right one and the filter is the operator's own, so
+        # this is an answer, not an error.
+        console.print(f"  [dim]no runs of {escape(key)}[/dim]" if key else "  [dim]no runs[/dim]")
+        return 0
+
+    if getattr(args, "fields", False):
+        print_field_table(console, runs)
+        return 0
+
     for r in runs:
-        if not isinstance(r, dict):
-            continue
         rid = r.get("id", "??")
         recipe = r.get("recipe", "unknown")
-        code = r.get("exit_code", 0)
+
+        if record_kind(r) == "note":
+            # Nothing ran: no exit code, no duration and no artifacts — when
+            # the operator wrote it, and what they wrote.
+            console.print(
+                f"  [bold]#{escape(str(rid))}[/bold] [dim]note[/dim] "
+                f"| {escape(format_time(r.get('start_time')))}"
+            )
+            console.print(f"      [dim]✎ {escape(str(r.get('note', '') or ''))}[/dim]")
+            continue
+
         dur = r.get("duration_sec", 0)
-        start = r.get("start_time", "")
         artifacts = r.get("artifacts", [])
         ok = record_ok(r)
         status_col = "green" if ok else "red"
-        # Said in words as well as colour: history is piped and redirected.
-        verdict = " (ok)" if ok and code != 0 else ""
-        flag = " interrupted" if r.get("interrupted") else ""
+        # Said in words as well as colour, because history is piped and
+        # redirected — and in the one wording `--fields` and `report` use.
+        label = exit_label(r.get("exit_code", 0), record_interrupted(r), ok, record_expect_found(r))
         console.print(
             f"  [bold]#{escape(str(rid))}[/bold] [{status_col}]{escape(str(recipe))}[/{status_col}] "
-            f"| exit {code}{verdict}{flag} | {dur}s | {escape(str(start))}"
+            f"| exit {escape(label)} | {dur}s | {escape(format_time(r.get('start_time')))}"
         )
         summary = str(r.get("summary", "") or "")
         if summary:
@@ -987,7 +1221,7 @@ def doctor_session(args: argparse.Namespace) -> TargetSession:
     return TargetSession(
         target=(getattr(args, "target_flag", "") or getattr(args, "target", "")).strip(),
         hostname=getattr(args, "host", "").strip(),
-        interface=(getattr(args, "interface", "") or "eth0").strip(),
+        interface=(getattr(args, "interface", "") or DEFAULT_INTERFACE).strip(),
         lhost=getattr(args, "lhost", "").strip(),
     )
 
@@ -1241,6 +1475,8 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
         return handle_run(args, load_catalog())
     if args.command in ("history", "log", "runs"):
         return handle_history(args)
+    if args.command == "note":
+        return handle_note(args)
     if args.command == "report":
         return handle_report(args)
     if args.command in ("doctor", "check"):

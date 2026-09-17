@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 import fcntl
 import json
 import os
+import time
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
@@ -366,3 +368,28 @@ def reserve_run_number(target_dir: Path) -> int:
         os.replace(tmp, target_dir / RUN_COUNTER)
     return number
 
+
+def append_note(target_dir: Path, text: str, when: Optional[float] = None) -> dict:
+    """Write the operator's own words into a target's archive, as a record of
+    its own, and return what was written.
+
+    A note is a new record, never an edit of an old one: there is no
+    `amend_record`, so "the archive is append-only" stays true in fact rather
+    than in spirit, and a note needs no lock discipline beyond the one
+    `append_record` already takes. A note about a particular run names that run
+    in its text. The record is minimal — nothing ran, so it carries no command,
+    no exit code and no artifacts.
+    """
+    target_dir = Path(target_dir)
+    number = reserve_run_number(target_dir)
+    record = {
+        # Zero-padded like a run's, and from the same counter: a note and a run
+        # cannot be handed the same number.
+        "id": f"{number:02d}",
+        "recipe": "note",
+        "note": text,
+        # Naive local time, exactly as a run record carries it.
+        "start_time": datetime.fromtimestamp(when if when is not None else time.time()).isoformat(),
+    }
+    append_record(target_dir, record)
+    return record

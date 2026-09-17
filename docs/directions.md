@@ -165,3 +165,20 @@ The near-term direction (§1) is entirely on the right-hand side of the record: 
 readers. Vantage points (§2) and automation (§5) come after, because both depend on the record being
 trustworthy and complete first. Shared catalogs (§4) and structured parsers (§7) are independent and can
 land whenever someone needs them.
+
+---
+
+## 11. Platforms — **[decided 2026-09-17]**
+
+**macOS: in.** Network engineers carry MacBooks. The pty core, the archive lock and the TUI are BSD-clean;
+what needed changing was the `SIOCGIFADDR` ioctl number, the default interface name, the `timeout` wrapper
+(Homebrew's `gtimeout`), and a handful of `ping`/`traceroute` flags, which is what the `platform:` catalog
+key is for. `roadmap.md` § 2 group 3.
+
+**Windows (native): out.** Not a port but a second product: no `pty`, `fcntl`, `termios`, `setsid` or
+`killpg`; the Proactor loop cannot `add_reader` a pty; the recipe format is `sh` text and `cmd.exe` breaks
+every pipe, quote and `${VAR:-x}` in the shipped recipes; the useful tools are different ones (`ping -n`,
+`tracert`, `nslookup`, `Test-NetConnection`). It would need a ConPTY twin of `run_job` (the code both
+reviews said to leave alone), Windows process-group kills, a second catalog and a shell decision, and then
+two runners to keep honest. WSL runs fieldlog as it is. A pipes-only Windows runner (no prompts, argv-only
+recipes) is the one middle ground, and it is not planned.

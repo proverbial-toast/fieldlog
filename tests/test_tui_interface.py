@@ -16,7 +16,7 @@ from fieldlog import app as app_mod
 from fieldlog import state as state_mod
 from fieldlog.app import FieldlogApp, parse_iface_field
 from fieldlog.cli import build_parser, tui_session
-from fieldlog.state import TargetSession, save_last_scope
+from fieldlog.state import DEFAULT_INTERFACE, LOOPBACK_NAMES, TargetSession, save_last_scope
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def box(monkeypatch):
         monkeypatch.setattr(state_mod, "get_interface_ip", fake_ip)
         monkeypatch.setattr(
             app_mod, "list_box_interfaces",
-            lambda: sorted(addrs.items(), key=lambda kv: (kv[0] == "lo", not kv[1], kv[0])),
+            lambda: sorted(addrs.items(), key=lambda kv: (kv[0] in LOOPBACK_NAMES, not kv[1], kv[0])),
         )
 
     return install
@@ -42,10 +42,13 @@ def box(monkeypatch):
     [
         ({"lo": "127.0.0.1", "eth0": "10.0.0.2", "wlan0": "192.168.1.5"}, "", "", ("eth0", "", "10.0.0.2")),
         ({"lo": "127.0.0.1", "eth0": "", "wlan0": "192.168.1.5"}, "", "", ("wlan0", "", "192.168.1.5")),
-        ({"lo": "127.0.0.1", "eth0": ""}, "", "", ("eth0", "", "")),                      # nothing has an address
+        # Nothing has an address: the platform's own default, whichever box this is.
+        ({"lo": "127.0.0.1", "eth0": ""}, "", "", (DEFAULT_INTERFACE, "", "")),
         ({"lo": "127.0.0.1", "eth0": "", "wlan0": "192.168.1.5"}, "", "10.9.9.9", ("wlan0", "10.9.9.9", "10.9.9.9")),
         ({"lo": "127.0.0.1", "eth0": "", "wlan0": "192.168.1.5"}, "eth0", "", ("eth0", "", "")),  # named eth0 kept
         ({"lo": "127.0.0.1", "wlan0": "192.168.1.5"}, "tun0", "", ("tun0", "", "")),       # VPN not up yet
+        # A Mac-shaped box: the default name and the loopback name both differ.
+        ({"lo0": "127.0.0.1", "en0": "10.0.0.2"}, "", "", ("en0", "", "10.0.0.2")),
     ],
 )
 def test_tui_start_interface(box, tmp_workspace: Path, addrs, interface, lhost, expected):

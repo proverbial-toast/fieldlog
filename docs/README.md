@@ -12,6 +12,7 @@ A map of what is in this folder, and the conventions the documents share.
 | [`features.md`](features.md) | Concrete feature proposals, each with the user problem, fit, supporting components, new architecture, difficulty and risks. |
 | [`directions.md`](directions.md) | More speculative directions: what fieldlog could become if its core ideas were pushed further, and how they fit together. |
 | [`next-steps.md`](next-steps.md) | The recommended order of work, with effort estimates. |
+| [`roadmap.md`](roadmap.md) | The 2026-09-17 reading of the proposals as one capability, what was built from it, in what order, and what was left. |
 
 ## Dated snapshots (historical, kept as written)
 

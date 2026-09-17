@@ -13,7 +13,15 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from fieldlog.archive import next_run_number, reserve_run_number
-from fieldlog.recipes import format_command, parse_rule, scans_workspace, success_codes, writes_outdir
+from fieldlog.recipes import (
+    expect_rule,
+    format_command,
+    parse_rule,
+    scans_workspace,
+    success_codes,
+    timeout_binary,
+    writes_outdir,
+)
 from fieldlog.runner import build_env, exec_form
 from fieldlog.state import ActiveJob, TargetSession, prepare_job_paths, resolve_flags
 
@@ -91,7 +99,12 @@ def plan_launch(
         # sh -c wrapper (kept for pipes / ${VAR:-default}) is cleaned up too.
         # The inner shell execs a simple command for the same reason run_job
         # does: the tool's own exit code is what timeout then reports.
-        command = f"timeout -k 5 {timeout:g}s sh -c {shlex.quote(exec_form(command))}"
+        # Homebrew's coreutils names it gtimeout; `run` has already refused a
+        # real run on a box with neither, so the fallback here is what a dry run
+        # on such a box previews — the command the operator would get once
+        # coreutils is installed.
+        wrapper = timeout_binary() or "timeout"
+        command = f"{wrapper} -k 5 {timeout:g}s sh -c {shlex.quote(exec_form(command))}"
 
     job = ActiveJob(
         id=run_id,
@@ -105,6 +118,7 @@ def plan_launch(
         out_dir=out_dir,
         chain=chain,
         parse_rule=parse_rule(preset),
+        expect=expect_rule(preset),
         success_codes=success_codes(preset),
         scan_workspace=scans_workspace(preset),
         note=note,

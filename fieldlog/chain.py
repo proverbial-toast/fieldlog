@@ -17,7 +17,7 @@ from typing import Awaitable, Callable, Dict, List, Optional
 
 from fieldlog.archive import append_record, manifest_environment
 from fieldlog.launch import LaunchPlan, next_run_id, plan_launch
-from fieldlog.recipes import Catalog, chain_arrow, chain_steps, run_succeeded
+from fieldlog.recipes import Catalog, chain_arrow, chain_steps, run_passed
 from fieldlog.runner import build_env
 from fieldlog.state import TargetSession, run_stamp
 
@@ -58,6 +58,9 @@ async def run_chain(
     out_dir = ""
     shared: Optional[Path] = None
     records: List[dict] = []
+    # Each step's own summary, prefixed with the tool that made it, for the
+    # one line the chain amounted to.
+    summaries: List[str] = []
     stopped_at: Optional[str] = None
     exit_code = 0
 
@@ -75,22 +78,32 @@ async def run_chain(
         out_dir = str(plan.job.out_dir)
         code = await run_step(plan)
         # The step's own code, never a verdict — the same rule the per-run
-        # record follows. `success` rides along so a reader of the summary can
-        # tell a declared success from a failure without opening the step.
+        # record follows. `success` and `expect` ride along so a reader of the
+        # summary can tell a declared success, or a missed expectation, from a
+        # failure without opening the step.
         records.append({
             "id": plan.job.id,
             "recipe": key,
             "exit_code": code,
             **({"success": plan.job.success_codes} if plan.job.success_codes else {}),
+            **({"summary": plan.job.summary} if plan.job.summary else {}),
+            **(
+                {"expect": {"pattern": plan.job.expect, "found": plan.job.expect_found}}
+                if plan.job.expect else {}
+            ),
         })
+        if plan.job.summary:
+            summaries.append(f"{tool['id']}: {plan.job.summary}")
 
         if plan.job.interrupted:
             # Ctrl+C is about the chain, not just the step it landed on.
             exit_code, stopped_at = 130, key
             break
-        if not run_succeeded(code, plan.job.success_codes):
+        if not run_passed(code, plan.job.success_codes, plan.job.expect_found):
             if exit_code == 0:
-                exit_code = code
+                # A step that exited 0 and missed its expectation still did not
+                # pass, and the chain must not claim 0 for a chain that failed.
+                exit_code = code if code != 0 else 1
             if not keep_going:
                 stopped_at = key
                 break
@@ -107,6 +120,11 @@ async def run_chain(
         "environment": manifest_environment(build_env(session, Path(out_dir), run_id)),
         "artifact_log": "",
         "out_dir": out_dir,
+        # What the chain amounted to: its steps' summaries in order. A step
+        # without a `parse:` rule contributes nothing. `fields` are not joined
+        # here — two steps of one recipe would collide, and a trend over a
+        # step's fields is `history --recipe <step>` on its own records.
+        **({"summary": " → ".join(summaries)} if summaries else {}),
         **({"note": note} if note else {}),
         # Naive local time, as every step's own record is (see runner).
         "start_time": datetime.fromtimestamp(start).isoformat(),
