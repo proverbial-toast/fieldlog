@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 from fieldlog.cli import build_parser, handle_run, handle_show
@@ -45,11 +47,22 @@ def test_show_uses_the_presets_own_bin(capsys):
     assert "delv +vtrace example.com" in out and "dig +vtrace" not in out
 
 
-def test_show_previews_the_per_run_outdir(capsys):
+def test_show_previews_the_per_run_outdir(capsys, monkeypatch):
     """`show` knows no workspace, so it has no run number: `NN` stands where one
-    would, rather than the old shared-by-the-second directory."""
+    would, rather than the old shared-by-the-second directory.
+
+    The console is pinned narrow on purpose: the preview path is only as long as
+    the working directory it is printed from, so at the repo root this passed
+    while CI — checked out under a longer path — had the path hard-wrapped in
+    two by the 80-column default. A command line is for copying; it must survive
+    a console narrower than itself."""
+    monkeypatch.setenv("COLUMNS", "40")
     cat = Catalog(tools=[normalize_recipe(
         {"id": "cap", "bin": "true", "presets": [{"id": "w", "flags": "-w $OUTDIR/x.pcap"}]}
     )])
     assert handle_show(build_parser().parse_args(["show", "cap/w"]), cat) == 0
-    assert "_NN/x.pcap" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "_NN/x.pcap" in out
+    # One line, whatever the width: the command is for copying, and a break
+    # anywhere inside it would be copied too.
+    assert re.search(r"^\s*true -w \S+_NN/x\.pcap\s*$", out, re.M), out

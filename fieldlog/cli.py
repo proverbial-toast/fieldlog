@@ -545,8 +545,14 @@ def handle_show(args: argparse.Namespace, catalog: Catalog) -> int:
         console.print(f"  [bold]Expect:[/bold]      {escape(expect)}")
 
     # The preset's own bin, when it has one — the binary that actually runs.
-    console.print(f"\n[bold]Raw Flags:[/bold]\n  {escape(format_command(bin_name, raw_flags))}")
-    console.print(f"\n[bold]Resolved (sample/target preview):[/bold]\n  {escape(format_command(bin_name, resolved))}")
+    # soft_wrap: a command line is meant to be copied, and a hard break inserted
+    # mid-path by the console width would be copied with it. A long line runs off
+    # the edge instead of being cut in half.
+    console.print(f"\n[bold]Raw Flags:[/bold]\n  {escape(format_command(bin_name, raw_flags))}", soft_wrap=True)
+    console.print(
+        f"\n[bold]Resolved (sample/target preview):[/bold]\n  {escape(format_command(bin_name, resolved))}",
+        soft_wrap=True,
+    )
     return 0
 
 

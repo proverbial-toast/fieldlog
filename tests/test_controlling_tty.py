@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import sys
 import time
 from pathlib import Path
 
@@ -81,9 +82,14 @@ def test_only_offered_choices_are_logged(prompt, reply, logged):
 
 @pytest.mark.asyncio
 async def test_child_is_still_its_own_session_leader(tmp_workspace: Path):
-    """killpg(pid) stays valid: setsid in preexec replaces start_new_session."""
+    """killpg(pid) stays valid: setsid in preexec replaces start_new_session.
+
+    The ids come from Python rather than `ps -o sid=`: `sid` is a Linux
+    keyword, and BSD `ps` on macOS exits 1 on it, which failed this test on
+    every macOS leg of CI for a reason that had nothing to do with sessions."""
     session = _session(tmp_workspace)
-    plan = plan_launch(session, SH_TOOL, _preset("ps -o sid= -o pgid= -p $$"))
+    probe = f"{shlex.quote(sys.executable)} -c {shlex.quote('import os; print(os.getsid(0), os.getpgid(0))')}"
+    plan = plan_launch(session, SH_TOOL, _preset(probe))
 
     code = await run_job(plan.command, plan.job, session, lambda t, s: None, env=plan.env)
 
