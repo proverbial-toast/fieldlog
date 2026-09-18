@@ -348,7 +348,7 @@ catalog — the shipped `ping/quick` is `-W 1` on Linux and `-t 6` on macOS, and
 
   ```yaml
   - id: script
-    flags: "env bash /home/chris/bin/capture.sh $TARGET"
+    flags: "env bash /home/operator/bin/capture.sh $TARGET"
     outdir: true
   ```
 
@@ -645,7 +645,7 @@ Nothing ran, so a note carries no command, no exit code and no artifacts.
 - The folder name is built in two steps. First `/` becomes `_`, so the subnet
   `192.168.1.0/24` gets the folder `192.168.1.0_24`. Then any character still
   outside `[A-Za-z0-9._-]` becomes `-`: `fe80::1` gets `fe80--1` and
-  `chris@jump1` gets `chris-jump1`.
+  `operator@jump1` gets `operator-jump1`.
 - `fieldlog history <name>` and `report <name>` take either the folder name or
   the target the runs were made against. A run made with `-t 10.10.11.50 -H
   box.htb` lands in `targets/box.htb/`, and both spellings find it. An

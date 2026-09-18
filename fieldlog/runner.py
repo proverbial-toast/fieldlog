@@ -136,7 +136,7 @@ def kill_job(job: ActiveJob, grace: float = 10.0) -> bool:
 
 
 # A choice group a prompt offers: `[y/N]`, `(yes/no/[fingerprint])`. The brackets
-# are required, so the words of a path in a prompt (`/home/chris/.ssh/…`) never count.
+# are required, so the words of a path in a prompt (`/home/operator/.ssh/…`) never count.
 _CHOICES = re.compile(r"[\[(]\s*(\[?\w+\]?(?:\s*/\s*\[?\w+\]?)+)\s*[\])]")
 
 HIDDEN_REPLY = "(reply hidden)"

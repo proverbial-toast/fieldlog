@@ -30,7 +30,7 @@ def test_a_cidr_is_a_subnet():
 
 
 def test_an_ssh_target_is_its_own_kind():
-    assert TargetSession(target="chris@jump1").target_kind == "user@host"
+    assert TargetSession(target="operator@jump1").target_kind == "user@host"
 
 
 @pytest.mark.parametrize("target", ["1.2.3", "10.0.0.256", "192.168.001.020"])

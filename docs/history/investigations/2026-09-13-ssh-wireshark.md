@@ -114,7 +114,7 @@ ssh "$host" "(tcpdump -i eth0 -U -s0 -w - not port 22; kill 0) & cat >/dev/null;
 ```yaml
       - id: script
         name: "my capture script"
-        flags: "env bash /home/chris/bin/remote-wireshark.sh $TARGET $OUTDIR"
+        flags: "env bash /home/operator/bin/remote-wireshark.sh $TARGET $OUTDIR"
 ```
 
 Checked with `fieldlog show`: the `$OUTDIR` in the flags makes fieldlog create the

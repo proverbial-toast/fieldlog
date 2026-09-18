@@ -213,7 +213,7 @@ with ruff, plus a separate `package` job that builds the wheel, installs it clea
 8. **Reply logging is secret-aware.** `loggable_reply`
    ([`runner.py:127`](../fieldlog/runner.py#L127)) writes a reply into the log only if it matches one
    of the prompt's **bracketed** choices; anything else becomes `(reply hidden)`. The brackets
-   requirement is what stops words in a path (`/home/chris/.ssh/…`) counting as choices. The pty
+   requirement is what stops words in a path (`/home/operator/.ssh/…`) counting as choices. The pty
    slave has ECHO off so the reply lands exactly once, from the explicit `› ` note.
 
 9. **The "blocked" heuristic is a timeout, not a parser.**

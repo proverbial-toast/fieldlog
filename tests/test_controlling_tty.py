@@ -70,8 +70,8 @@ async def test_prompt_read_from_dev_tty_is_answerable(tmp_workspace: Path):
         ("Continue? [y/N] ", "n", "n"),
         ("Continue? [y/N] ", "", ""),
         ("Continue? [y/N] ", "yesplease", None),
-        ("Enter passphrase for key '/home/chris/.ssh/id_ed25519': ", "chris", None),  # path words are no choice
-        ("[sudo] password for chris: ", "sudo", None),
+        ("Enter passphrase for key '/home/operator/.ssh/id_ed25519': ", "operator", None),  # path words are no choice
+        ("[sudo] password for operator: ", "sudo", None),
         ("interface: ", "eth1", None),
     ],
 )
