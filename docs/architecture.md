@@ -1,10 +1,10 @@
 # fieldlog — architecture
 
-**Status:** reference document, written 2026-09-16 from the code on branch
-`fix/archive-correctness-and-tui-split`, after the 2026-09-16 fixes (`history/problems-fixed-2026-09-16-17.md` § 1);
-updated 2026-09-17 for the feature pass described in `history/roadmap.md` (`expect:`, chain summaries, the note
-record, `history` views, the session transcript).
-Everything here is **[confirmed]** unless tagged otherwise.
+**Status:** reference document, written 2026-09-16 from the code, and updated 2026-09-17 for the feature
+pass that added `expect:`, chain summaries, the note record, the `history` views and the session transcript.
+Everything here is **[confirmed]** — reproduced by running the code, or read directly from it — unless
+tagged **[likely]** (inferred from reading, not executed). Line references were correct on the date of
+writing; they drift.
 
 fieldlog runs catalogued diagnostic commands against a target and keeps a per-target archive of every run.
 The archive is the product; the TUI and CLI are two front-ends to the same launch path. This document
@@ -264,7 +264,8 @@ N jobs as non-exclusive Textual workers. Cross-process safety is on disk (§6).
 has its number reissued, and the counter is never below any recorded id — which is what lets a preview
 read it alone. **Records** are appended by read-append-replace
 under the same lock (tmp file + `os.replace`), so a CLI run and the TUI finishing together cannot drop each
-other's record. This is O(n) per append; see `problems.md` for the trade-off.
+other's record. This is O(records) per append under the lock, deliberately: the format is fine to a few thousand
+records per target, and JSONL is deferred until a real target folder gets slow.
 
 **Artifact attribution.** By default a run records its own log plus whatever appeared or changed in its
 `$OUTDIR` since the run began (`collect_job_artifacts`, which never walks the archive; the pre-snapshot of
@@ -311,7 +312,7 @@ summary has `steps`, `stopped_at`, an empty `artifact_log`, no artifacts, and `s
   table cells escape `|`. Chain summaries render as a step table. `--since N` filters by run number.
 - `doctor` runs `is_blocked` over the whole catalog against a scope and buckets the reasons (missing binary
   vs. scope value), with `--json`.
-- The TUI reads nothing back from the archive (a deliberate gap: `next-steps.md`, "Not doing"), but it writes one more thing to
+- The TUI reads nothing back from the archive (a deliberate gap), but it writes one more thing to
   it: every System-tab line, through `write_system_log` → `transcript.append_transcript`, to
   `<workspace>/fieldlog.log`. An unwritable workspace is said once in the System tab and then left alone.
 
