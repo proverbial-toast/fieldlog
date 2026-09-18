@@ -521,7 +521,7 @@ class FieldlogApp(
                         yield Input(placeholder="filter", id="filter-input")
                         yield Static("[!] runnable", id="avail-toggle", markup=False)
                         yield Static("[M]", id="mgr-chip", markup=False)
-                    with VerticalScroll(id="recipe-tree"):
+                    with VerticalScroll(id="recipe-tree", can_focus=False):
                         pass
 
                 with Vertical(id="variants-pane"):
@@ -533,7 +533,7 @@ class FieldlogApp(
                     with Horizontal(id="variants-title-row"):
                         yield Static("", id="variants-bin")
                         yield Static("", id="variants-variant")
-                    with VerticalScroll(id="variants-scroll"):
+                    with VerticalScroll(id="variants-scroll", can_focus=False):
                         yield Vertical(id="variant-list")
 
             with Vertical(id="main"):

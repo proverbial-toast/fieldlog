@@ -210,13 +210,17 @@ class RecipeTreeMixin:
         self._refresh_args_band()
 
     def tree_row_clicked(self, index: int) -> None:
-        """Clicking selects and moves focus — it never runs."""
+        """Clicking a recipe puts the cursor on it and never runs it.
+
+        The keyboard stays in RECIPES: a click says "this row", not "hand the
+        arrow keys to the other pane". Only Tab and Enter move between panes.
+        """
         if not (0 <= index < len(self._rows)) or self._rows[index].kind == "header":
             return
         self.cursor = index
         self._select_row(self._rows[index])
         self._paint_rows()
-        self._focus_variants()
+        self._focus_recipes()
 
     def variant_row_clicked(self, preset_id: str) -> None:
         self.selected_preset_id = preset_id
