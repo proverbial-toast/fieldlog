@@ -1,0 +1,38 @@
+# What is out there and what is open. Point these only at hosts you are
+# authorised to test.
+# The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
+# $RUN_ID) and the `platform:` rule are documented in the project README.
+# Switch this theme off with `themes: {scan: false}` in
+# ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
+
+theme: scan
+
+recipes:
+  - id: arp-scan
+    name: "ARP Layer-2 Discovery"
+    bin: arp-scan
+    presets:
+      - id: localnet
+        name: "localnet"
+        flags: "--interface=$IFACE --localnet"
+      - id: retry
+        name: "slow · retry 3"
+        flags: "--interface=$IFACE --retry=3 $TARGET"
+
+  - id: tcpcheck
+    name: "TCP Connect Check"
+    bin: bash
+    presets:
+      - id: common
+        name: "22 53 80 443 · /dev/tcp, no nc"
+        flags: >-
+          bash -c 'for p in 22 53 80 443; do timeout 1 bash -c ": </dev/tcp/$TARGET/$p" 2>/dev/null
+          && echo "$p open" || echo "$p closed/filtered"; done'
+
+  - id: nmap
+    name: "TLS Audit"
+    bin: nmap
+    presets:
+      - id: ciphers
+        name: "cipher suites + grades :443"
+        flags: "-Pn -p 443 --script ssl-enum-ciphers -oA $OUTDIR/tls $HOST"

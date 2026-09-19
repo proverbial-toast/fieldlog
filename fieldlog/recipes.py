@@ -28,7 +28,10 @@ from fieldlog.state import is_ip_address, shell_vars, template_vars
 if TYPE_CHECKING:
     from fieldlog.state import TargetSession
 
-RECIPES_PATH = Path(__file__).parent / "recipes.yaml"
+# The shipped catalog: one file per theme, all of them base precedence. It was
+# a single `recipes.yaml` until the themes split; `load_catalog` still takes a
+# lone file here, which is what the merge-rule tests hand it.
+RECIPES_PATH = Path(__file__).parent / "recipes.d"
 
 # libyaml when the wheel was built with it, which is 8x the pure-Python parser
 # and the difference between a 12 ms and a 1.5 ms catalog load — paid by every
@@ -51,6 +54,49 @@ def get_dropin_dir() -> Path:
 
 
 DROPIN_DIR = get_dropin_dir()
+
+
+def get_themes_path() -> Path:
+    """`themes.yaml` beside the drop-in directory, honouring $XDG_CONFIG_HOME."""
+    return get_dropin_dir().parent / "themes.yaml"
+
+
+THEMES_PATH = get_themes_path()
+
+def read_themes(path: Optional[Path] = None) -> Tuple[Dict[str, bool], str]:
+    """`(switched, problem)` — the themes an operator has turned off.
+
+    Absent file, no themes off: every shipped theme loads, which is what the
+    catalog did before themes existed. Only the names written `false` are off,
+    so the file stays a short list of exceptions rather than a manifest that
+    has to be kept in step with the shipped set.
+
+    A file that will not parse turns nothing off and says so. Failing the other
+    way would silently hide recipes over a typo, and a catalog that quietly
+    shrinks is the one failure this whole loader is written to avoid.
+    """
+    path = THEMES_PATH if path is None else path
+    try:
+        raw = _parse_yaml(path.read_text(encoding="utf-8", errors="replace"))
+    except FileNotFoundError:
+        return {}, ""
+    except (OSError, yaml.YAMLError) as exc:
+        return {}, f"{display_path(path)}{_where(exc)} unreadable · every theme left on"
+    if raw is None:
+        return {}, ""
+    # `themes:` written and left empty switches nothing off, the same way an
+    # empty `presets:`, `expect:` or `platform:` says nothing elsewhere in the
+    # catalog. Only a value that is neither a mapping nor empty is a mistake.
+    written = raw.get("themes") if isinstance(raw, dict) else None
+    if not isinstance(raw, dict) or not isinstance(written, (dict, type(None))):
+        return {}, f"{display_path(path)}: expected `themes:` to be a mapping of name to true/false · ignored"
+    switched = {}
+    for name, value in (written or {}).items():
+        if not isinstance(value, bool):
+            return {}, f"{display_path(path)}: {name}: {value!r} is not true or false · ignored"
+        switched[str(name)] = value
+    return switched, ""
+
 
 # Editor leftovers that must never take effect silently.
 _SKIP_SUFFIXES = ("~", ".swp", ".swo", ".bak", ".orig", ".rej")
@@ -573,6 +619,18 @@ class Catalog:
     # id twice inside one file is a mistake instead, and is reported in `errors`.
     overrides: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    # Every shipped theme, and whether it was loaded. A theme switched off is
+    # kept here rather than forgotten, because "nmap is missing" and "the scan
+    # theme is off" are different answers and doctor has to tell them apart.
+    themes: Dict[str, bool] = field(default_factory=dict)
+    # `tool/preset` keys an inactive theme would have provided. What a chain
+    # needs and cannot find is looked up here, so a step lost to the switch
+    # reads as a consequence rather than as a broken catalog.
+    withheld: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def inactive_themes(self) -> List[str]:
+        return sorted(name for name, on in self.themes.items() if not on)
 
     @property
     def total_variants(self) -> int:
@@ -635,8 +693,22 @@ def _wrong_platform(entry: dict, platform: str) -> bool:
     return bool(names) and platform not in names
 
 
-def _read_file(path: Path, platform: Optional[str] = None) -> Tuple[List[Tuple[dict, frozenset]], List[dict]]:
-    """(entries, chains) from one yaml file. A list-form file is tools only.
+@dataclass
+class FileContents:
+    """What one catalog file holds, and what it deliberately left out."""
+
+    entries: List[Tuple[dict, frozenset]] = field(default_factory=list)
+    chains: List[dict] = field(default_factory=list)
+    # The file's own `theme:`, or '' for one that claims none — which is every
+    # operator drop-in written before themes existed. Those load regardless.
+    theme: str = ""
+    # `tool` / `tool/preset` this file has, that this platform does not get,
+    # mapped to why. A chain that wanted one reads its reason out of here.
+    absent: Dict[str, str] = field(default_factory=dict)
+
+
+def _read_file(path: Path, platform: Optional[str] = None) -> FileContents:
+    """What one yaml file holds. A list-form file is tools only.
 
     An entry is `(tool, keys as written)`: nothing is merged here, not even two
     entries of the same file, so that `_merge` is the only place a collision is
@@ -651,9 +723,11 @@ def _read_file(path: Path, platform: Optional[str] = None) -> Tuple[List[Tuple[d
     platform = platform_key(platform)
     data = _parse_yaml(path.read_text(encoding="utf-8", errors="replace")) or {}
     raw_chains: List[dict] = []
+    theme = ""
     if isinstance(data, list):
         raw = data
     elif isinstance(data, dict):
+        theme = str(data.get("theme", "") or "").strip()
         raw = data.get("recipes", [])
         if not isinstance(raw, list):
             raise ValueError("`recipes:` is not a list")
@@ -664,6 +738,7 @@ def _read_file(path: Path, platform: Optional[str] = None) -> Tuple[List[Tuple[d
         raise ValueError("top level is not a mapping or list")
 
     entries: List[Tuple[dict, frozenset]] = []
+    absent: Dict[str, str] = {}
     for r in raw:
         if not isinstance(r, dict) or "id" not in r:
             raise ValueError("a recipe entry has no id")
@@ -671,15 +746,28 @@ def _read_file(path: Path, platform: Optional[str] = None) -> Tuple[List[Tuple[d
         # own. Either way the entry is gone rather than disabled — a recipe for
         # another system is not a recipe this box can be told about.
         if _wrong_platform(r, platform):
+            _note_absent(absent, normalize_recipe(r), platform)
             continue
         item = normalize_recipe(r)
-        item["presets"] = [p for p in item["presets"] if not _wrong_platform(p, platform)]
+        kept = [p for p in item["presets"] if not _wrong_platform(p, platform)]
+        for preset in item["presets"]:
+            if preset not in kept:
+                absent[f"{item['id']}/{preset['id']}"] = f"not on {platform}"
+        item["presets"] = kept
         if not item["presets"]:
+            _note_absent(absent, item, platform)
             continue
         # `presets:` left empty or null is the same as absent: nothing written.
         entries.append((item, frozenset(k for k in r if k != "presets" or r["presets"])))
 
-    return entries, [normalize_chain(c) for c in raw_chains]
+    return FileContents(entries, [normalize_chain(c) for c in raw_chains], theme, absent)
+
+
+def _note_absent(absent: Dict[str, str], item: dict, platform: str) -> None:
+    """Record a whole tool this platform does not get, by id and by recipe key."""
+    absent.setdefault(item["id"], f"not on {platform}")
+    for preset in item.get("presets", []):
+        absent.setdefault(f"{item['id']}/{preset['id']}", f"not on {platform}")
 
 
 # What a second definition of a tool is for, and what it is not for — said once
@@ -823,7 +911,15 @@ def _validate_chains(cat: Catalog) -> None:
             # A bare tool id is stored as the explicit recipe it resolved to.
             resolved.append({"recipe": f"{tool['id']}/{preset['id']}", "continue": step["continue"]})
         if unknown is not None:
-            cat.errors.append(f"chain {cid}: unknown step {unknown} · skipped")
+            # A step can go missing two ways, and they are not the same news.
+            # A theme switched off is the operator's own doing and belongs with
+            # the overrides, where expected consequences are reported; a step
+            # that names nothing at all is a mistake in the catalog.
+            why = cat.withheld.get(unknown)
+            if why:
+                cat.overrides.append(f"chain {cid}: step {unknown} · {why} · skipped")
+            else:
+                cat.errors.append(f"chain {cid}: unknown step {unknown} · skipped")
             continue
         chain["steps"] = resolved
         kept.append(chain)
@@ -1029,33 +1125,85 @@ def _validate_platform(cat: Catalog) -> None:
             entry.pop("platform", None)
 
 
+def base_files(base: Path) -> List[Path]:
+    """The shipped catalog files, in load order.
+
+    A directory is every `*.yaml` in it, lexically — the themed catalog. A lone
+    file is itself, which is what `load_catalog(base=...)` is handed by the
+    merge-rule tests and by anyone pointing fieldlog at one catalog of their
+    own.
+    """
+    if base.is_dir():
+        return sorted((p for p in base.glob("*.yaml") if p.is_file()), key=lambda p: p.name)
+    return [base] if base.exists() else []
+
+
 def load_catalog(
     base: Optional[Path] = None,
     dropin_dir: Optional[Path] = None,
     platform: Optional[str] = None,
+    themes_path: Optional[Path] = None,
 ) -> Catalog:
-    """Read the base file then every drop-in, tolerating a bad operator file.
+    """Read the shipped catalog then every drop-in, tolerating a bad operator file.
 
     With no `dropin_dir` both the config dir and `./recipes.d` are scanned; an
     explicit one is scanned alone. `platform` is the system whose recipes to
     load, this box's by default; an entry marked for another one never enters
     the catalog, so what `list` and `doctor` show is this platform's catalog.
+
+    The shipped catalog is a directory of themed files, each naming its own
+    `theme:`. A theme written `false` in `themes.yaml` is not read into the
+    catalog at all — the same disappearance `platform:` performs, and for the
+    same reason: a recipe that does not apply to this box is not a recipe this
+    box should be told about. What it would have provided is remembered in
+    `cat.withheld`, so a chain that wanted one of its steps can say why.
+    Operator drop-ins may carry a `theme:` too; one without is always loaded.
     """
     base = RECIPES_PATH if base is None else base
     platform = platform_key(platform)
     cat = Catalog(base_path=base, dropin_dir=DROPIN_DIR if dropin_dir is None else dropin_dir)
-    if base.exists():
+
+    switched, themes_problem = read_themes(themes_path)
+    if themes_problem:
+        cat.errors.append(themes_problem)
+
+    def wanted(found: FileContents) -> bool:
+        """Whether this file's theme is on — and, either way, what is missing.
+
+        `absent` is what the platform filter already dropped while reading, and
+        is recorded whether the theme is on or off: a Linux-only step is just
+        as missing on a Mac as one behind a switch, and a chain that wanted it
+        deserves the same straight answer.
+        """
+        cat.withheld.update(found.absent)
+        if not found.theme:
+            return True
+        active = switched.get(found.theme, True)
+        cat.themes[found.theme] = active
+        if active:
+            return True
+        why = f"theme {found.theme} is off"
+        for item, _written in found.entries:
+            cat.withheld[item["id"]] = why            # a step may name the tool alone
+            for preset in item.get("presets", []):
+                cat.withheld[f"{item['id']}/{preset['id']}"] = why
+        for chain in found.chains:
+            cat.withheld[f"chain/{chain['id']}"] = why
+        return False
+
+    for path in base_files(base):
         try:
-            entries, base_chains = _read_file(base, platform)
+            found = _read_file(path, platform)
         except Exception as exc:  # noqa: BLE001 — a bad base is still not a crash
-            cat.errors.append(f"{display_path(base)}{_where(exc)} invalid · no base recipes loaded")
-            cat.tools, cat.chains = [], []
-        else:
-            # The base goes through the same merge as a drop-in, untagged: a
-            # duplicate id in the shipped file is the same mistake as in one of
-            # the operator's, and is worth the same message.
-            _merge(cat.tools, entries, None, cat.overrides, cat.errors, display_path(base))
-            _merge_chains(cat.chains, base_chains, None, cat.overrides, cat.errors, display_path(base))
+            cat.errors.append(f"{display_path(path)}{_where(exc)} invalid · skipped")
+            continue
+        if not wanted(found):
+            continue
+        # The shipped files go through the same merge as a drop-in, untagged: a
+        # duplicate id in one of them is the same mistake as in one of the
+        # operator's, and is worth the same message.
+        _merge(cat.tools, found.entries, None, cat.overrides, cat.errors, display_path(path))
+        _merge_chains(cat.chains, found.chains, None, cat.overrides, cat.errors, display_path(path))
 
     paths, shadowed = scan_dropins(dropin_dir)
     cat.errors.extend(shadowed)
@@ -1063,16 +1211,18 @@ def load_catalog(
     bad: List[str] = []
     for path in paths:
         try:
-            incoming, incoming_chains = _read_file(path, platform)
+            found = _read_file(path, platform)
         except Exception as exc:  # noqa: BLE001
             bad.append(f"recipes.d/{path.name}{_where(exc)} invalid · skipped")
             continue
+        if not wanted(found):
+            continue
         _merge(
-            cat.tools, incoming, path.name, cat.overrides, cat.errors,
+            cat.tools, found.entries, path.name, cat.overrides, cat.errors,
             f"recipes.d/{path.name}",
         )
         _merge_chains(
-            cat.chains, incoming_chains, path.name, cat.overrides, cat.errors,
+            cat.chains, found.chains, path.name, cat.overrides, cat.errors,
             f"recipes.d/{path.name}",
         )
         cat.files.append(path.name)

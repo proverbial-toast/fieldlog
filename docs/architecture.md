@@ -66,11 +66,27 @@ load is ~1.5 ms with libyaml, ~12 ms without).
 
 ## 2. The catalog
 
-`recipes.load_catalog(base, dropin_dir)` → `Catalog(tools, chains, files, file_paths, overrides, errors)`.
+`recipes.load_catalog(base, dropin_dir, platform, themes_path)` →
+`Catalog(tools, chains, files, file_paths, overrides, errors, themes, withheld)`.
 
-**Sources, in load order.** The shipped `fieldlog/recipes.yaml` (14 tools, 1 chain), then every `*.yaml` in
-`$XDG_CONFIG_HOME/fieldlog/recipes.d/` (default `~/.config/fieldlog/recipes.d/`), then `./recipes.d/` relative
-to the cwd. Within a directory files load in name order. The same basename in both directories loads once:
+**Sources, in load order.** The shipped `fieldlog/recipes.d/*.yaml` (19 tools, 6 chains — one file per
+theme, all at base precedence), then every `*.yaml` in `$XDG_CONFIG_HOME/fieldlog/recipes.d/` (default
+`~/.config/fieldlog/recipes.d/`), then `./recipes.d/` relative to the cwd. Within a directory files load in
+name order, which is what the shipped files' numeric prefixes fix. `base=` takes a directory *or* a single
+file (`base_files`), the latter being what the merge-rule tests hand it. It was one `fieldlog/recipes.yaml`
+until the themes split; the examples and chains that lived in the repo-root `recipes.d/` were outside the
+package and so reached no wheel at all — an install had 15 tools and 1 chain where a checkout had 19 and 6.
+[confirmed: `tests/test_themes.py`]
+
+**Themes.** Each shipped file names its own `theme:`. `~/.config/fieldlog/themes.yaml` (`read_themes`) is a
+short list of exceptions — only names written `false` are off, an absent or empty file switches nothing, and
+an unusable one switches nothing *and says so*, because a catalog that quietly shrinks is the failure this
+loader exists to avoid. A theme that is off is not filtered at display time: its entries never enter the
+catalog, the same disappearance `platform:` performs. `Catalog.themes` maps every shipped theme to whether
+it loaded, and `Catalog.withheld` maps a `tool` / `tool/preset` key to *why* it is absent ("theme scan is
+off", "not on darwin") — populated for both causes, and read by `_validate_chains` so a chain missing a step
+for a known reason lands in `overrides` ("your setting") rather than `errors` ("broken catalog"). Surfaced
+by `doctor` (a footer line plus `themes` in `--json`), the recipe manager, and the TUI's boot transcript. The same basename in both directories loads once:
 the local file wins and the config one is not read at all (reported as "shadowed"). Editor leftovers
 (`*~ .swp .swo .bak .orig .rej`) and dotfiles are skipped.
 
@@ -379,7 +395,7 @@ writing to disk with nothing in the app reading it again.
 
 ## 9. Tests and CI
 
-609 tests in 55 files (376 in 35 when this document was written), ~28 s. Three tiers: pure
+648 tests in 58 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
 unit tests (parsing, scope characters, arg tokens, path lookup); filesystem integration tests on a
 `tmp_workspace` fixture that run real `true`/`false`/`echo`/`sh` tools through `plan_launch` + `run_job` or
 `handle_run`; and async tests that drive the real app through `app.run_test()`. `test_app_structure.py`

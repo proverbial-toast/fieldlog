@@ -15,20 +15,18 @@ error list.
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 from fieldlog.app import FieldlogApp
 from fieldlog.state import TargetSession
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
 def _shipped_catalog_dirs(tmp_path: Path, monkeypatch) -> Path:
-    """Point the loader at an empty config dir and a cwd holding the real drop-ins.
+    """Point the loader at empty drop-in directories, leaving only what ships.
 
-    The catalog then contains exactly what the repo ships, with nothing the
-    developer happens to have in ~/.config leaking in.
+    Since the themes split there is nothing to copy: the catalog lives in the
+    package, as `fieldlog/recipes.d/*.yaml`. These directories are emptied so
+    that whatever the developer happens to keep in `~/.config` or in the cwd
+    cannot leak into the assertions below.
     """
     from fieldlog import recipes as recipes_mod
 
@@ -37,10 +35,7 @@ def _shipped_catalog_dirs(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(recipes_mod, "DROPIN_DIR", config_dir)
 
     work = tmp_path / "work"
-    local_dir = work / "recipes.d"
-    local_dir.mkdir(parents=True)
-    for name in ("examples.yaml", "chains.yaml"):
-        shutil.copy(REPO_ROOT / "recipes.d" / name, local_dir / name)
+    (work / "recipes.d").mkdir(parents=True)
     monkeypatch.chdir(work)
     return work
 

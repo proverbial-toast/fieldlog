@@ -50,6 +50,7 @@ from textual.widgets import (
 )
 
 from fieldlog import __version__
+from fieldlog import recipes as recipes_mod
 from fieldlog.recipes import (
     Catalog,
     RECIPES_PATH,
@@ -663,6 +664,15 @@ class FieldlogApp(
             f"{len(files)} drop-in ({', '.join(files)})" if files else "no drop-ins"
         )
         self.write_system_log(f"[recipes] base {display_path(RECIPES_PATH)} · {suffix}")
+        off = self.catalog.inactive_themes
+        if off:
+            # Otherwise the operator is left wondering where a tool went, and
+            # the one file that explains it is not one the TUI ever mentions.
+            self.write_system_log(
+                f"[recipes] {len(off)} theme{'' if len(off) == 1 else 's'} off "
+                f"({', '.join(off)}) · {display_path(recipes_mod.THEMES_PATH)}",
+                style=WARN,
+            )
         for err in self.catalog.errors:
             self.write_system_log(f"[recipes] {err}", style=WARN)
         for ov in self.catalog.overrides:

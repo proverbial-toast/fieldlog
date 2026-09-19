@@ -1,0 +1,81 @@
+# This box's own view: its sockets, routes, neighbours and link.
+# ss and ethtool are Linux, lsof is the macOS stand-in for ss.
+# The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
+# $RUN_ID) and the `platform:` rule are documented in the project README.
+# Switch this theme off with `themes: {local: false}` in
+# ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
+
+theme: local
+
+recipes:
+  - id: ss
+    name: "Local Socket Table"
+    bin: ss
+    platform: linux
+    presets:
+      - id: listen
+        name: "listening sockets"
+        flags: "-tulpn"
+      - id: estab
+        name: "established peers"
+        flags: "-tn state established"
+
+  # What ss is for on a Mac. `netstat` is there too, but lsof is the one that
+  # names the process holding each socket, which is why ss/listen uses -p.
+  - id: lsof
+    name: "Listening Sockets"
+    bin: lsof
+    platform: darwin
+    presets:
+      - id: listen
+        name: "listening sockets"
+        flags: "-nP -iTCP -sTCP:LISTEN"
+
+  - id: ethtool
+    name: "Link & NIC Counters"
+    bin: ethtool
+    platform: linux
+    presets:
+      - id: link
+        name: "link settings"
+        flags: "$IFACE"
+      - id: stats
+        name: "driver stats"
+        flags: "-S $IFACE"
+
+  - id: ss
+    platform: linux
+    presets:
+      - id: tcpinfo
+        name: "rtt · cwnd · retrans to target"
+        flags: "-tni dst $TARGET"
+      - id: https
+        name: "established on :443, either side"
+        flags: "-tn state established '( dport = :443 or sport = :443 )'"
+      - id: backlog
+        name: "listen queues with a backlog"
+        flags: "-ltn | awk 'NR == 1 || $2 > 0'"
+
+  - id: ip
+    platform: linux
+    name: "Routing & Neighbours"
+    bin: ip
+    presets:
+      - id: route
+        name: "route + source used for target"
+        flags: "route get $TARGET"
+      - id: from
+        name: "route when sourced from $LHOST"
+        flags: "route get $TARGET from $LHOST"
+      - id: neigh
+        name: "neighbour cache · stale + failed"
+        flags: "neigh show dev $IFACE nud stale nud failed nud incomplete"
+
+  - id: ethtool
+    platform: linux
+    presets:
+      - id: errors
+        name: "non-zero error / drop counters"
+        flags: >-
+          -S $IFACE | awk -F': *' 'tolower($1) ~ /err|drop|miss|crc|fifo/ && $2 != 0 {print; n++}
+          END {if (!n) print "no non-zero error counters"}'

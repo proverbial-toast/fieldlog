@@ -51,7 +51,9 @@ include = ["fieldlog*"]
 version = { attr = "fieldlog.__version__" }
 
 [tool.setuptools.package-data]
-fieldlog = ["*.tcss", "*.yaml"]
+# recipes.d/*.yaml is the shipped catalog since the themes split; leaving it
+# out would hand a wheel 15 tools and one chain where a checkout has 19 and six.
+fieldlog = ["*.tcss", "*.yaml", "recipes.d/*.yaml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

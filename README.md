@@ -291,11 +291,50 @@ are listed, never quoted.
 
 ## Recipes
 
-The built-in catalog is [`fieldlog/recipes.yaml`](fieldlog/recipes.yaml). Add
-your own as `*.yaml` files in either:
+The built-in catalog is [`fieldlog/recipes.d/`](fieldlog/recipes.d/), one file
+per **theme**, all of them shipped in the wheel:
+
+| Theme | What is in it |
+|-------|---------------|
+| `reach` | ping, traceroute, mtr, fping |
+| `dns` | dig, resolvectl, scutil |
+| `http-tls` | curl, openssl, wrk, python-server |
+| `local` | ss, lsof, ip, ethtool |
+| `capture` | tcpdump, rcap |
+| `scan` | arp-scan, nmap, tcpcheck |
+| `throughput` | iperf3 |
+| `chains` | the six built-in chains |
+
+Add your own as `*.yaml` files in either:
 
 - `~/.config/fieldlog/recipes.d/` (`$XDG_CONFIG_HOME/fieldlog/recipes.d/` if set)
 - `./recipes.d/` in the directory you run fieldlog from
+
+### Switching a theme off
+
+A theme you have no use for on a box — no scanning tools, no packet capture —
+is switched off in `~/.config/fieldlog/themes.yaml`:
+
+```yaml
+themes:
+  scan: false        # no arp-scan, nmap or tcpcheck
+  capture: false     # no tcpdump or rcap
+```
+
+Only the names written `false` are off, so the file stays a short list of
+exceptions; with no file at all, every theme loads. A theme that is off is not
+hidden but *absent* — its recipes never enter the catalog, exactly as a recipe
+marked for another platform does not. `fieldlog doctor` names the themes that
+are off and the file that did it, and so does the recipe manager (`M`).
+
+A chain whose step belongs to a switched-off theme is skipped and says which
+theme took it; that is reported as an override, not as an error, because it is
+your own setting rather than a fault in the catalog. A file that cannot be read
+switches nothing off and says so — a catalog that quietly shrinks is the one
+failure worth avoiding here.
+
+A drop-in of your own may carry a `theme:` too, and is then switchable the same
+way. One without a `theme:` always loads.
 
 ### Format
 
@@ -543,7 +582,7 @@ YAML.
 
 ### Drop-in files
 
-Drop-ins load after the built-in catalog, in filename order: the config
+Drop-ins load after the built-in themed catalog, in filename order: the config
 directory first, then `./recipes.d/`.
 
 - A new tool `id` adds a tool. A new chain `id` adds a chain.
@@ -570,14 +609,16 @@ recipes:
         flags: "-c 1 -W 1 $TARGET"
 ```
 
-This repo's own `recipes.d/` holds example recipes (`examples.yaml`) and chains
-built from them (`chains.yaml`). It is the local drop-in directory, so they load
-when you run fieldlog from a checkout.
+The repo's own `recipes.d/` is empty: what used to live there — the example
+recipes and the chains built from them — is now part of the shipped themed
+catalog, so an installed wheel and a checkout hold the same 19 tools and six
+chains. The directory stays as the local drop-in slot.
 
 ### GUI recipes
 
 A recipe can open a window and run until you close it. `rcap/ssh` in
-[`recipes.d/examples.yaml`](recipes.d/examples.yaml) streams a remote `tcpdump`
+[`fieldlog/recipes.d/50-capture.yaml`](fieldlog/recipes.d/50-capture.yaml)
+streams a remote `tcpdump`
 over ssh into a local Wireshark and keeps the capture as a run artifact:
 
 ```yaml

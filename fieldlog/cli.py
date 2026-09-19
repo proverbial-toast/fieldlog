@@ -23,6 +23,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from fieldlog import __version__
+from fieldlog import recipes as recipes_mod
 from fieldlog.archive import append_note
 from fieldlog.report import (
     DEFAULT_TAIL,
@@ -43,6 +44,7 @@ from fieldlog.report import (
 from fieldlog.recipes import (
     Catalog,
     Verdict,
+    display_path,
     chain_arrow,
     chain_blocked,
     chain_matches,
@@ -1404,6 +1406,7 @@ def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
         "refused": refused,
         "missing": missing,
         "needs": needs,
+        "themes": dict(sorted(catalog.themes.items())),
     }
 
 
@@ -1452,6 +1455,10 @@ def doctor_report_json(scan: dict, session: TargetSession) -> dict:
             "needs": scan["needs"],
             "refused": scan["refused"],
         },
+        # Every shipped theme and whether it loaded — the machine-readable half
+        # of the footer line, so a consumer can tell "no such recipe" from
+        # "that theme is switched off".
+        "themes": scan["themes"],
     }
 
 
@@ -1513,6 +1520,15 @@ def handle_doctor(args: argparse.Namespace, catalog: Catalog) -> int:
     if scan["missing"]:
         items = " · ".join(escape(b) for b in sorted(scan["missing"]))
         console.print(f"[red]missing:[/red] {items}")
+    off = catalog.inactive_themes
+    if off:
+        # A theme that is off has nothing in the catalog to be found, so this
+        # line is the only thing standing between the operator and "why is
+        # nmap not listed any more". It names the file that did it.
+        console.print(
+            f"[yellow]themes off:[/yellow] {escape(' · '.join(off))} "
+            f"[dim]· {escape(display_path(recipes_mod.THEMES_PATH))}[/dim]"
+        )
     hints = []
     if scan["needs"]["target"]:
         hints.append(f"set a target (-t) to unlock {scan['needs']['target']}")

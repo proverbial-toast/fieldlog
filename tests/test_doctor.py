@@ -74,7 +74,7 @@ def test_scan_with_target_unblocks(catalog):
 def test_json_output(catalog, capsys):
     assert handle_doctor(_args(["doctor", "--json"]), catalog) == 0
     out = json.loads(capsys.readouterr().out)
-    assert set(out) == {"scope", "tools", "chains", "summary"}
+    assert set(out) == {"scope", "tools", "chains", "summary", "themes"}
     assert out["summary"]["recipes_total"] == 3
     assert "definitely-not-a-real-binary-xyz" in out["summary"]["missing_binaries"]
 

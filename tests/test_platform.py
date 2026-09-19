@@ -198,8 +198,9 @@ def _shipped(tmp_path: Path, platform: str) -> Catalog:
 # that disappears behind a mistyped `platform:` is caught here and not in the
 # README, which counts them.
 LINUX_TOOLS = [
-    "ping", "traceroute", "mtr", "arp-scan", "dig", "resolvectl", "curl",
-    "openssl", "wrk", "ss", "tcpdump", "iperf3", "ethtool",
+    "ping", "traceroute", "mtr", "fping", "dig", "resolvectl", "curl", "openssl",
+    "wrk", "python-server", "ss", "ethtool", "ip", "tcpdump", "rcap", "arp-scan",
+    "tcpcheck", "nmap", "iperf3",
 ]
 
 

@@ -1,5 +1,23 @@
-# Candidate chains built from base + examples.yaml recipes.
+# Chains: catalogued recipes run in order against one scope, sharing the
+# first step's $OUTDIR. A step may name a recipe from any theme — but a
+# chain whose step belongs to a theme you have switched off is skipped,
+# and `fieldlog doctor` says which theme did it.
+# The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
+# $RUN_ID) and the `platform:` rule are documented in the project README.
+# Switch this theme off with `themes: {chains: false}` in
+# ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
+
+theme: chains
+
 chains:
+  - id: reach
+    name: "reachability · ping, trace, ptr"
+    steps:
+      - ping/quick
+      - recipe: traceroute/icmp
+        continue: true
+      - dig/ptr
+
   - id: https-check
     name: "https endpoint · route, ports, cert, tls, latency"
     steps:

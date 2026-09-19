@@ -1,0 +1,45 @@
+# Packets to a file, locally or over ssh from somewhere else.
+# These need root or the right capabilities; fieldlog does not escalate.
+# The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
+# $RUN_ID) and the `platform:` rule are documented in the project README.
+# Switch this theme off with `themes: {capture: false}` in
+# ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
+
+theme: capture
+
+recipes:
+  - id: tcpdump
+    name: "Packet Capture"
+    bin: tcpdump
+    presets:
+      - id: host
+        name: "host filter · 200 pkts"
+        flags: "-i $IFACE -c 200 -nn -w $OUTDIR/capture.pcap host $TARGET"
+      - id: icmp
+        name: "icmp only"
+        flags: "-i $IFACE -nn icmp"
+
+  - id: tcpdump
+    presets:
+      - id: ring
+        name: "ring buffer · 5 × 60s pcaps"
+        flags: "-i $IFACE -nn -s 128 -G 60 -W 5 -w $OUTDIR/ring-%H%M%S.pcap host $TARGET"
+      - id: synrst
+        name: "handshakes & resets only (sudo)"
+        flags: "sudo tcpdump -i $IFACE -nn -c 100 'tcp[tcpflags] & (tcp-syn|tcp-rst) != 0 and host $TARGET'"
+
+  # Remote tcpdump streamed over ssh into a local Wireshark, kept as $OUTDIR/remote.pcap.
+  # Wireshark stays in the foreground, so the run lasts until its window closes.
+  # No `ssh -t` and no --timeout. The target can be user@host or an ssh-config
+  # alias; RIFACE=ens192 picks the remote interface.
+  # See docs/investigations/2026-09-13-ssh-wireshark.md.
+  - id: rcap
+    name: "Remote Capture → Wireshark"
+    bin: wireshark
+    presets:
+      - id: ssh
+        name: "tcpdump over ssh · live gui + pcap"
+        flags: >-
+          env ssh $TARGET "(tcpdump -i ${RIFACE:-eth0} -U -s0 -w - not port 22; kill 0) & cat >/dev/null; kill 0"
+          | tee $OUTDIR/remote.pcap
+          | wireshark -k -i -

@@ -1,0 +1,64 @@
+# What does the name resolve to, and who says so.
+# resolvectl is Linux, scutil is its macOS stand-in.
+# The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
+# $RUN_ID) and the `platform:` rule are documented in the project README.
+# Switch this theme off with `themes: {dns: false}` in
+# ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
+
+theme: dns
+
+recipes:
+  - id: dig
+    name: "DNS Query"
+    bin: dig
+    presets:
+      - id: a
+        name: "A record"
+        flags: "+short A $HOST"
+      - id: trace
+        name: "delegation trace"
+        flags: "+trace $HOST"
+      - id: ptr
+        name: "reverse ptr"
+        flags: "-x $TARGET +short"
+      - id: dnssec
+        name: "dnssec validate"
+        flags: "+dnssec +multi $HOST"
+
+  - id: resolvectl
+    name: "Local Resolver State"
+    bin: resolvectl
+    platform: linux
+    presets:
+      - id: status
+        name: "status"
+        flags: "status $IFACE"
+      - id: query
+        name: "query via stub"
+        flags: "query $HOST"
+
+  # What resolvectl is for on a Mac: the resolver configuration the system is
+  # actually using, per interface and per search domain.
+  - id: scutil
+    name: "Resolver Configuration"
+    bin: scutil
+    platform: darwin
+    presets:
+      - id: dns
+        name: "dns configuration"
+        flags: "--dns"
+
+  - id: dig
+    presets:
+      - id: nssearch
+        name: "soa serial per authoritative ns"
+        flags: "+nssearch $HOST"
+      - id: resolvers
+        name: "same answer from 3 public resolvers?"
+        flags: >-
+          timeout 20 sh -c 'for ns in 1.1.1.1 8.8.8.8 9.9.9.9; do printf "%-8s " $ns;
+          dig +short +time=2 +tries=1 A $HOST @$ns | sort | paste -sd, -; done'
+      - id: vtrace
+        name: "dnssec validation trace (delv)"
+        bin: delv
+        flags: "+vtrace $HOST"

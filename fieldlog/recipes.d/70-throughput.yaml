@@ -1,0 +1,32 @@
+# How much the path actually carries. Needs a cooperating far end.
+# The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
+# $RUN_ID) and the `platform:` rule are documented in the project README.
+# Switch this theme off with `themes: {throughput: false}` in
+# ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
+
+theme: throughput
+
+recipes:
+  - id: iperf3
+    name: "Throughput Benchmark"
+    bin: iperf3
+    presets:
+      - id: tcp4
+        name: "tcp · 10s / 4 streams"
+        flags: "-c $TARGET -t 10 -P 4 --json --logfile $OUTDIR/iperf3_tcp4.json"
+      - id: udp
+        name: "udp · 100 Mbit"
+        flags: "-c $TARGET -u -b 100M -t 10"
+        parse: '(?P<rate>[\d.]+ [KMG]bits/sec)[^\n]*receiver'
+        summary: "{rate}"
+      - id: reverse
+        name: "reverse (download)"
+        flags: "-c $TARGET -R -t 10"
+        parse: '(?P<rate>[\d.]+ [KMG]bits/sec)[^\n]*receiver'
+        summary: "{rate}"
+
+  - id: iperf3
+    presets:
+      - id: serve
+        name: "one-shot server bound to $LHOST"
+        flags: "-s -1 -B $LHOST"

@@ -192,6 +192,16 @@ class CatalogMixin:
             "kind": "base", "kind_color": ACCENT, "path": display_path(RECIPES_PATH),
             "count": f"{self.catalog.base_variant_count} variants", "count_color": DIM, "copyable": True,
         }]
+        # One row per shipped theme, off ones included: a theme that is off has
+        # no recipes in the catalog to be found by any other means, so this is
+        # the only place the TUI can say it exists.
+        for name, active in sorted(self.catalog.themes.items()):
+            rows.append({
+                "kind": "theme", "kind_color": ACCENT if active else FAINT,
+                "path": name,
+                "count": "on" if active else f"off · {display_path(recipes_mod.THEMES_PATH)}",
+                "count_color": DIM if active else WARN, "copyable": False,
+            })
         for name in self.catalog.files:
             rows.append({
                 "kind": "drop-in", "kind_color": ACCENT,

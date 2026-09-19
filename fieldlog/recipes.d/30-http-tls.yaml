@@ -1,0 +1,152 @@
+# What the service answers, and what its certificate claims.
+# python-server serves a directory for the other side to fetch from.
+# The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
+# $RUN_ID) and the `platform:` rule are documented in the project README.
+# Switch this theme off with `themes: {http-tls: false}` in
+# ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
+
+theme: http-tls
+
+recipes:
+  - id: curl
+    name: "HTTP Latency Profiler"
+    bin: curl
+    presets:
+      - id: timing80
+        name: "timing breakdown :80"
+        flags: >-
+          -o /dev/null -sS -w "dns=%{time_namelookup} tcp=%{time_connect}
+          ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n"
+          http://$HOST/
+        parse: 'total=(?P<total>\S+) code=(?P<code>\d{3})'
+        summary: "HTTP {code} in {total}s"
+      - id: timing443
+        name: "timing breakdown :443"
+        flags: >-
+          -o /dev/null -sS -w "dns=%{time_namelookup} tcp=%{time_connect}
+          ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n"
+          https://$HOST/
+        parse: 'total=(?P<total>\S+) code=(?P<code>\d{3})'
+        summary: "HTTP {code} in {total}s"
+      - id: trace
+        name: "full trace · headers + timing"
+        flags: >-
+          -sS -o /dev/null -D - -w "dns=%{time_namelookup} tcp=%{time_connect}
+          tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total}
+          code=%{http_code}" --connect-timeout 5 --max-time 20 --retry 1
+          --retry-delay 1 -H "User-Agent: fieldlog" -H "Accept: */*"
+          -H "Cache-Control: no-cache" https://$HOST/healthz
+        parse: 'total=(?P<total>\S+) code=(?P<code>\d{3})'
+        summary: "HTTP {code} in {total}s"
+      - id: headers
+        name: "headers only"
+        flags: "-sSI https://$HOST/"
+        parse: 'HTTP/[\d.]+ (?P<code>\d{3})'
+        summary: "HTTP {code}"
+      - id: loop
+        name: "loop · 20 requests"
+        # curl's own URL globbing makes the 20 requests, one line of output each.
+        flags: >-
+          -o /dev/null -sS -w "%{http_code} %{time_total}s\n" --retry 0
+          "https://$HOST/?[1-20]"
+
+  - id: openssl
+    name: "TLS Certificate Validator"
+    bin: openssl
+    presets:
+      - id: chain
+        name: "chain + expiry"
+        flags: "s_client -connect $HOST:443 -showcerts"
+        parse: 'Verify return code: (?P<code>\d+) \((?P<what>[^)]+)\)'
+        summary: "verify: {what}"
+        expect: 'Verify return code: 0 \(ok\)'
+      - id: ciphers
+        name: "cipher negotiation"
+        flags: "s_client -connect $HOST:443 -tls1_3"
+
+  - id: wrk
+    name: "HTTP Load Probe"
+    bin: wrk
+    presets:
+      - id: smoke
+        name: "smoke · 10s / 4 conn"
+        flags: "-t2 -c4 -d10s http://$HOST/"
+        parse: 'Requests/sec:\s+(?P<rps>[\d.]+)'
+        summary: "{rps} req/s"
+
+  - id: curl
+    presets:
+      - id: pin
+        name: "pin $HOST to $TARGET · skip dns"
+        flags: >-
+          -sS -o /dev/null --resolve $HOST:443:$TARGET
+          -w "%{http_code} ip=%{remote_ip} tls=%{time_appconnect}s total=%{time_total}s\n"
+          https://$HOST/
+      - id: p95
+        name: "20 requests · p50 / p95"
+        flags: >-
+          -sS -o /dev/null -w "%{time_total}\n" "https://$HOST/?[1-20]"
+          | sort -n
+          | awk '{t[NR]=$1} END {printf "n=%d p50=%.3fs p95=%.3fs max=%.3fs\n", NR, t[int(NR*0.5)], t[int(NR*0.95)], t[NR]}'
+      - id: hops
+        name: "redirect chain · status + location"
+        flags: >-
+          -sSL --max-redirs 10 -o /dev/null -D - http://$HOST/
+          | tr -d '\r' | grep -iE '^(HTTP/|location:)'
+
+  - id: openssl
+    presets:
+      - id: leaf
+        name: "leaf cert · subject, SANs, dates"
+        flags: >-
+          openssl s_client -connect $HOST:443 -servername $HOST </dev/null 2>/dev/null
+          | openssl x509 -noout -subject -issuer -dates -ext subjectAltName
+      - id: expires14
+        name: "fail if cert expires within 14 days"
+        flags: >-
+          openssl s_client -connect $HOST:443 -servername $HOST </dev/null 2>/dev/null
+          | openssl x509 -noout -enddate -checkend $((14 * 86400))
+      - id: versions
+        name: "which tls versions are accepted"
+        flags: >-
+          timeout 30 sh -c 'for v in tls1 tls1_1 tls1_2 tls1_3; do printf "%-8s " $v;
+          openssl s_client -connect $HOST:443 -servername $HOST -$v -cipher DEFAULT@SECLEVEL=0
+          </dev/null >/dev/null 2>&1 && echo accepted || echo refused; done'
+      - id: selfsigned
+        name: "self-signed cert + key into $OUTDIR"
+        flags: >-
+          req -x509 -newkey rsa:2048 -nodes -days 1
+          -keyout $OUTDIR/key.pem -out $OUTDIR/cert.pem -subj /CN=${HOST:-localhost}
+
+  # Throwaway HTTP / HTTPS servers from the standard library. Every request
+  # streams to the run log, and a normal run record is written when you stop the
+  # server with Ctrl+C. Keep the SIGINT handler so the stop is a clean exit 0,
+  # and never set --timeout on a server (it would kill it), same as the
+  # Wireshark recipe above.
+  #
+  # `python-server/https` loads its cert from $OUTDIR, so run it through the
+  # `tls-serve` chain (see chains.yaml): openssl/selfsigned writes cert.pem +
+  # key.pem into the chain's shared $OUTDIR, and this step then serves TLS with
+  # them.
+  - id: python-server
+    name: "Python Server"
+    bin: python3
+    presets:
+      - id: http
+        name: "HTTP · serve cwd on :8000 · logs each request"
+        flags: >-
+          -c "import http.server,signal,sys;
+          signal.signal(signal.SIGINT, lambda *_: sys.exit(0));
+          print('Serving HTTP on :8000', flush=True);
+          http.server.HTTPServer(('0.0.0.0',8000), http.server.SimpleHTTPRequestHandler).serve_forever()"
+
+      - id: https
+        name: "HTTPS · serve TLS on :8443 · cert from $OUTDIR"
+        flags: >-
+          -c "import http.server,ssl,signal,sys;
+          signal.signal(signal.SIGINT, lambda *_: sys.exit(0));
+          ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);
+          ctx.load_cert_chain('$OUTDIR/cert.pem','$OUTDIR/key.pem');
+          h=http.server.HTTPServer(('0.0.0.0',8443), http.server.SimpleHTTPRequestHandler);
+          h.socket=ctx.wrap_socket(h.socket, server_side=True);
+          print('Serving HTTPS on :8443', flush=True); h.serve_forever()"
