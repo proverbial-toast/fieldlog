@@ -9,7 +9,7 @@ from typing import Optional
 @dataclass
 class TabDescriptor:
     id: str                 # "system", "job-01", …
-    label: str              # "[System]", "ping/sweep #01"
+    label: str              # "System", "ping/sweep #01"
     status: str             # "system", "active", "done", "failed"
     tool_id: str
     job_id: Optional[str] = None

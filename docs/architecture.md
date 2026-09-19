@@ -298,7 +298,7 @@ summary has `steps`, `stopped_at`, an empty `artifact_log`, no artifacts, and `s
 - `history` with no argument lists folders with their run count and last record (time, recipe, summary or
   note); with one, that folder's records: id, recipe, exit (with `(ok)` when a declared success is non-zero,
   `(expect not met)` for a missed expectation — the same `exit_label` and `format_time` as `report`),
-  duration, start, summary, note, artifacts; a note record shows its time and text only. `--recipe <key>` keeps one recipe (exact; `chain/<id>` and `note` count).
+  duration, start, summary, note, artifacts; a note record shows its time and text only.
   `--fields` prints a table instead — `#`, started, exit label, then one column per field name in first-seen
   order — the trend view. `--json` dumps the (filtered) records. `find_target_dir` accepts the folder name or
   the target the runs were made against (it scans manifests on a miss).
@@ -309,7 +309,20 @@ summary has `steps`, `stopped_at`, an empty `artifact_log`, no artifacts, and `s
   the log (default 40 lines; `--full`). Exit cells and headings read `0 (expect not met)` for a missed
   expectation and are bold for any run `record_ok` rejects. A log over 4 MB is read from
   the end in a growing window rather than whole. Fences are chosen longer than any backtick run in the output;
-  table cells escape `|`. Chain summaries render as a step table. `--since N` filters by run number.
+  table cells escape `|`. Chain summaries render as a step table.
+- **Both readers take the same two filters**, through `cli.filter_runs`: `--recipe <key>` (exact; `chain/<id>`
+  and `note` count — a prefix match would make `ping` the tool here and the preset everywhere else) and
+  `--since N` (a run number; a record whose id is not a number cannot be compared and drops out). They
+  compose. `cli.filter_note` renders what was narrowed, which `render_report(selection=…)` puts in the
+  report's summary line — a filtered report is read away from the command that made it and must not pass as
+  the whole archive. [confirmed: `tests/test_reader_filters.py`]
+- **One manifest reader.** `report.read_manifest` returns `Manifest(runs, problem, readable)`. A folder with
+  no `session.json` holds no runs and has no problem; one that will not parse is `readable=False` and stops
+  `history`/`report` with **exit 2** and the reason on stderr; one that parses with non-record entries keeps
+  the records and warns. The workspace overview marks an unreadable folder instead of printing `0 runs`.
+  `load_runs` is the runs-only form for callers with nothing to say. Before this there were three answers:
+  `report` rendered `No runs recorded.` and exited 0, the overview said `0 runs`, and `history` parsed the
+  file itself and printed a raw exception. [confirmed: `tests/test_manifest_problems.py`]
 - `doctor` runs `is_blocked` over the whole catalog against a scope and buckets the reasons (missing binary
   vs. scope value), with `--json`.
 - The TUI reads nothing back from the archive (a deliberate gap), but it writes one more thing to
@@ -330,10 +343,34 @@ strip, status band, pinned command/artifact, a `ContentSwitcher` of one `RichLog
 the right; a full-width ARGS band; an optional hotkey bar. Under 120 columns the left column becomes an
 accordion ("stacked").
 
+Selection: `selected_recipe()` (in `tui/catalog.py`) resolves `selected_tool_id`/`selected_preset_id`
+against the catalog **and writes the answer back**, so the two ids always name a recipe that exists; every
+reader used to absorb a stale id with its own silent fallback. On that, `_rebuild_tree` keeps one invariant:
+*the row under the cursor is the row that names what VARIANTS and ARGS are painting.* `_place_cursor` settles
+it in order — the selection moved elsewhere (palette, recipe manager) and a row names it, go there; the row
+the cursor was on is still listed, follow it; neither, take the first row and repaint the panes from it.
+`[!]` and the filter box no longer reset the cursor to 0. Before this the two could come apart in both
+directions, and Enter in VARIANTS ran what the highlight did not show. [confirmed:
+`tests/test_cursor_and_panes_agree.py`]
+
 Repaint model: a family of `_refresh_*` methods each re-derives its widget subtree from `self`, called in
 varying combinations from ~15 call sites. `_repaint(what)` keeps a failure from taking the app down and names
 it in the System transcript unless it is only a missing widget. There is no invalidation model — the open
 refactor #5 from the previous review.
+
+> **Worth pursuing later: make the selection a reactive, and let the panes follow it.** The
+> cursor/selection drift fixed above was not one bug but the shape of this gap. Every caller that changes
+> what is selected — a tree row, the palette, the recipe manager, a variant step, a reload, a rebuild that
+> hid the row underneath — has to remember which `_refresh_*` calls go with it, and each one remembers a
+> slightly different list: `select_tool` calls three, `variant_row_clicked` calls two plus a focus repaint,
+> `action_toggle_hide_missing` called none and left the panes behind. `selected_recipe` and `_place_cursor`
+> settle *what* is selected in one place; *who repaints when it changes* is still spread across the call
+> sites. Textual already has the mechanism: make `selected_tool_id`/`selected_preset_id`/`selected_chain_id`
+> `reactive`s with a `watch_` that repaints VARIANTS, ARGS and the tree highlight, and the callers go back to
+> assigning a value. It is worth doing when a pane is next added or a third thing learns to change the
+> selection, and not before — it touches every mixin at once, and the invariant it would enforce is now
+> guarded by tests either way (`tests/test_cursor_and_panes_agree.py`), which is what makes the refactor
+> safe to attempt later rather than urgent now.
 
 Jobs: `_spawn_job` → `plan_launch` → `_open_job_tab` (tab, RichLog, transcript) → worker `_run` →
 `run_job` with a sink that writes the first 500 lines to the RichLog and caps the in-memory copy. A chain
@@ -342,7 +379,7 @@ writing to disk with nothing in the app reading it again.
 
 ## 9. Tests and CI
 
-376 tests in 35 files after this pass (305 in 27 before), ~11 s. Three tiers: pure
+609 tests in 55 files (376 in 35 when this document was written), ~28 s. Three tiers: pure
 unit tests (parsing, scope characters, arg tokens, path lookup); filesystem integration tests on a
 `tmp_workspace` fixture that run real `true`/`false`/`echo`/`sh` tools through `plan_launch` + `run_job` or
 `handle_run`; and async tests that drive the real app through `app.run_test()`. `test_app_structure.py`
@@ -361,3 +398,7 @@ builds the wheel, installs it clean and imports `fieldlog.app` (a hand-listed `p
 5. **Fail-soft catalog.** A bad file, rule or value costs itself, never the catalog.
 6. **Secrets never reach the log.** Only a prompt's bracketed choices are logged as replies.
 7. **The archive is append-only and cross-process safe.** Numbers under the lock; records under the lock.
+8. **An unreadable archive is never rendered as an empty one.** `read_manifest` is the one reader, and
+   "nothing was run here" and "this cannot be read" are different answers with different exit codes.
+9. **The TUI's highlight is what runs.** The RECIPES cursor and the VARIANTS/ARGS panes always name the
+   same recipe; `_place_cursor` is where that is settled.

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
-from fieldlog.state import is_ip_address, template_vars
+from fieldlog.state import is_ip_address, shell_vars, template_vars
 
 if TYPE_CHECKING:
     from fieldlog.state import TargetSession
@@ -181,45 +181,60 @@ def check_recipe(
     bin_name = preset.get("bin", tool.get("bin", tool.get("id", "")))
     if not is_tool_installed(bin_name):
         return Verdict(True, "binary", f"{bin_name}: not found in $PATH")
-    used = template_vars(preset.get("flags", "") if flags is None else flags)
-    if "TARGET" in used:
-        if not (session.target or "").strip():
-            return Verdict(True, "target", "needs a target", missing=True)
-        # A scope value is pasted in after the tool's own flags, so a leading
-        # `-` is read as one more flag: `--target=-f` would arm ping's flood.
-        # A `-` inside the value (`box-1`, `10-0-0-1.example`) is fine.
-        target = session.target.strip()
-        if target.startswith("-"):
-            return Verdict(True, "target", "target must not start with -")
-        # Digits and dots is an address being typed, so a typo in one (`1.2.3`,
-        # `10.0.0.256`) is a mistake worth catching rather than a hostname.
-        if _DOTTED.fullmatch(target) and not is_ip_address(target):
-            return Verdict(True, "target", "target is not a valid address")
-        bad = unsafe_scope_chars(session.target, _UNSAFE_TARGET)
-        if bad:
-            return Verdict(True, "target", f"target has unsafe characters ({bad})")
-    if "HOST" in used:
+    template = preset.get("flags", "") if flags is None else flags
+    # Two questions, two sets. `needed` is what the template cannot run without,
+    # so it drives "needs a target"/"needs a dns name". `guarded` adds the names
+    # the *shell* expands from the env — `${TARGET:-10.0.0.1}` is never
+    # substituted, so `template_vars` cannot see it, yet the value still lands
+    # on the command line and still has to pass the allowlist. Its presence is
+    # not required: writing the form is how a recipe says it has a default.
+    needed = template_vars(template)
+    guarded = needed | shell_vars(template)
+    if "TARGET" in guarded:
+        target = (session.target or "").strip()
+        if not target:
+            if "TARGET" in needed:
+                return Verdict(True, "target", "needs a target", missing=True)
+        else:
+            # A scope value is pasted in after the tool's own flags, so a leading
+            # `-` is read as one more flag: `--target=-f` would arm ping's flood.
+            # A `-` inside the value (`box-1`, `10-0-0-1.example`) is fine.
+            if target.startswith("-"):
+                return Verdict(True, "target", "target must not start with -")
+            # Digits and dots is an address being typed, so a typo in one (`1.2.3`,
+            # `10.0.0.256`) is a mistake worth catching rather than a hostname.
+            if _DOTTED.fullmatch(target) and not is_ip_address(target):
+                return Verdict(True, "target", "target is not a valid address")
+            bad = unsafe_scope_chars(session.target, _UNSAFE_TARGET)
+            if bad:
+                return Verdict(True, "target", f"target has unsafe characters ({bad})")
+    if "HOST" in guarded:
         if not session.dns_name:
-            return Verdict(True, "dns", "needs a dns name", missing=True)
-        if session.dns_name.startswith("-"):
-            return Verdict(True, "dns", "dns name must not start with -")
-        bad = unsafe_scope_chars(session.dns_name)
-        if bad:
-            return Verdict(True, "dns", f"dns name has unsafe characters ({bad})")
-    if "LHOST" in used:
+            if "HOST" in needed:
+                return Verdict(True, "dns", "needs a dns name", missing=True)
+        else:
+            if session.dns_name.startswith("-"):
+                return Verdict(True, "dns", "dns name must not start with -")
+            bad = unsafe_scope_chars(session.dns_name)
+            if bad:
+                return Verdict(True, "dns", f"dns name has unsafe characters ({bad})")
+    if "LHOST" in guarded:
         lhost = session.effective_lhost()
         if not lhost:
-            # An interface with no IPv4 would turn `-B $LHOST` into a bare `-B`.
-            iface = session.interface or "the interface"
-            return Verdict(
-                True, "lhost", f"needs a local address · {iface} has no IPv4 address", missing=True
-            )
-        if lhost.startswith("-"):
-            return Verdict(True, "lhost", "local address must not start with -")
-        bad = unsafe_scope_chars(lhost)
-        if bad:
-            return Verdict(True, "lhost", f"local address has unsafe characters ({bad})")
-    if "IFACE" in used:
+            if "LHOST" in needed:
+                # An interface with no IPv4 would turn `-B $LHOST` into a bare `-B`.
+                iface = session.interface or "the interface"
+                return Verdict(
+                    True, "lhost", f"needs a local address · {iface} has no IPv4 address",
+                    missing=True,
+                )
+        else:
+            if lhost.startswith("-"):
+                return Verdict(True, "lhost", "local address must not start with -")
+            bad = unsafe_scope_chars(lhost)
+            if bad:
+                return Verdict(True, "lhost", f"local address has unsafe characters ({bad})")
+    if "IFACE" in guarded:
         # $IFACE is interpolated into the shell command like the scope above, so
         # it takes the same allowlist. An empty interface stays allowed: the
         # command just carries a blank, the same as before this check.

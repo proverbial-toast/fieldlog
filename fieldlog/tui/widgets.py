@@ -47,6 +47,16 @@ class TabItem(Horizontal):
     def tab_id(self) -> str:
         return self.tab.id
 
+    @property
+    def closable(self) -> bool:
+        """Whether this tab has an ×. System holds the transcript and never does.
+
+        It used to yield a near-invisible `·` in the ×'s place, to keep the two
+        kinds of tab the same shape. That cost the System tab two cells to say
+        what the missing × already says.
+        """
+        return self.tab.id != "system"
+
     def _icon(self) -> Tuple[str, str]:
         key = "await" if self.awaiting else self.tab.status
         return self.ICONS.get(key, ("▪", FAINT))
@@ -55,9 +65,7 @@ class TabItem(Horizontal):
         icon, icon_color = self._icon()
         yield Static(Text(icon, style=icon_color), classes="tab-icon")
         yield Static(Text(self.tab.label, style=FG if self.is_active else DIM), classes="tab-label")
-        if self.tab.id == "system":
-            yield Static(Text("·", style="#232c2b"), classes="tab-locked tab-lock")
-        else:
+        if self.closable:
             yield TabClose(Text("×", style=DIM if self.is_active else MUTED), classes="tab-close")
 
     def update_tab(self, tab: TabDescriptor, is_active: bool, awaiting: bool = False) -> None:
@@ -70,9 +78,10 @@ class TabItem(Horizontal):
             self.query_one(".tab-label", Static).update(
                 Text(self.tab.label, style=FG if is_active else DIM)
             )
-            self.query_one(".tab-close", Static).update(
-                Text("×", style=DIM if is_active else MUTED)
-            )
+            if self.closable:
+                self.query_one(".tab-close", Static).update(
+                    Text("×", style=DIM if is_active else MUTED)
+                )
         except Exception:
             pass
 

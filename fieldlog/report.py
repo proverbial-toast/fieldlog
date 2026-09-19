@@ -5,6 +5,7 @@ from __future__ import annotations
 import codecs
 import json
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -20,17 +21,63 @@ EXIT_NOTES = {
 }
 
 
-def load_runs(target_dir: Path) -> List[dict]:
-    """Run records from session.json, newest last. A missing or corrupt
-    manifest reads as no runs, the same way `history` tolerates it."""
+@dataclass(frozen=True)
+class Manifest:
+    """What a target's session.json holds, and anything wrong with it.
+
+    The archive is the product, so "there are no runs" and "the runs cannot be
+    read" must never come out as the same sentence. They used to: `report`
+    printed `No runs recorded.` and exited 0 over a damaged manifest, while
+    `history` printed the raw exception and exited 1 — two readers of one file
+    with two answers, neither of them the whole one.
+    """
+
+    runs: List[dict] = field(default_factory=list)
+    # One line for stderr; '' when there is nothing to say.
+    problem: str = ""
+    # False when session.json is there and nothing could be read out of it.
+    readable: bool = True
+
+
+def read_manifest(target_dir: Path) -> Manifest:
+    """Read a target's session.json, saying what it could not make sense of.
+
+    A folder with no manifest holds no runs and has no problem — nothing has
+    been run against it yet, which is an answer. A manifest that is there and
+    will not parse is not an answer, and says so. One that parses but carries
+    entries that are not records keeps the records and reports the rest, since
+    dropping them silently is how a partial archive reads as a whole one.
+    """
     manifest = Path(target_dir) / "session.json"
     try:
-        parsed = json.loads(manifest.read_text(encoding="utf-8", errors="replace"))
-    except (json.JSONDecodeError, OSError):
-        return []
+        text = manifest.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return Manifest()
+    except OSError as exc:
+        return Manifest(problem=f"{manifest} cannot be read · {exc}", readable=False)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return Manifest(problem=f"{manifest} is not valid JSON · {exc}", readable=False)
     if not isinstance(parsed, list):
-        return []
-    return [r for r in parsed if isinstance(r, dict)]
+        return Manifest(
+            problem=f"{manifest} is not a list of run records", readable=False
+        )
+    runs = [r for r in parsed if isinstance(r, dict)]
+    dropped = len(parsed) - len(runs)
+    if dropped:
+        return Manifest(
+            runs=runs,
+            problem=f"{manifest}: {dropped} entr{'y is' if dropped == 1 else 'ies are'} "
+                    f"not a run record · skipped",
+        )
+    return Manifest(runs=runs)
+
+
+def load_runs(target_dir: Path) -> List[dict]:
+    """Run records from session.json, newest last, for a caller with nothing to
+    say about a manifest it cannot read. `read_manifest` is the fuller answer."""
+    return read_manifest(target_dir).runs
 
 
 def run_number(record: dict) -> Optional[int]:
@@ -459,13 +506,22 @@ def render_report(
     *,
     tail: int = DEFAULT_TAIL,
     full: bool = False,
+    selection: str = "",
 ) -> str:
-    """The whole report as Markdown: summary table first, then a section per run."""
+    """The whole report as Markdown: summary table first, then a section per run.
+
+    `selection` is how the caller narrowed `runs`, in words. It goes in the
+    summary line because a report is read away from the command that made it:
+    without it, a report of one recipe's runs is indistinguishable from a
+    report of everything that was ever run against the host.
+    """
     target_dir = Path(target_dir)
     workspace = target_dir.parent
     lines: List[str] = [f"# {target_dir.name}", ""]
 
     summary = f"Workspace `{workspace.resolve()}` · {len(runs)} run{'' if len(runs) == 1 else 's'}"
+    if selection:
+        summary += f" · {selection}"
     if runs:
         first = format_time(runs[0].get("start_time"))
         last = format_time(runs[-1].get("end_time") or runs[-1].get("start_time"))

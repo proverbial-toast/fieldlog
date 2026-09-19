@@ -150,31 +150,30 @@ recipes:
           | tee $OUTDIR/remote.pcap
           | wireshark -k -i -
 
-  # Throwaway HTTP / HTTPS servers. Every request streams to the run log, and a
-  # normal run record is written when you stop the server with Ctrl+C. Keep the
-  # SIGINT handler so the stop is a clean exit 0, and never set --timeout on a
-  # server (it would kill it), same as the Wireshark recipe above.
-  - id: http
-    name: "HTTP Server"
+  # Throwaway HTTP / HTTPS servers from the standard library. Every request
+  # streams to the run log, and a normal run record is written when you stop the
+  # server with Ctrl+C. Keep the SIGINT handler so the stop is a clean exit 0,
+  # and never set --timeout on a server (it would kill it), same as the
+  # Wireshark recipe above.
+  #
+  # `python-server/https` loads its cert from $OUTDIR, so run it through the
+  # `tls-serve` chain (see chains.yaml): openssl/selfsigned writes cert.pem +
+  # key.pem into the chain's shared $OUTDIR, and this step then serves TLS with
+  # them.
+  - id: python-server
+    name: "Python Server"
     bin: python3
     presets:
-      - id: serve
-        name: "serve cwd on :8000 · logs each request"
+      - id: http
+        name: "HTTP · serve cwd on :8000 · logs each request"
         flags: >-
           -c "import http.server,signal,sys;
           signal.signal(signal.SIGINT, lambda *_: sys.exit(0));
           print('Serving HTTP on :8000', flush=True);
           http.server.HTTPServer(('0.0.0.0',8000), http.server.SimpleHTTPRequestHandler).serve_forever()"
 
-  # `https/serve` loads its cert from $OUTDIR, so run it through the `tls-serve`
-  # chain (see chains.yaml): openssl/selfsigned writes cert.pem + key.pem into the
-  # chain's shared $OUTDIR, and this step then serves TLS with them.
-  - id: https
-    name: "HTTPS Server"
-    bin: python3
-    presets:
-      - id: serve
-        name: "serve TLS on :8443 · cert from $OUTDIR"
+      - id: https
+        name: "HTTPS · serve TLS on :8443 · cert from $OUTDIR"
         flags: >-
           -c "import http.server,ssl,signal,sys;
           signal.signal(signal.SIGINT, lambda *_: sys.exit(0));

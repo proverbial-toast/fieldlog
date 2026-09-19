@@ -7,6 +7,7 @@ import asyncio
 import difflib
 import fcntl
 import json
+import math
 import os
 import shutil
 import signal
@@ -28,8 +29,10 @@ from fieldlog.report import (
     chain_outcome,
     exit_label,
     format_time,
+    Manifest,
     load_runs,
     note_line,
+    read_manifest,
     record_expect_found,
     record_interrupted,
     record_kind,
@@ -149,6 +152,26 @@ def subcommand_hint(spec: str) -> str:
     return f" Did you mean `fieldlog {near[0]}`?" if near else ""
 
 
+def positive_seconds(value: str) -> float:
+    """`--timeout` seconds: a finite number greater than zero.
+
+    Plain `type=float` took `0`, `-5`, `nan` and `inf`, and the launch path
+    gates the wrapper on a truthy timeout — so `--timeout 0` asked for a limit
+    and silently got none, which is the opposite of what it reads as. A
+    negative or NaN duration reaches `timeout(1)` as nonsense instead. Refusing
+    here means every later stage can assume a real duration.
+    """
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number of seconds") from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a duration · --timeout takes a finite number of seconds above 0"
+        )
+    return seconds
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fieldlog",
@@ -189,7 +212,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--note", default="", help="Free text stored on the run record, e.g. why this run was made")
     run_p.add_argument("-q", "--quiet", action="store_true", help="Suppress banner/summary; stream only tool output")
     run_p.add_argument("--json", action="store_true", help="Emit completion manifest as JSON")
-    run_p.add_argument("--timeout", type=float, default=None, help="Maximum execution duration in seconds")
+    run_p.add_argument(
+        "--timeout", type=positive_seconds, default=None,
+        help="Maximum execution duration in seconds (a finite number above 0)",
+    )
 
     # history
     hist_p = subparsers.add_parser("history", help="View execution history for a target", aliases=["log", "runs"])
@@ -198,6 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
     hist_p.add_argument("-w", "--workspace", default="", help="Target workspace root (default: ./targets)")
     hist_p.add_argument("--json", action="store_true", help="Emit history records as JSON")
     hist_p.add_argument("--recipe", default="", help="Only records of this recipe key, or 'chain/<id>', or 'note'")
+    hist_p.add_argument("--since", default="", help="Only runs with an id at or above this number")
     hist_p.add_argument("--fields", action="store_true", help="One row per run, one column per parsed field")
 
     # note
@@ -216,6 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_p.add_argument("--tail", type=int, default=DEFAULT_TAIL, help=f"Lines of each log to include (default: {DEFAULT_TAIL})")
     report_p.add_argument("--full", action="store_true", help="Include each log in full instead of a tail")
     report_p.add_argument("--since", default="", help="Only runs with an id at or above this number")
+    report_p.add_argument("--recipe", default="", help="Only records of this recipe key, or 'chain/<id>', or 'note'")
 
     # doctor
     doc_p = subparsers.add_parser(
@@ -946,13 +974,34 @@ def no_such_target(workspace: Path, name: str) -> str:
 CELL_WIDTH = 60
 
 
-def overview_line(folder: Path, runs: List[dict], width: int = 0) -> str:
+def report_manifest_problem(manifest: Manifest) -> int:
+    """Say what is wrong with a target's session.json, and how far that goes.
+
+    2 when nothing could be read out of it — the caller has no answer to give
+    and must not print an empty one. 0 otherwise, whether the manifest was
+    clean or merely carried something that is not a run record.
+    """
+    if not manifest.problem:
+        return 0
+    if not manifest.readable:
+        sys.stderr.write(f"Error: {manifest.problem}\n")
+        return 2
+    sys.stderr.write(f"Warning: {manifest.problem}\n")
+    return 0
+
+
+def overview_line(folder: Path, runs: List[dict], width: int = 0, problem: str = "") -> str:
     """One folder as the overview lists it: its name, its run count, and what
-    the last thing in it was.
+    the last thing in it was — or, with a `problem`, that its manifest could
+    not be read at all.
 
     The count alone said nothing about whether a folder was worked on this
     morning or in June, which is what the operator is choosing between.
     """
+    if problem:
+        # `0 runs` over a manifest nobody could parse is the one answer that
+        # is worse than no answer: it reads as an empty folder.
+        return f"  [bold]{escape(folder.name.ljust(width))}[/bold] [red]unreadable session.json[/red]"
     count = f"{len(runs)} run{'' if len(runs) == 1 else 's'}"
     line = f"  [bold]{escape(folder.name.ljust(width))}[/bold] [dim]{count}[/dim]"
     if not runs:
@@ -992,7 +1041,8 @@ def history_overview(workspace: Path) -> int:
     console.print(f"[bold cyan]Available Targets in {escape(str(workspace))}:[/bold cyan]")
     width = max(len(d.name) for d in folders)
     for folder in folders:
-        console.print(overview_line(folder, load_runs(folder), width))
+        manifest = read_manifest(folder)
+        console.print(overview_line(folder, manifest.runs, width, problem=manifest.problem))
     return 0
 
 
@@ -1054,6 +1104,40 @@ def print_field_table(console: Console, records: List[dict]) -> None:
         console.print(f"  {line(row)}")
 
 
+def filter_note(recipe: str, since: str) -> str:
+    """What a reader was narrowed to, in words. '' when it was not narrowed."""
+    bits = []
+    if recipe:
+        bits.append(f"recipe `{recipe}`")
+    if since:
+        bits.append(f"from #{since}")
+    return " · ".join(bits)
+
+
+def filter_runs(runs: List[dict], recipe: str = "", since: str = "") -> Tuple[List[dict], str]:
+    """`(kept, error)` — the records a reader was asked for.
+
+    One filter for both readers, because they read one archive: `history` had
+    `--recipe` and `report` had `--since`, so an operator who could narrow the
+    listing could not narrow the report made from the same runs, and neither
+    flag meant quite the same thing twice.
+
+    `recipe` is an exact key — a prefix match would make `ping` mean the tool
+    here and the preset everywhere else — and matches `chain/<id>` and `note`
+    as written on the record. `since` is a run number; a record with an id
+    that is not a number cannot be compared and drops out of the window.
+    """
+    if recipe:
+        runs = [r for r in runs if r.get("recipe") == recipe]
+    if since:
+        try:
+            floor = int(since)
+        except ValueError:
+            return [], f"Error: --since expects a run number, got '{since}'\n"
+        runs = [r for r in runs if (run_number(r) or 0) >= floor]
+    return runs, ""
+
+
 def handle_note(args: argparse.Namespace) -> int:
     """Write the operator's own words into a target's archive.
 
@@ -1102,22 +1186,18 @@ def handle_history(args: argparse.Namespace) -> int:
     if target_dir is None:
         sys.stderr.write(no_such_target(workspace, target))
         return 1
-    manifest = target_dir / "session.json"
+    manifest = read_manifest(target_dir)
+    problem = report_manifest_problem(manifest)
+    if problem:
+        return problem
+    runs = manifest.runs
 
-    try:
-        raw_manifest = json.loads(manifest.read_text(encoding="utf-8"))
-    except Exception as exc:
-        sys.stderr.write(f"Failed to read session manifest: {exc}\n")
-        return 1
-
-    runs = raw_manifest if isinstance(raw_manifest, list) else raw_manifest.get("runs", []) if isinstance(raw_manifest, dict) else []
-    runs = [r for r in runs if isinstance(r, dict)]
-
-    # An exact key, chain summaries (`chain/<id>`) and notes included: a prefix
-    # match would make `ping` mean the tool here and the preset everywhere else.
     key = (getattr(args, "recipe", "") or "").strip()
-    if key:
-        runs = [r for r in runs if r.get("recipe") == key]
+    since = str(getattr(args, "since", "") or "").strip()
+    runs, error = filter_runs(runs, key, since)
+    if error:
+        sys.stderr.write(error)
+        return 1
 
     if getattr(args, "json", False):
         print(json.dumps(runs, indent=2))
@@ -1129,7 +1209,8 @@ def handle_history(args: argparse.Namespace) -> int:
     if not runs:
         # The folder is the right one and the filter is the operator's own, so
         # this is an answer, not an error.
-        console.print(f"  [dim]no runs of {escape(key)}[/dim]" if key else "  [dim]no runs[/dim]")
+        note = filter_note(key, since)
+        console.print(f"  [dim]no runs matching {escape(note)}[/dim]" if note else "  [dim]no runs[/dim]")
         return 0
 
     if getattr(args, "fields", False):
@@ -1186,23 +1267,27 @@ def handle_report(args: argparse.Namespace) -> int:
         sys.stderr.write(no_such_target(workspace, target))
         return 1
 
-    runs = load_runs(target_dir)
+    manifest = read_manifest(target_dir)
+    problem = report_manifest_problem(manifest)
+    if problem:
+        return problem
+    runs = manifest.runs
 
+    key = (getattr(args, "recipe", "") or "").strip()
     since = str(getattr(args, "since", "") or "").strip()
-    if since:
-        try:
-            floor = int(since)
-        except ValueError:
-            sys.stderr.write(f"Error: --since expects a run number, got '{since}'\n")
-            return 1
-        # An unparseable run id can't be compared, so it drops out of the window.
-        runs = [r for r in runs if (run_number(r) or 0) >= floor]
+    runs, error = filter_runs(runs, key, since)
+    if error:
+        sys.stderr.write(error)
+        return 1
 
     markdown = render_report(
         target_dir,
         runs,
         tail=getattr(args, "tail", DEFAULT_TAIL),
         full=getattr(args, "full", False),
+        # The document has to say it is a slice of the archive; without it a
+        # filtered report reads as the whole of what was run against the host.
+        selection=filter_note(key, since),
     )
 
     destination = getattr(args, "output", "-") or "-"

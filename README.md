@@ -95,6 +95,7 @@ interfaces: without `-i` it uses that same default.
 | `T` | Set target, DNS name, interface, local address and log destination: where logs and `$OUTDIR` go instead of the workspace, `--artifact-root` on the CLI |
 | `↑ ↓` `j k` | Move within the focused pane |
 | `Tab` | Switch focus between RECIPES and VARIANTS |
+| `Esc` | Back out one step: the args editor, then the filter, then VARIANTS to RECIPES. Never quits |
 | `Enter` | On a tool: jump to its variants. On a variant or chain: run it |
 | `1`–`9`, `0` | Select variant 1–10 of the current tool |
 | `,` `.` | Previous / next variant |
@@ -105,7 +106,7 @@ interfaces: without `-i` it uses that same default.
 | `R` | Reset edited args to the variant default |
 | `P` | Pin / unpin the selected variant or chain |
 | `[` `]` | Previous / next output tab |
-| `W` | Close the active tab. A running job asks: kill, or detach and keep it running |
+| `Ctrl+W` | Close the active tab. A running job asks: kill, or detach and keep it running. While typing in the filter or the args editor, it deletes a word instead |
 | `Shift+W` | Close every finished tab |
 | `Ctrl+C` | Send SIGINT to the active tab's job |
 | `Y` | Copy `tail -f <log>` for the active tab to the clipboard |
@@ -183,6 +184,7 @@ fieldlog history                         # target folders, with run counts and e
 fieldlog history 192.168.1.20            # runs for one folder
 fieldlog history router1 --json
 fieldlog history router1 --recipe ping/quick --fields    # one column per parsed field, across runs
+fieldlog history router1 --since 12                      # only runs #12 and up
 
 fieldlog note router1 "customer confirmed the outage at 14:10"   # a timestamped note in the archive
 
@@ -190,6 +192,7 @@ fieldlog report 192.168.1.20                        # every run as Markdown on s
 fieldlog report router1 --tail 10                   # 10 lines of each log instead of 40
 fieldlog report router1 --full -o run-report.md     # whole logs, written to a file
 fieldlog report router1 --since 12                  # only runs #12 and up
+fieldlog report router1 --recipe ping/quick         # only that recipe's runs
 
 fieldlog doctor                                     # what can run now, and what's missing
 fieldlog doctor 192.168.1.20 -H router1             # runnability against a scope
@@ -246,7 +249,7 @@ disk and exits 0.
 | `--json` | Print the run record (or the chain summary record) as JSON when done. On an execution error before the archive was written, a short `{"error": true}` record instead |
 
 `show` accepts `-t`, `-H`, `-i` and `-l`. `history` accepts `-t`, `-w`,
-`--json`, `--recipe` (one recipe key, `chain/<id>` or `note`, exact) and
+`--json`, `--recipe` and `--since` (the same two filters `report` takes) and
 `--fields` (a table with one column per parsed field; with `--json` it changes
 nothing, the records already carry `fields`). `list` accepts `-r`/`--runnable`,
 `-V`/`--verbose`, `-q`/`--names` and `--json`. `doctor` accepts `-t`, `-H`,
@@ -262,6 +265,11 @@ nothing, the records already carry `fields`). `list` accepts `-r`/`--runnable`,
 | `--tail N` | Lines of each run's log to include (default 40) |
 | `--full` | Include each log in full |
 | `--since ID` | Only runs numbered `ID` or higher |
+| `--recipe KEY` | Only records of one recipe key, `chain/<id>` or `note`. Exact, never a prefix |
+
+`--since` and `--recipe` are the same two filters on both readers, and they
+compose. A filtered report says so in its summary line, since the document is
+read away from the command that made it.
 
 A report is one Markdown document: a summary table of every run — its exit,
 file count and summary — then a section per run with its command, timings,

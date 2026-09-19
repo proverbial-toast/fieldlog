@@ -19,7 +19,7 @@ from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches, WrongType
 from textual.widgets import ContentSwitcher, RichLog, Static
 
-from fieldlog.recipes import run_passed
+from fieldlog.recipes import check_chain, run_passed
 from fieldlog import __version__ as VERSION
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
@@ -371,7 +371,7 @@ class JobsMixin:
         clock = self._get_clock_str()
         truncated = False
         if tab.id == "system":
-            stamp = [f"# fieldlog {VERSION} · [System] · {clock}"]
+            stamp = [f"# fieldlog {VERSION} · {tab.label} · {clock}"]
             lines = list(self.system_log_lines)
         else:
             job = self.jobs.get(tab.job_id or "")
@@ -432,15 +432,32 @@ class JobsMixin:
         self.notify("No running job · Ctrl+Shift+C copies the log", timeout=2.5)
 
     def action_run_task(self) -> None:
+        """Enter, or a click on the run button. A refusal says so out loud.
+
+        Silence was the bug: the gate knew exactly which step of which chain
+        wanted which binary, and dropped it on the floor, so Enter looked
+        broken rather than refused. The same reason the button carries in
+        short goes to the System tab in full, because that is the one place
+        that keeps a history of what the harness was asked to do.
+        """
         chain = self.selected_chain()
         if chain is not None:
-            if not self.chain_blocked_flag(chain):
-                self.run_worker(
-                    self._run_chain_worker(chain), name=f"chain {chain['id']}", exclusive=False
+            verdict = check_chain(self.catalog, chain, self.session, self.flag_edits)
+            if verdict.blocked:
+                self.write_system_log(
+                    f"[blocked] chain {chain['id']} · {verdict.reason}", style=WARN
                 )
+                return
+            self.run_worker(
+                self._run_chain_worker(chain), name=f"chain {chain['id']}", exclusive=False
+            )
             return
         tool, preset, key, _ = self.current_flags()
-        if not tool or self.is_blocked(tool, preset)[0]:
+        if not tool:
+            return
+        verdict = self.verdict(tool, preset)
+        if verdict.blocked:
+            self.write_system_log(f"[blocked] {key} · {verdict.reason}", style=WARN)
             return
         self._spawn_job(tool, preset, key)
 

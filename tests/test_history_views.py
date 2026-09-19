@@ -103,7 +103,7 @@ def test_a_filter_that_matches_nothing_is_an_answer_not_an_error(workspace: Path
     assert _history(workspace, "--recipe", "nmap/fast") == 0
     out = capsys.readouterr().out
     assert "Run History for box.htb" in out
-    assert "no runs of nmap/fast" in out
+    assert "no runs matching recipe `nmap/fast`" in out
 
 
 def test_a_folder_with_no_records_says_no_runs(tmp_workspace: Path, capsys):

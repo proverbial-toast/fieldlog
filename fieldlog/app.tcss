@@ -383,7 +383,7 @@ Screen {
     padding: 0 1;
 }
 
-.tab-close, .tab-locked {
+.tab-close {
     width: 2;
     height: 1;
 }
@@ -663,8 +663,16 @@ RichLog {
     height: auto;
 }
 
+/* The editor is as tall as the command in it, up to the room the band has.
+   `height: 3` was a border and one row of text, so editing anything longer
+   than a line — a soft-wrapped command, or the multi-line template the hint
+   invites — showed a 1-row porthole onto it. `auto` grows to the wrapped
+   text; the cap is what `#args-body-row` can give once the `✓ done` row below
+   has its line, and past that the editor scrolls as it always did. */
 #args-raw-area {
-    height: 3;
+    height: auto;
+    min-height: 3;
+    max-height: 7;
     border: solid #6fd7bd;
     background: #06080a;
     color: #cfd8d4;

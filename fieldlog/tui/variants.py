@@ -8,16 +8,20 @@ navigability — app.py held every pane at once.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 
 from rich.text import Text
 from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches, WrongType
 from textual.widgets import Static
 
-from fieldlog.recipes import chain_blocked, chain_steps
-from fieldlog.tui.helpers import truncate_right
+from fieldlog.recipes import check_chain, chain_steps
+from fieldlog.tui.helpers import short_reason, truncate_right
 from fieldlog.tui.theme import ACCENT, DIM, FG, MUTED, SOFT, UNFOCUSED, WARN
 from fieldlog.tui.widgets import VariantRowWidget
+
+if TYPE_CHECKING:
+    from fieldlog.recipes import Verdict
 
 
 
@@ -33,15 +37,11 @@ class VariantsPaneMixin:
         if chain is not None:
             self._refresh_chain_variants(var_list, chain)
             return
-        tool = self.get_tool(self.selected_tool_id)
+        tool, preset = self.selected_recipe()
         if not tool:
-            if not self.recipes:
-                return
-            tool = self.recipes[0]
-            self.selected_tool_id = tool["id"]
-        preset = self.get_preset(tool, self.selected_preset_id)
+            return
         key = f"{tool['id']}/{preset['id']}"
-        blocked, _ = self.is_blocked(tool, preset)
+        verdict = self.verdict(tool, preset)
 
         with self._repaint("VARIANTS pane"):
             self.query_one("#variants-bin", Static).update(
@@ -88,9 +88,7 @@ class VariantsPaneMixin:
             if rows:
                 var_list.mount_all(rows)
 
-            btn_run = self.query_one("#btn-run", Static)
-            btn_run.update("Not runnable" if blocked else "[Enter] Run")
-            btn_run.set_class(blocked, "-disabled")
+            self._paint_run_button(verdict, "[Enter] Run")
             self.query_one("#btn-pin", Static).update(
                 "[P] Unpin" if key in self.pinned else "[P] Pin"
             )
@@ -99,9 +97,7 @@ class VariantsPaneMixin:
     def _refresh_chain_variants(self, var_list: Vertical, chain: dict) -> None:
         """The steps, numbered and read-only: a chain's order lives in its yaml.
         Plain Statics, not VariantRowWidgets — a click here selects nothing."""
-        blocked, _reason = chain_blocked(
-            self.catalog, chain, self.session, flags_overrides=self.flag_edits
-        )
+        verdict = check_chain(self.catalog, chain, self.session, self.flag_edits)
         key = f"chain/{chain['id']}"
         with self._repaint("chain VARIANTS pane"):
             self.query_one("#variants-bin", Static).update(Text("chain", style=f"bold {FG}"))
@@ -123,15 +119,36 @@ class VariantsPaneMixin:
             if rows:
                 var_list.mount_all(rows)
 
-            btn_run = self.query_one("#btn-run", Static)
-            btn_run.update("Not runnable" if blocked else "[Enter] Run chain")
-            btn_run.set_class(blocked, "-disabled")
+            self._paint_run_button(verdict, "[Enter] Run chain")
             self.query_one("#btn-pin", Static).update(
                 "[P] Unpin" if key in self.pinned else "[P] Pin"
             )
             self.query_one("#variants-crumb", Static).update(
                 "" if self._current_layout != "stacked" else f"chain · {chain['id']}"
             )
+
+    def _paint_run_button(self, verdict: "Verdict", ready_label: str) -> None:
+        """What Enter will do, and when it will do nothing, why not.
+
+        The button is the last thing an operator reads before pressing Enter,
+        so a refusal has to say its reason there — `Not runnable` on its own
+        sends them hunting through doctor for something the verdict already
+        knows. The label has ~20 cells at the narrowest split, which is the
+        short form and no more; the ✗ and the red of `-disabled` carry the
+        "cannot run" that the words no longer spell out. The tooltip holds the
+        reason whole, which for a chain names the step it stopped at, and
+        `action_run_task` writes that same full reason to the System tab — so
+        a refusal is legible whether they read the button first or pressed
+        Enter and wondered why nothing happened.
+        """
+        btn_run = self.query_one("#btn-run", Static)
+        if verdict.blocked:
+            btn_run.update(f"✗ {short_reason(verdict, 16)}")
+            btn_run.tooltip = verdict.reason
+        else:
+            btn_run.update(ready_label)
+            btn_run.tooltip = None
+        btn_run.set_class(verdict.blocked, "-disabled")
 
     def _variants_crumb(self, tool: dict, preset: dict) -> str:
         if self._current_layout != "stacked":

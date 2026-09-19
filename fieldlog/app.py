@@ -179,11 +179,15 @@ class TargetModal(ModalScreen[bool]):
 
                 yield Label("source interface")
                 with Vertical(id="iface-list"):
-                    for name, ip in self.ifaces:
+                    # Numbered, not named: a Textual id has to be an identifier
+                    # and an interface name need not be one — a vlan child is
+                    # `eth0.100`, an alias `eth0:1`, either of which would raise
+                    # BadIdentifier and take the scope modal down on open.
+                    for index, (name, ip) in enumerate(self.ifaces):
                         yield Static(
                             self._iface_text(name, ip),
                             classes="iface-row",
-                            id=f"iface-{name}",
+                            id=f"iface-row-{index}",
                             markup=False,
                         )
                 yield Input(
@@ -224,10 +228,17 @@ class TargetModal(ModalScreen[bool]):
             (ip or "no IPv4", DIM),
         )
 
+    def _iface_at(self, row_id: str) -> Optional[str]:
+        """The interface a numbered row stands for, or None if the row is stale."""
+        try:
+            return self.ifaces[int(row_id[len("iface-row-"):])][0]
+        except (ValueError, IndexError):
+            return None
+
     def _repaint_ifaces(self) -> None:
-        for name, ip in self.ifaces:
+        for index, (name, ip) in enumerate(self.ifaces):
             try:
-                self.query_one(f"#iface-{name}", Static).update(self._iface_text(name, ip))
+                self.query_one(f"#iface-row-{index}", Static).update(self._iface_text(name, ip))
             except Exception:
                 pass
 
@@ -266,8 +277,10 @@ class TargetModal(ModalScreen[bool]):
     def on_click(self, event) -> None:
         target = getattr(event, "widget", None) or getattr(event, "target", None)
         target_id = getattr(target, "id", "") or ""
-        if target_id.startswith("iface-"):
-            name = target_id[len("iface-"):]
+        if target_id.startswith("iface-row-"):
+            name = self._iface_at(target_id)
+            if name is None:
+                return
             self.iface_name = name
             # The row already shows its address; `name / ip` here would save it as a set one.
             self.query_one("#in-iface", Input).value = name
@@ -356,7 +369,13 @@ class FieldlogApp(
         ("h", "toggle_hotkey_bar", "Show / hide keys"),
         ("left_square_bracket", "prev_tab", "Prev Tab"),
         ("right_square_bracket", "next_tab", "Next Tab"),
-        ("w", "close_active_tab", "Close Tab"),
+        # Ctrl+W, as in every tabbed thing, and not a bare `w`: a single
+        # letter that closes something is the browser convention broken, and
+        # `w` sits next to the `W` that closes every finished tab at once.
+        # Both `Input` and `TextArea` bind ctrl+w to delete-word-left and are
+        # asked before the app, so typing a filter or editing args still
+        # deletes a word rather than shutting a tab underneath the operator.
+        ("ctrl+w", "close_active_tab", "Close Tab"),
         ("W", "close_finished_tabs", "Close Finished"),
         ("shift+w", "close_finished_tabs", "Close Finished"),
         ("ctrl+p", "command_palette", "Quick Run"),
@@ -383,7 +402,7 @@ class FieldlogApp(
             self.session.interface = default_interface()
 
         self.jobs: Dict[str, ActiveJob] = {}
-        self.tabs: List[TabDescriptor] = [TabDescriptor("system", "[System]", "system", "system")]
+        self.tabs: List[TabDescriptor] = [TabDescriptor("system", "System", "system", "system")]
         self.active_tab_id: str = "system"
         self.system_log_lines: List[str] = []
         self._transcript_ok: bool = True
@@ -692,7 +711,9 @@ class FieldlogApp(
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "filter-input":
             self.filter_text = event.value
-            self.cursor = 0
+            # No cursor reset: a recipe that survives the filter keeps the
+            # cursor, and _rebuild_tree repaints the panes from wherever it
+            # lands when the row it was on is filtered away.
             self._rebuild_tree()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -759,8 +780,14 @@ class FieldlogApp(
         """Stop at the first match. Esc never quits.
 
         palette → kill/detach → recipe manager → Target Scope → key bindings →
-        raw ARGS → stdin field → filter with a query → stacked with VARIANTS
-        expanded → no-op. (The modal screens above handle their own Esc.)
+        raw ARGS → stdin field → filter with a query → VARIANTS → no-op.
+        (The modal screens above handle their own Esc.)
+
+        The last step used to be the stacked layout only, where VARIANTS is an
+        accordion pane that visibly covers RECIPES. In split both panes are on
+        screen at once and Esc did nothing at all — but `Tab` having taken the
+        arrow keys into VARIANTS is the same one step in, whether or not the
+        other pane is still visible, and Esc is the way back out of it.
         """
         if self.args_raw_mode:
             self.action_toggle_args_mode(force_raw=False)
@@ -784,7 +811,7 @@ class FieldlogApp(
                 pass
             self._rebuild_tree()
             return
-        if self._current_layout == "stacked" and self.stacked_pane == "task":
+        if self.focus_pane() == "variants":
             self._focus_recipes()
             return
 

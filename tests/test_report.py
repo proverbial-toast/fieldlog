@@ -162,13 +162,21 @@ def test_missing_target_and_manifest_exit_1(tmp_workspace: Path, capsys):
     assert "Target folders: 10.0.0.9" in capsys.readouterr().err
 
 
-def test_corrupt_manifest_renders_an_empty_report(tmp_workspace: Path, capsys):
+def test_a_corrupt_manifest_is_reported_not_rendered_as_empty(tmp_workspace: Path, capsys):
+    """`No runs recorded.` over a damaged archive is the one wrong answer.
+
+    It used to be the one given: exit 0 and a clean, empty document, which
+    reads as "nothing was ever run here" and pipes on as a finished report.
+    See tests/test_manifest_problems.py for the whole contract.
+    """
     target = tmp_workspace / "broken"
     target.mkdir()
     (target / "session.json").write_text("{not json", encoding="utf-8")
     args = build_parser().parse_args(["report", "broken", "-w", str(tmp_workspace)])
-    assert handle_report(args) == 0
-    assert "No runs recorded." in capsys.readouterr().out
+    assert handle_report(args) == 2
+    captured = capsys.readouterr()
+    assert "No runs recorded." not in captured.out
+    assert "is not valid JSON" in captured.err
 
 
 def test_a_summary_is_shown_only_for_the_run_that_has_one(target_dir: Path, tmp_workspace: Path, capsys):

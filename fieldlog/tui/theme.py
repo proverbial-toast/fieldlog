@@ -54,7 +54,7 @@ HOTKEYS = [
     ("T", "Scope & Logs", False),
     ("E", "Edit Args", False),
     ("M", "Recipes", False),
-    ("W", "Close Tab", False),
+    ("Ctrl+W", "Close Tab", False),
     ("L", "Layout", False),
     ("?", "All Keys", False),
 ]

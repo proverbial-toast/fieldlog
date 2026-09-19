@@ -270,8 +270,17 @@ class TargetSession:
 # first; that is also what previews show. What it leaves alone reaches the
 # shell untouched and expands through real parameter expansion from the
 # child's environment (runner.build_env exports the same bindings). Same
-# values either way; only the first path is the one the allowlist guards.
+# values either way — so the allowlist has to guard both paths, and
+# `shell_vars` below is how the second one is seen.
 _VAR = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
+
+# Every `${NAME...}` brace form, modifier or not. `_VAR` matches only the bare
+# `${NAME}` it substitutes; this one also sees `${NAME:-default}`, `${NAME:?}`
+# and `${NAME%.pcap}`, which are left for the shell and expand from the env.
+# The name is what the check needs: the value still reaches the command line,
+# so it still has to pass the scope allowlist — its *presence*, though, is not
+# required, since supplying a default is the whole point of writing the form.
+_SHELL_VAR = re.compile(r"\$\{(\w+)")
 
 # Alternate spellings, mapped to the binding they resolve as.
 _VAR_ALIASES = {"TARGET_IP": "TARGET", "TARGET_HOST": "HOST", "OUT_DIR": "OUTDIR"}
@@ -293,6 +302,17 @@ def template_vars(flags: str) -> set[str]:
     Unknown names (e.g. RUN_ID) come back as written.
     """
     return {_var_name(m) for m in _VAR.finditer(flags or "")}
+
+
+def shell_vars(flags: str) -> set[str]:
+    """Variables the *shell* expands from the env, by canonical name.
+
+    `${TARGET:-10.0.0.1}` is never substituted by `resolve_flags`, so
+    `template_vars` does not report it — but `build_env` exports TARGET, so the
+    value still lands in the command. A caller checking whether a scope value
+    is safe to paste into a shell has to look here as well.
+    """
+    return {_VAR_ALIASES.get(m[1], m[1]) for m in _SHELL_VAR.finditer(flags or "")}
 
 
 def resolve_flags(session: TargetSession, flags: str, out_dir: Optional[str] = None) -> str:

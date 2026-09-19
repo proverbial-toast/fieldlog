@@ -8,7 +8,7 @@ navigability — app.py held every pane at once.
 
 from __future__ import annotations
 
-from typing import List
+from typing import Callable, List, Optional
 
 from rich.text import Text
 from textual.containers import VerticalScroll
@@ -63,8 +63,12 @@ class RecipeTreeMixin:
             if self.hide_missing and not ok:
                 continue        # `[!] all` is what reveals the n/a tools
             rows.append(TreeRow(
-                "tool", label="", bin=t.get("bin", t["id"]), tool_id=t["id"],
-                meta=f"{len(t.get('presets', []))}v" if ok else "n/a", blocked=not ok,
+                "tool",
+                label=t.get("name", t["id"]),
+                bin=t.get("bin", t["id"]),
+                tool_id=t["id"],
+                meta=f"{len(t.get('presets', []))}v" if ok else "n/a",
+                blocked=not ok,
             ))
         chain_rows = self._chain_rows("")
         if chain_rows:
@@ -133,6 +137,62 @@ class RecipeTreeMixin:
         """What makes a row the same row across a rebuild, index aside."""
         return (row.kind, row.bin, row.tool_id, row.preset_id)
 
+    def _row_shows(self, row: TreeRow) -> bool:
+        """Whether `row` names what VARIANTS and ARGS are painting right now.
+
+        A tool row stands for its whole tool, so it still names the selection
+        after the operator has stepped to another of that tool's variants —
+        which is what keeps a rebuild from pulling the variant back to the
+        first one. Every other kind has to match exactly.
+        """
+        if row.kind == "chain":
+            return row.bin == self.selected_chain_id
+        if self.selected_chain_id is not None:
+            return False
+        if row.kind == "tool":
+            return row.tool_id == self.selected_tool_id
+        if row.kind == "entry":
+            return row.tool_id == self.selected_tool_id and row.preset_id == self.selected_preset_id
+        return False
+
+    def _row_index(self, matches: Callable[[TreeRow], bool]) -> Optional[int]:
+        """The first selectable row `matches` accepts, or None."""
+        return next((i for i, r in enumerate(self._rows) if r.kind != "header" and matches(r)), None)
+
+    def _place_cursor(self, was_on: Optional[tuple], drifted: bool) -> None:
+        """Leave the cursor and the panes naming the same thing.
+
+        The highlight in RECIPES is a promise about what `[Enter] Run` will
+        run, and the two used to come apart in both directions: `[!]` or a
+        filter could hide the row under the cursor, moving it without telling
+        VARIANTS, and the palette or the recipe manager could move the
+        selection without moving the cursor. Either way the operator read one
+        recipe and ran another.
+
+        So, in order: something else moved the selection and a row names it —
+        go there; the row the cursor was on is still listed — follow it
+        wherever it went; neither — take the first row there is and repaint
+        the panes from it, because a cursor with nowhere to go back to is the
+        one case where the selection has to give way.
+
+        A filter that matches nothing leaves no row to stand on, and the
+        cursor parks on the `Results` heading — which every caller already
+        refuses to act on. The panes deliberately keep painting the last
+        recipe rather than blanking: the run button still says what `[Enter]
+        Run` will run, so nothing is claimed that is not true, and it is also
+        what lets the palette pick a recipe the current filter hides.
+        """
+        index = self._row_index(self._row_shows) if drifted else None
+        if index is None and was_on is not None:
+            index = self._row_index(lambda r: self._row_identity(r) == was_on)
+        if index is not None:
+            self.cursor = index
+            return
+        self.cursor = self._first_selectable()
+        here = self._rows[self.cursor] if self.cursor < len(self._rows) else None
+        if here is not None and here.kind != "header":
+            self._select_row(here)
+
     def _rebuild_tree(self) -> None:
         try:
             tree = self.query_one("#recipe-tree", VerticalScroll)
@@ -142,15 +202,16 @@ class RecipeTreeMixin:
         # launching something re-orders Recent underneath it, and an index held
         # still would leave the cursor on a different recipe than the one the
         # operator put it on.
-        was_on = self._row_identity(self._rows[self.cursor]) if 0 <= self.cursor < len(self._rows) else None
+        if self.selected_chain_id is None:
+            # Settle the two ids against this catalog first: `_row_shows` below
+            # compares a row to them, and an id naming a preset the tool does
+            # not have would match no row at all.
+            self.selected_recipe()
+        was = self._rows[self.cursor] if 0 <= self.cursor < len(self._rows) else None
+        was_on = self._row_identity(was) if was is not None and was.kind != "header" else None
+        drifted = was is None or not self._row_shows(was)
         self._rows = self.visible_rows()
-        here = self._rows[self.cursor] if 0 <= self.cursor < len(self._rows) else None
-        if here is None or here.kind == "header" or (was_on is not None and self._row_identity(here) != was_on):
-            moved = next(
-                (i for i, r in enumerate(self._rows) if r.kind != "header" and self._row_identity(r) == was_on),
-                None,
-            ) if was_on is not None else None
-            self.cursor = self._first_selectable() if moved is None else moved
+        self._place_cursor(was_on, drifted)
         tree.remove_children()
         widgets = [
             RecipeRowWidget(i, self._row_text(r, i == self.cursor),
@@ -279,7 +340,8 @@ class RecipeTreeMixin:
         toggle = self.query_one("#avail-toggle", Static)
         toggle.update("[!] runnable" if self.hide_missing else "[!] all")
         toggle.styles.color = ACCENT if self.hide_missing else MUTED
-        self.cursor = 0
+        # No cursor reset: a row that survives the toggle keeps the cursor, and
+        # one that does not hands the panes to whatever the cursor lands on.
         self._rebuild_tree()
 
     def action_toggle_pin(self) -> None:

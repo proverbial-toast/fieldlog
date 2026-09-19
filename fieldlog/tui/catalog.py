@@ -51,6 +51,28 @@ class CatalogMixin:
             presets[0] if presets else {"id": "default", "name": "default", "flags": ""},
         )
 
+    def selected_recipe(self) -> Tuple[dict, dict]:
+        """The tool and preset the panes are painting, with the ids made to agree.
+
+        `selected_tool_id` and `selected_preset_id` are plain strings, set from
+        a tree row, a palette pick, a saved default or a reload, so either can
+        name something this catalog does not have — `ping/sweep` on a box
+        without ping, a preset a drop-in edit has since renamed. Every reader
+        used to absorb that with its own silent fallback, which left the two
+        ids saying one thing while every pane showed another; the tree could
+        then find no row for what was on screen. Resolving once and writing the
+        answer back is what makes the ids worth matching a row against.
+
+        `({}, {})` only when the catalog holds no tools at all.
+        """
+        tool = self.get_tool(self.selected_tool_id) or (self.recipes[0] if self.recipes else None)
+        if tool is None:
+            return {}, {}
+        preset = self.get_preset(tool, self.selected_preset_id)
+        self.selected_tool_id = tool["id"]
+        self.selected_preset_id = preset.get("id", "default")
+        return tool, preset
+
     @property
     def chains(self) -> List[dict]:
         return self.catalog.chains
@@ -103,10 +125,12 @@ class CatalogMixin:
 
         if self.selected_chain_id and self.get_chain(self.selected_chain_id) is None:
             self.selected_chain_id = None   # a chain the reloaded yaml no longer defines
-        if f"{self.selected_tool_id}/{self.selected_preset_id}" not in new_keys and self._recipes:
-            self.selected_tool_id = self._recipes[0]["id"]
-            if self._recipes[0].get("presets"):
-                self.selected_preset_id = self._recipes[0]["presets"][0]["id"]
+        # Whatever the reload changed, the two ids have to name something this
+        # catalog holds. `selected_recipe` settles that the way every pane
+        # does; the fixup written here used to jump to the first tool in the
+        # file whenever a preset id went missing, so renaming one variant of
+        # ping threw the operator to the top of the catalog.
+        self.selected_recipe()
 
         added = sorted(new_keys - old_keys)
         self.added_variants = added

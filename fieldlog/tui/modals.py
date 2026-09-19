@@ -54,12 +54,12 @@ class HelpModal(ModalScreen):
             ("P", "Pin / unpin task"),
         ]),
         ("jobs", [
-            ("Esc", "Back to recipes (stacked)"),
+            ("Esc", "Back to recipes from variants"),
             ("[ / ]", "Previous / next tab"),
             ("Ctrl+C", "Interrupt running job (SIGINT)"),
             ("Y", "Copy tail -f for active artifact"),
             ("Ctrl+Shift+C", "Copy whole log to clipboard"),
-            ("W", "Close active tab · running job asks kill / detach"),
+            ("Ctrl+W", "Close active tab · running job asks kill / detach"),
             ("⇧W", "Close all finished tabs"),
         ]),
         ("scope & config", [
@@ -117,6 +117,9 @@ class RecipeManagerModal(ModalScreen):
         ("m", "close", "Close"),
     ]
 
+    # Row index -> tool id, filled by compose. See `_mgr_tool_id`.
+    _mgr_tool_ids: List[str] = []
+
     def compose(self) -> ComposeResult:
         app: "FieldlogApp" = self.app  # type: ignore[assignment]
         with Vertical(id="mgr-box"):
@@ -143,8 +146,15 @@ class RecipeManagerModal(ModalScreen):
 
                 yield Static("indexed tools", classes="mgr-section-label")
                 with Vertical(id="mgr-tools"):
-                    for t in app.manager_tools():
-                        row = Horizontal(classes="mgr-tool-row", id=f"mgrtool-{t['id']}")
+                    # A Textual id has to be an identifier, and a tool id is
+                    # whatever the yaml said — a drop-in is free to call one
+                    # `acme.probe` or `2fa`, which would raise BadIdentifier and
+                    # take the whole modal down. Rows are numbered and the id is
+                    # looked up on click instead.
+                    mgr_tools = app.manager_tools()
+                    self._mgr_tool_ids = [t["id"] for t in mgr_tools]
+                    for index, t in enumerate(mgr_tools):
+                        row = Horizontal(classes="mgr-tool-row", id=f"mgrtool-{index}")
                         row.tooltip = t["state"]
                         with row:
                             yield Static(Text(t["bin"], style=t["bin_style"]), classes="mgr-tool-bin")
@@ -178,8 +188,17 @@ class RecipeManagerModal(ModalScreen):
             while node is not None and not (getattr(node, "id", "") or "").startswith("mgrtool-"):
                 node = node.parent
             if node is not None:
-                self.app.select_tool(node.id[len("mgrtool-"):])
-                self.dismiss(None)
+                tool_id = self._mgr_tool_id(node.id)
+                if tool_id is not None:
+                    self.app.select_tool(tool_id)
+                    self.dismiss(None)
+
+    def _mgr_tool_id(self, row_id: str) -> Optional[str]:
+        """The tool a numbered row stands for, or None if the row is stale."""
+        try:
+            return self._mgr_tool_ids[int(row_id[len("mgrtool-"):])]
+        except (ValueError, IndexError):
+            return None
 
     def on_key(self, event) -> None:
         if event.key in ("y", "Y"):

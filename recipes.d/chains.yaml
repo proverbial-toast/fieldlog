@@ -37,9 +37,9 @@ chains:
       - fping/sweep
 
   # openssl/selfsigned writes cert.pem + key.pem into the shared $OUTDIR that
-  # https/serve then loads. curl -k https://<lhost>:8443/ to hit it; Ctrl+C stops it.
+  # python-server/https then loads. curl -k https://<lhost>:8443/ to hit it; Ctrl+C stops it.
   - id: tls-serve
     name: "self-signed cert, then HTTPS server"
     steps:
       - openssl/selfsigned
-      - https/serve
+      - python-server/https

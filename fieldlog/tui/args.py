@@ -57,8 +57,7 @@ class ArgsBandMixin:
         """
         if self.selected_chain_id:
             return {}, {}, f"chain/{self.selected_chain_id}", ""
-        tool = self.get_tool(self.selected_tool_id) or (self.recipes[0] if self.recipes else {})
-        preset = self.get_preset(tool, self.selected_preset_id) if tool else {}
+        tool, preset = self.selected_recipe()
         key = f"{tool.get('id', '')}/{preset.get('id', '')}"
         return tool, preset, key, self.flag_edits.get(key, preset.get("flags", ""))
 
