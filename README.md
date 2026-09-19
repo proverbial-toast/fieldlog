@@ -39,9 +39,20 @@ which Terminal.app does not support — iTerm2 and others do (see [Keys](#keys))
 ## Install
 
 ```bash
-pipx install git+https://github.com/proverbial-toast/fieldlog
+pipx install git+https://github.com/proverbial-toast/fieldlog        # latest main
+pipx install git+https://github.com/proverbial-toast/fieldlog@v0.2.0 # a release
 fieldlog            # opens the TUI
 ```
+
+Every tagged release also carries a built wheel and sdist on its
+[releases page](https://github.com/proverbial-toast/fieldlog/releases), if you
+would rather install one directly than build from a checkout:
+
+```bash
+pipx install https://github.com/proverbial-toast/fieldlog/releases/download/v0.2.0/fieldlog-0.2.0-py3-none-any.whl
+```
+
+Say which version you are on when reporting something — `fieldlog --version`.
 
 For development:
 
