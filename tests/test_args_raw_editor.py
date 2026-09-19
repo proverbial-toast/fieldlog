@@ -50,16 +50,35 @@ def _app(workspace: Path, flags: str) -> FieldlogApp:
     return app
 
 
+async def _wrapped_height(pilot, area: ArgsTextArea) -> int:
+    """The editor's wrapped height, measured once its width has settled.
+
+    A TextArea wraps against a width it does not have until layout has run, so
+    reading `wrapped_document.height` straight after the mode switch can catch
+    it at 1 no matter how long the command is. That is a race, not a result: it
+    passed here and on five CI legs and failed on the sixth. Waiting for two
+    consecutive equal non-zero widths is what makes the measurement mean
+    something.
+    """
+    width = -1
+    for _ in range(20):
+        await pilot.pause()
+        if area.size.width and area.size.width == width:
+            break
+        width = area.size.width
+    assert area.size.width, "the editor never got a width to wrap against"
+    return area.wrapped_document.height
+
+
 @pytest.mark.parametrize("size", [(140, 45), (120, 40), (80, 30)], ids=["wide", "split", "narrow"])
 async def test_a_wrapped_command_is_edited_in_more_than_one_row(tmp_workspace: Path, size):
     """Every row the command wraps to is on screen, up to the cap."""
     app = _app(tmp_workspace, LONG)
     async with app.run_test(size=size) as pilot:
         app.action_toggle_args_mode(force_raw=True)
-        await pilot.pause()
-
         area = app.query_one("#args-raw-area", ArgsTextArea)
-        wrapped = area.wrapped_document.height
+        wrapped = await _wrapped_height(pilot, area)
+
         assert wrapped > 1, "the fixture no longer wraps; it cannot prove anything"
         assert area.scrollable_content_region.height == min(wrapped, MAX_TEXT_ROWS)
 
@@ -70,10 +89,9 @@ async def test_a_command_too_tall_for_the_band_scrolls_rather_than_grows(tmp_wor
     app = _app(tmp_workspace, LONG)
     async with app.run_test(size=(80, 30)) as pilot:
         app.action_toggle_args_mode(force_raw=True)
-        await pilot.pause()
-
         area = app.query_one("#args-raw-area", ArgsTextArea)
-        assert area.wrapped_document.height > MAX_TEXT_ROWS, "fixture does not overflow at this width"
+
+        assert await _wrapped_height(pilot, area) > MAX_TEXT_ROWS, "fixture does not overflow at this width"
         assert area.scrollable_content_region.height == MAX_TEXT_ROWS
         assert app.query_one("#args-band").size.height <= 11   # the band's own max-height
 
@@ -89,9 +107,9 @@ async def test_a_one_line_command_still_takes_one_row(tmp_workspace: Path):
     app = _app(tmp_workspace, SHORT)
     async with app.run_test(size=(140, 45)) as pilot:
         app.action_toggle_args_mode(force_raw=True)
-        await pilot.pause()
-
         area = app.query_one("#args-raw-area", ArgsTextArea)
+
+        assert await _wrapped_height(pilot, area) == 1
         assert area.scrollable_content_region.height == 1
         assert area.outer_size.height == 3                  # one row plus its border
         assert app.query_one("#args-band").size.height == 6
