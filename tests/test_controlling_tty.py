@@ -137,11 +137,19 @@ async def test_cancelling_a_running_job_reaps_the_whole_group(tmp_workspace: Pat
         await task
 
     # The shell and both sleeps must be gone — not left running for 30s.
+    #
+    # ESRCH is the answer on Linux, but a macOS runner also reports EPERM here:
+    # signal 0 against a group mid-teardown, or whose id has been recycled, is
+    # refused rather than reported missing. Both mean the group this test
+    # created is no longer ours to signal, which is what "reaped" is being
+    # measured by — and it is the same pair `run_job`'s own finally suppresses
+    # when it signals. Catching ESRCH alone made this a macOS flake: it passed
+    # on the 3.11 and 3.13 legs and failed on 3.12 in the same run.
     deadline = time.time() + 3.0
     while time.time() < deadline:
         try:
             os.killpg(pgid, 0)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             break
         await asyncio.sleep(0.05)
     else:
