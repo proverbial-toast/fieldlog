@@ -1,0 +1,37 @@
+name: Feature request
+description: Something fieldlog should do that it does not
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        fieldlog stays small on purpose: it runs saved commands, streams them, and keeps the
+        archive. Ideas about what gets recorded and how it reads back fit that best.
+
+        Two things that need no change here: a command you want to run is a **recipe**, which
+        you can add yourself in `~/.config/fieldlog/recipes.d/` (see the README), and a set of
+        recipes run in order is a **chain**. If that is what you are after, the request is
+        really "ship this recipe in the box", which is a good request — say so below.
+
+  - type: textarea
+    id: doing
+    attributes:
+      label: What were you doing when you wanted it
+      description: The job in front of you, not the feature. It is the part that cannot be guessed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: want
+    attributes:
+      label: What you would like fieldlog to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: now
+    attributes:
+      label: What you do instead today
+      description: Including "nothing, I gave up" — that is useful to know.
+    validations:
+      required: false

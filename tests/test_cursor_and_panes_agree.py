@@ -67,7 +67,7 @@ def _agree(app: FieldlogApp) -> None:
     row = app._rows[app.cursor]
     assert row.kind != "header", "the cursor is parked on a section heading"
     assert app._row_shows(row), (
-        f"cursor on {row.kind} {row.bin}/{row.preset_id}, "
+        f"cursor on {row.kind} {row.id}/{row.preset_id}, "
         f"panes on chain={app.selected_chain_id} "
         f"{app.selected_tool_id}/{app.selected_preset_id}"
     )
@@ -94,7 +94,7 @@ async def test_hiding_the_row_under_the_cursor_takes_the_panes_with_it(tmp_works
         await pilot.pause()
         assert app.hide_missing is False
 
-        app.cursor = _row_at(app, "chain", bin="needs-absent")
+        app.cursor = _row_at(app, "chain", id="needs-absent")
         app._select_row(app._rows[app.cursor])
         await pilot.pause()
         assert app.selected_chain_id == "needs-absent"
@@ -103,7 +103,7 @@ async def test_hiding_the_row_under_the_cursor_takes_the_panes_with_it(tmp_works
         app.action_toggle_hide_missing()            # [!] runnable — the chain row goes
         await pilot.pause()
 
-        assert all(r.bin != "needs-absent" for r in app._rows), "the blocked chain is still listed"
+        assert all(r.id != "needs-absent" for r in app._rows), "the blocked chain is still listed"
         assert app.selected_chain_id is None, "VARIANTS is still painting the hidden chain"
         _agree(app)
 

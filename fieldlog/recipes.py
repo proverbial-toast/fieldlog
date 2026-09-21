@@ -151,6 +151,20 @@ def is_tool_installed(bin_name: str) -> bool:
     return False
 
 
+def recipe_bin(tool: dict, preset: dict) -> str:
+    """The binary a recipe runs: its preset's own `bin`, else its tool's."""
+    return preset.get("bin", tool.get("bin", tool["id"]))
+
+
+def recipe_missing(tool: dict, preset: dict) -> bool:
+    """The recipe's binary is not in $PATH — the one gap runnable-only hides on.
+
+    A recipe waiting on a target or a dns name stays listed, blocked: the scope
+    is one keystroke away, and hiding it made the filter deny a variant the
+    tree was showing."""
+    return not is_tool_installed(recipe_bin(tool, preset))
+
+
 def clear_tool_cache() -> None:
     """Forget what is installed and where, so a reload sees a tool added since
     boot. Both caches go together: a stale listing would outlive the verdict
@@ -509,15 +523,23 @@ def display_path(p: Path) -> str:
 _WRAPPERS = ("timeout", "gtimeout", "sudo", "doas", "env", "nice")
 
 
+def command_prefix(bin_name: str, flags: str) -> str:
+    """What format_command puts in front of `flags`: the binary, or nothing when
+    the flags already start with it or with a wrapper and run as they stand."""
+    flags = (flags or "").strip()
+    if flags and (flags == bin_name or flags.startswith(f"{bin_name} ")
+                  or flags.split(None, 1)[0] in _WRAPPERS):
+        return ""
+    return bin_name
+
+
 def format_command(bin_name: str, flags: str) -> str:
     """Format the executable command from binary and flags."""
     flags = (flags or "").strip()
+    prefix = command_prefix(bin_name, flags)
     if not flags:
-        return bin_name
-    first_tok = flags.split(None, 1)[0]
-    if flags == bin_name or flags.startswith(f"{bin_name} ") or first_tok in _WRAPPERS:
-        return flags
-    return f"{bin_name} {flags}"
+        return prefix
+    return f"{prefix} {flags}" if prefix else flags
 
 
 def _bin_text(value) -> str:
@@ -979,6 +1001,13 @@ def chain_blocked(
     return verdict.blocked, verdict.reason
 
 
+def chain_missing(catalog: Catalog, chain: dict) -> bool:
+    """Any step's binary is not installed. Every step, not check_chain's first
+    blocked one: a chain whose first step wants a target can still stop on a
+    later step's tool."""
+    return any(recipe_missing(tool, preset) for tool, preset, _cont in chain_steps(catalog, chain))
+
+
 def chain_matches(chain: dict, q: str) -> bool:
     """Substring match over the text an operator would search a chain by."""
     if not q:
@@ -1248,18 +1277,23 @@ BlockedFn = Callable[[dict, dict], bool]
 
 def score(tool: dict, preset: dict, q: str) -> Optional[int]:
     """Scored match. Loose (subsequence) matching never sees the flag string —
-    that is what lets a tool name match a curl variant through its `-w "…"` argument."""
+    that is what lets a tool name match a curl variant through its `-w "…"` argument.
+
+    The recipe id and the tool's name match as substrings only. `rtt` and `pmtu`
+    both run ping, so the binary alone never finds them; letting the loose pass
+    see them too doubled the hits for a query like `rtt`."""
     if not q:
         return 3
     bin_name = str(tool.get("bin", tool.get("id", ""))).lower()
+    recipe_id = f"{tool.get('id', '')}/{preset.get('id', '')}".lower()
     name = f"{tool.get('bin', tool.get('id', ''))} {preset.get('name', preset.get('id', ''))}".lower()
     flags = str(preset.get("flags", "")).lower()
 
-    if bin_name.startswith(q):
+    if bin_name.startswith(q) or recipe_id.startswith(q):
         return 0
-    if q in bin_name:
+    if q in bin_name or q in recipe_id:
         return 1
-    if q in name:
+    if q in name or q in str(tool.get("name", "")).lower():
         return 2
     if q in flags:
         return 3
@@ -1279,17 +1313,20 @@ def search(
     hide_missing: bool = True,
     limit: int = 40,
 ) -> List[Tuple[dict, dict, bool]]:
-    """Ranked `(tool, preset, blocked)` hits: runnable first, then score."""
+    """Ranked `(tool, preset, blocked)` hits: runnable first, then score.
+
+    `hide_missing` drops a recipe whose binary is not installed and nothing
+    else, as the tree does; `blocked_fn` only ranks and marks what is left."""
     q = (query or "").strip().lower()
     hits = []
     for t in tools:
         for p in t.get("presets", []):
-            blocked = bool(blocked_fn(t, p))
-            if hide_missing and blocked:
+            if hide_missing and recipe_missing(t, p):
                 continue
             s = score(t, p, q)
             if s is None:
                 continue
+            blocked = bool(blocked_fn(t, p))
             hits.append((1 if blocked else 0, s, t, p, blocked))
     hits.sort(key=lambda h: (h[0], h[1]))
     return [(t, p, b) for _, _, t, p, b in hits[:limit]]

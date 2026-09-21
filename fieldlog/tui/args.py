@@ -15,6 +15,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Static
 
 from fieldlog.archive import peek_run_number
+from fieldlog.recipes import chain_steps, command_prefix, format_command, recipe_bin
 from fieldlog.state import resolve_flags, run_stamp
 from fieldlog.tui.helpers import arg_groups
 from fieldlog.tui.theme import ACCENT, FG, MUTED, SOFT, WARN
@@ -87,71 +88,104 @@ class ArgsBandMixin:
             self.query_one("#args-btn-mode", Static).update(
                 "[E] token view" if self.args_raw_mode else "[E] edit raw"
             )
-            self.query_one("#args-bin-label", Static).update(
-                Text.assemble(("$ ", ACCENT), (tool.get("bin", tool["id"]), f"bold {FG}"))
-            )
-
-            tokens_wrap.remove_children()
-            bound = self.bound_values()
-            max_row_width = 70 if self._current_layout == "split" else 40
-            current: List[Static] = []
-            width = 0
-
-            def flush() -> None:
-                nonlocal current, width
-                if current:
-                    row = Horizontal(classes="arg-pairs-row")
-                    tokens_wrap.mount(row)
-                    row.mount_all(current)
-                    current, width = [], 0
-
-            for g in arg_groups(resolved)["groups"]:
-                flag, value = g["flag"], g["value"]
-                is_bound = bool(value) and any(v in value for v in bound)
-                if flag and value:
-                    text = Text.assemble((flag + " ", ACCENT), (value, WARN if is_bound else SOFT))
-                elif flag:
-                    text = Text(flag, style=ACCENT)
-                else:
-                    text = Text(value, style=WARN if is_bound else FG)
-
-                group_len = len(flag) + (len(value) + 1 if value else 0)
-                if group_len > 36:
-                    flush()
-                    row = Horizontal(classes="arg-pairs-row-wide")
-                    tokens_wrap.mount(row)
-                    row.mount(Static(text, classes="arg-pair arg-pair-wide"))
-                    continue
-                if width + group_len + 4 > max_row_width and current:
-                    flush()
-                current.append(Static(text, classes="arg-pair"))
-                width += group_len + 4
-            flush()
+            self._paint_command(tokens_wrap, recipe_bin(tool, preset), resolved, raw=self.args_raw_mode)
 
             raw_area = self.query_one("#args-raw-area", ArgsTextArea)
             if raw_area.text != template:
                 raw_area.text = template
 
+    def _paint_command(self, tokens_wrap: Vertical, binary: str, resolved: str, raw: bool) -> None:
+        """The label and what sits beside it read as the command that runs.
+
+        In the token view that is the command whole: its first word in the
+        label, the rest as tokens. Flags that start with the binary or with a
+        wrapper run as they stand, and the band used to put the binary in front
+        of them anyway — `$ openssl openssl s_client …`, `$ ping timeout 60 …`.
+        Beside the raw editor, which holds the template, the label is only what
+        format_command adds in front of it: the binary, or nothing.
+        """
+        words = format_command(binary, resolved).split(None, 1)
+        head = words[0] if words else ""
+        label = command_prefix(binary, resolved) if raw else head
+        self.query_one("#args-bin-label", Static).update(
+            Text.assemble(("$ ", ACCENT), (label, f"bold {FG}"))
+        )
+        self._paint_arg_tokens(tokens_wrap, words[1] if len(words) > 1 else "")
+
+    def _paint_arg_tokens(self, tokens_wrap: Vertical, resolved: str) -> None:
+        """One command, flag-and-value at a time, wrapped to the band's width.
+
+        Substituted scope values render amber, which is what makes a command
+        readable at a glance as *this* target's rather than the template's.
+        """
+        tokens_wrap.remove_children()
+        bound = self.bound_values()
+        max_row_width = 70 if self._current_layout == "split" else 40
+        current: List[Static] = []
+        width = 0
+
+        def flush() -> None:
+            nonlocal current, width
+            if current:
+                row = Horizontal(classes="arg-pairs-row")
+                tokens_wrap.mount(row)
+                row.mount_all(current)
+                current, width = [], 0
+
+        for g in arg_groups(resolved)["groups"]:
+            flag, value = g["flag"], g["value"]
+            is_bound = bool(value) and any(v in value for v in bound)
+            if flag and value:
+                text = Text.assemble((flag + " ", ACCENT), (value, WARN if is_bound else SOFT))
+            elif flag:
+                text = Text(flag, style=ACCENT)
+            else:
+                text = Text(value, style=WARN if is_bound else FG)
+
+            group_len = len(flag) + (len(value) + 1 if value else 0)
+            if group_len > 36:
+                flush()
+                row = Horizontal(classes="arg-pairs-row-wide")
+                tokens_wrap.mount(row)
+                row.mount(Static(text, classes="arg-pair arg-pair-wide"))
+                continue
+            if width + group_len + 4 > max_row_width and current:
+                flush()
+            current.append(Static(text, classes="arg-pair"))
+            width += group_len + 4
+        flush()
+
     def _refresh_chain_args_band(self, tokens_wrap: Vertical, chain: dict) -> None:
-        """`$ chain reach` and its steps as tokens. There is nothing to edit
-        here: a step's own args edit still applies when the chain runs it."""
+        """The command of the step the STEPS pane is reading, in full.
+
+        The band used to list the step *names*, which the pane above already
+        lists — so a chain was the one selection whose actual command line was
+        nowhere on screen, and `Enter` ran three commands the operator had not
+        been shown. There is still nothing to edit here: a step's own args edit
+        (`E` on the recipe itself) is what `run_chain` picks up, and the header
+        says when the step carries one.
+        """
+        steps = chain_steps(self.catalog, chain)
+        if not steps:
+            return
+        index = min(max(self.chain_step, 0), len(steps) - 1)
+        tool, preset, keep_going = steps[index]
+        key = f"{tool.get('id', '')}/{preset.get('id', '')}"
+        binary, resolved = self.step_command(tool, preset)
         with self._repaint("chain ARGS band"):
-            self.query_one("#args-header-title", Static).update("ARGS")
+            self.query_one("#args-header-title", Static).update(
+                f"ARGS · step {index + 1}/{len(steps)}" + (" *" if key in self.flag_edits else "")
+            )
             btn_reset = self.query_one("#args-btn-reset", Static)
             btn_reset.set_class(False, "-dirty")
             btn_reset.styles.color = MUTED
             self.query_one("#args-btn-mode", Static).update("[E] edit raw")
-            self.query_one("#args-bin-label", Static).update(
-                Text.assemble(("$ ", ACCENT), ("chain ", f"bold {FG}"), (chain["id"], f"bold {ACCENT}"))
-            )
-            tokens_wrap.remove_children()
-            row = Horizontal(classes="arg-pairs-row")
-            tokens_wrap.mount(row)
-            row.mount_all([
-                Static(Text(step["recipe"] + ("?" if step.get("continue") else ""), style=SOFT),
-                       classes="arg-pair")
-                for step in chain.get("steps", [])
-            ])
+            self._paint_command(tokens_wrap, binary, resolved, raw=False)
+            if keep_going:
+                row = Horizontal(classes="arg-pairs-row")
+                tokens_wrap.mount(row)
+                row.mount(Static(Text("? the chain continues if this step fails", style=MUTED),
+                                 classes="arg-pair arg-pair-wide"))
 
     @property
     def args_dirty(self) -> bool:
@@ -172,6 +206,7 @@ class ArgsBandMixin:
             tokens.add_class("hidden")
             raw_wrap.remove_class("hidden")
             btn_mode.update("[E] token view")
+            self._refresh_args_band()       # the label now says what goes before the template
             raw_area.focus()
         else:
             _, _, key, _ = self.current_flags()

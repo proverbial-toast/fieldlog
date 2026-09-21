@@ -46,8 +46,8 @@ class HelpModal(ModalScreen):
         ]),
         ("task", [
             ("Enter", "Recipes: select + jump to variants · Variants: run"),
-            ("1-9,0", "Select variant 1-10"),
-            (", / .", "Previous / next variant"),
+            ("1-9,0", "Select variant · read chain step"),
+            (", / .", "Previous / next variant / step"),
             ("Tab", "Move focus recipes / variants"),
             ("E", "Edit args (raw / tokens)"),
             ("R", "Reset args to variant"),
@@ -57,7 +57,7 @@ class HelpModal(ModalScreen):
             ("Esc", "Back to recipes from variants"),
             ("[ / ]", "Previous / next tab"),
             ("Ctrl+C", "Interrupt running job (SIGINT)"),
-            ("Y", "Copy tail -f for active artifact"),
+            ("Y", "Copy tail -f for active log or transcript"),
             ("Ctrl+Shift+C", "Copy whole log to clipboard"),
             ("Ctrl+W", "Close active tab · running job asks kill / detach"),
             ("⇧W", "Close all finished tabs"),
@@ -334,7 +334,7 @@ META_COMMANDS = [
     {"id": "reload", "key": "⇧R", "label": "Reload recipes from yaml", "hint": "keeps sessions", "action": "reload_recipes"},
     {"id": "scope", "key": "T", "label": "Target scope & log destination", "hint": "", "action": "target_scope"},
     {"id": "copypath", "key": "Y", "label": "Copy recipes yaml path", "hint": str(RECIPES_PATH), "action": "copy_catalog_path"},
-    {"id": "copytail", "key": "Y", "label": "Copy tail -f for active artifact", "hint": "read output in a pager", "action": "copy_tail"},
+    {"id": "copytail", "key": "Y", "label": "Copy tail -f for active log", "hint": "the session transcript on the System tab", "action": "copy_tail"},
     {"id": "layout", "key": "L", "label": "Toggle split / stacked layout", "hint": "stacked ≤ 120 cols", "action": "toggle_layout"},
     {"id": "runnable", "key": "!", "label": "Toggle runnable-only filter", "hint": "", "action": "toggle_hide_missing"},
     {"id": "closefin", "key": "⇧W", "label": "Close finished job tabs", "hint": "", "action": "close_finished_tabs"},
@@ -476,7 +476,6 @@ class PaletteModal(ModalScreen[Optional[Tuple]]):
             )
         else:
             t, p = item["tool"], item["preset"]
-            t_bin = t.get("bin", t["id"])
             # The blocked verdict as check_recipe reached it: a missing target,
             # an unsafe one and a missing local address are different problems
             # and used to read alike here.
@@ -486,7 +485,7 @@ class PaletteModal(ModalScreen[Optional[Tuple]]):
             verdict = item.get("verdict")
             state = short_reason(verdict) if not ok and verdict is not None else ""
             cells = (
-                f"{t_bin[:10]:<11}",
+                f"{t['id'][:10]:<11}",
                 f"{p.get('name', p['id'])[:26]:<27}",
                 f"{state[:15]:<16}",
                 f"{truncate_right(t.get('name', ''), 16):>16}",

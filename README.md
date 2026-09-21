@@ -107,11 +107,11 @@ interfaces: without `-i` it uses that same default.
 | `↑ ↓` `j k` | Move within the focused pane |
 | `Tab` | Switch focus between RECIPES and VARIANTS |
 | `Esc` | Back out one step: the args editor, then the filter, then VARIANTS to RECIPES. Never quits |
-| `Enter` | On a tool: jump to its variants. On a variant or chain: run it |
-| `1`–`9`, `0` | Select variant 1–10 of the current tool |
-| `,` `.` | Previous / next variant |
+| `Enter` | Jump to VARIANTS — a chain's STEPS — with the row selected; `Enter` there runs it |
+| `1`–`9`, `0` | Select variant 1–10 of the current tool, or read step 1–10 of a chain |
+| `,` `.` | Previous / next variant, or step of a chain |
 | `/` | Filter recipes. `Esc` clears it |
-| `!` | Toggle runnable-only (default) / show everything |
+| `!` | Toggle runnable-only (default) / show everything. Runnable-only hides what is not installed; a recipe or chain waiting on a target or DNS name stays, dimmed |
 | `Ctrl+P` | Palette. `Enter` loads a recipe's args, `Shift+Enter` runs it. Type `>` for commands only |
 | `E` | Edit the args of the selected variant (raw template). `Esc` or `Ctrl+J` applies |
 | `R` | Reset edited args to the variant default |
@@ -120,7 +120,7 @@ interfaces: without `-i` it uses that same default.
 | `Ctrl+W` | Close the active tab. A running job asks: kill, or detach and keep it running. While typing in the filter or the args editor, it deletes a word instead |
 | `Shift+W` | Close every finished tab |
 | `Ctrl+C` | Send SIGINT to the active tab's job |
-| `Y` | Copy `tail -f <log>` for the active tab to the clipboard |
+| `Y` | Copy `tail -f <log>` for the active tab to the clipboard. On the System tab that is `<workspace>/fieldlog.log`, the session transcript |
 | `Ctrl+Shift+C` | Copy the active tab's log to the clipboard, the last 500 KB if it is longer. Many terminals keep this key for their own copy; the *Copy active log* command in `Ctrl+P` does the same |
 | `M` | Recipe manager: sources, drop-ins, overrides, missing tools |
 | `Shift+R` | Reload recipes. Running jobs are untouched |
@@ -173,7 +173,7 @@ session; `R` restores the variant default.
 ```bash
 fieldlog list                            # one line per tool, then the chains
 fieldlog list ping                       # a tool id: that tool's recipes
-fieldlog list sweep                      # anything else: search tool, preset name and flags
+fieldlog list sweep                      # anything else: search recipe id, tool, preset name and flags
 fieldlog list -V                         # every recipe with its flags (also with a tool or search)
 fieldlog list --runnable                 # only tools found in $PATH
 fieldlog list -q                         # tool/preset IDs and chain ids, one per line, nothing else (for fzf / xargs)
@@ -299,11 +299,13 @@ per **theme**, all of them shipped in the wheel:
 | `reach` | ping, traceroute, mtr, fping |
 | `dns` | dig, resolvectl, scutil |
 | `http-tls` | curl, openssl, wrk, python-server |
-| `local` | ss, lsof, ip, ethtool |
+| `local` | ss, lsof, ip, ethtool, wifi |
 | `capture` | tcpdump, rcap |
 | `scan` | arp-scan, nmap, tcpcheck |
 | `throughput` | iperf3 |
-| `chains` | the six built-in chains |
+| `quality` | rtt, pmtu, tracepath |
+| `neighbourhood` | wire, ra, dhcp, mdns, captive |
+| `chains` | the eight built-in chains |
 
 Add your own as `*.yaml` files in either:
 
@@ -575,10 +577,15 @@ step the chain continues past:
 reach      reachability · ping, trace, ptr    ping/quick → traceroute/icmp? → dig/ptr
 ```
 
-In the TUI, chains sit under the recipes. Selecting one lists its steps
-read-only; `Enter` runs the whole chain, one tab per step. Per-recipe args
-edits (`E`) still apply inside a chain. The steps themselves are edited in the
-YAML.
+In the TUI, chains sit under the recipes. Selecting one turns the VARIANTS
+pane into `STEPS`: the chain's steps in the order they run, `?` on the ones it
+continues past, with `▸` on the step being read. `↑ ↓`, `,` `.` and the number
+keys walk that marker, and the ARGS band below shows that step's command in
+full, resolved against the current scope — a chain's steps are not a list to
+pick from, so nothing there changes what runs. `Enter` runs the whole chain,
+one tab per step. Per-recipe args edits (`E` on the recipe itself) still apply
+inside a chain, and a step carrying one is marked `*`. The steps themselves are
+edited in the YAML.
 
 ### Drop-in files
 
@@ -756,6 +763,31 @@ long interactive sessions are out of scope.
 A preset's `parse` rule turns its own output into one line on the run record, so
 a ping run reads as `4 replies · 0% loss` without opening the log. Everything
 else stays a log you read yourself.
+
+## Reporting a problem
+
+Issues go to [the tracker](https://github.com/proverbial-toast/fieldlog/issues).
+One command carries most of what a report needs:
+
+```bash
+fieldlog doctor --json
+```
+
+Its `environment` block holds the version, the platform, the python, which
+catalog files loaded, which themes are off and anything the loader refused. It
+runs nothing and writes nothing, so it is safe to paste from a live box — read
+it first if the target names in your scope are sensitive.
+
+If fieldlog itself crashed, it prints a block starting `fieldlog hit an error it
+did not expect`, with the version, the command and the traceback together.
+Paste the whole of it rather than the traceback alone.
+
+If the TUI behaved oddly rather than crashing, `<workspace>/fieldlog.log` holds
+everything the System tab printed, each line stamped with the time it happened.
+
+A tool that fails is usually not a fieldlog bug: `fieldlog show <recipe> -t
+<target>` prints the exact command line, and running that command yourself says
+whether fieldlog or the tool is the one refusing.
 
 ## License
 

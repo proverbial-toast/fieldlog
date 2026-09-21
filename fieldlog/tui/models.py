@@ -23,7 +23,8 @@ class TreeRow:
 
     kind: str               # "header" | "tool" | "entry" | "chain"
     label: str = ""
-    bin: str = ""
+    id: str = ""            # the bold word: tool or chain id, as the CLI names it.
+                            # Not the binary — `rtt` and `pmtu` both run ping.
     meta: str = ""
     tool_id: str = ""
     preset_id: str = ""

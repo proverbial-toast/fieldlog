@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from fieldlog.cli import build_parser, handle_list
-from fieldlog.recipes import load_catalog
+from fieldlog.recipes import load_catalog, score, search
 
 BASE = """
 recipes:
@@ -97,6 +97,36 @@ def test_verbose_shows_flags(catalog, capsys):
 def test_search_lists_matching_recipes(catalog, capsys):
     out = _list(catalog, capsys, "y-flag")
     assert "ok/y" in out and "ok/x" not in out
+
+
+# Two tools on one binary, neither preset named after its id: the TUI's filter
+# found `/captive` nowhere, and `list banner` answered with iperf3/bloat.
+SHARED_BIN = [
+    {"id": "ping", "bin": "ping", "name": "ICMP Reachability",
+     "presets": [{"id": "quick", "name": "4 probes", "flags": "-c 4 $TARGET"}]},
+    {"id": "rtt", "bin": "ping", "name": "Latency Quality",
+     "presets": [{"id": "jitter", "name": "20 probes, spread not average", "flags": "-c 20 $TARGET"}]},
+]
+
+
+def _hits(query: str) -> list:
+    return [f"{t['id']}/{p['id']}" for t, p, _ in search(SHARED_BIN, query, lambda t, p: False)]
+
+
+def test_search_finds_a_recipe_by_its_id_whatever_binary_it_runs():
+    assert _hits("rtt") == ["rtt/jitter"]
+    assert _hits("rtt/jitter") == ["rtt/jitter"]
+    assert _hits("jitter") == ["rtt/jitter"]
+    assert _hits("ping")[0] == "ping/quick"    # the binary still finds both
+
+
+def test_search_finds_a_recipe_by_the_tool_name_the_tree_shows():
+    assert _hits("latency") == ["rtt/jitter"]
+
+
+def test_ids_and_tool_names_stay_out_of_the_loose_match():
+    rtt, jitter = SHARED_BIN[1], SHARED_BIN[1]["presets"][0]
+    assert score(rtt, jitter, "lqy") is None     # a subsequence of "latency quality" only
 
 
 def test_runnable_hides_missing_tools(catalog, capsys):

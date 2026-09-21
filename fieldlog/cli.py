@@ -9,12 +9,15 @@ import fcntl
 import json
 import math
 import os
+import platform
+import shlex
 import shutil
 import signal
 import struct
 import sys
 import termios
 import time
+import traceback
 import tty
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -48,6 +51,7 @@ from fieldlog.recipes import (
     chain_arrow,
     chain_blocked,
     chain_matches,
+    chain_missing,
     chain_steps,
     check_chain,
     check_recipe,
@@ -59,6 +63,7 @@ from fieldlog.recipes import (
     is_tool_installed,
     load_catalog,
     parse_rule,
+    recipe_missing,
     run_passed,
     score,
     search,
@@ -185,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # list
     list_p = subparsers.add_parser("list", help="List tools and chains; name a tool to see its recipes", aliases=["recipes", "ls"])
-    list_p.add_argument("query", nargs="?", default="", help="A tool id to list its recipes, or a search over tool, preset name and flags")
+    list_p.add_argument("query", nargs="?", default="", help="A tool id to list its recipes, or a search over recipe id, tool, preset name and flags")
     list_p.add_argument("-r", "--runnable", action="store_true", help="Only show tools installed in $PATH")
     list_p.add_argument("-q", "--names", action="store_true", help="Output bare recipe IDs (one per line)")
     list_p.add_argument("--json", action="store_true", help="Output recipe catalog as JSON")
@@ -276,29 +281,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def chain_runnable(catalog: Catalog, chain: dict) -> bool:
-    """Every step's binary is in $PATH — the test `-r` applies to a tool, per step."""
-    return all(
-        is_tool_installed(p.get("bin", t.get("bin", t["id"])))
-        for t, p, _cont in chain_steps(catalog, chain)
-    )
-
-
 def filter_chains(catalog: Catalog, query: str, runnable_only: bool) -> List[dict]:
     """Chains surviving the same query / runnable filters as tools."""
     out = []
     for chain in catalog.chains:
         if query and not chain_matches(chain, query):
             continue
-        if runnable_only and not chain_runnable(catalog, chain):
+        if runnable_only and chain_missing(catalog, chain):
             continue
         out.append(chain)
     return out
-
-
-def recipe_missing(tool: dict, preset: dict) -> bool:
-    """The recipe's binary is not in $PATH — the one blocker `list` can know."""
-    return not is_tool_installed(preset.get("bin", tool.get("bin", tool["id"])))
 
 
 # The narrowest id / name columns `list` uses, and the widest a name may push them.
@@ -479,7 +471,7 @@ def handle_list(args: argparse.Namespace, catalog: Catalog) -> int:
         return 0
 
     # Default: one row per tool, installed first, as the TUI's recipe tree.
-    tools = sorted(filtered_tools, key=lambda t: (not t["installed"], t.get("bin", t["id"])))
+    tools = sorted(filtered_tools, key=lambda t: (not t["installed"], t["id"]))
     if tools:
         console.print("[bold dim]RECIPES[/bold dim]")
     widths = column_widths(tools + chains)
@@ -1410,7 +1402,44 @@ def doctor_scan(catalog: Catalog, session: TargetSession) -> dict:
     }
 
 
-def doctor_report_json(scan: dict, session: TargetSession) -> dict:
+ISSUES_URL = "https://github.com/proverbial-toast/fieldlog/issues"
+
+
+def environment_report(catalog: Optional[Catalog] = None) -> dict:
+    """What a report about fieldlog itself needs, in one place.
+
+    Every support question starts from the same four answers — which version,
+    on what, with which catalog loaded, and what it complained about on the way
+    in. Gathering them here means `doctor --json` and a crash both carry them,
+    so the first reply to a report is an answer rather than four questions.
+    """
+    report = {
+        "version": __version__,
+        "python": platform.python_version(),
+        "platform": f"{platform.system()} {platform.release()}",
+        "machine": platform.machine(),
+        # The one absence that explains a refused --timeout on a Mac.
+        "timeout_binary": timeout_binary(),
+    }
+    if catalog is not None:
+        report["catalog"] = {
+            "base": display_path(catalog.base_path),
+            "dropin_dir": display_path(catalog.dropin_dir),
+            "dropins": list(catalog.files),
+            "themes_file": display_path(recipes_mod.THEMES_PATH),
+            "themes_off": catalog.inactive_themes,
+            # What the loader said it could not use. Until now these were
+            # visible in the TUI alone, so a CLI user with a malformed drop-in
+            # saw a smaller catalog and no reason for it.
+            "errors": list(catalog.errors),
+            "overrides": list(catalog.overrides),
+        }
+    return report
+
+
+def doctor_report_json(
+    scan: dict, session: TargetSession, catalog: Optional[Catalog] = None
+) -> dict:
     """The scan as a machine-readable record."""
     return {
         "scope": {
@@ -1459,6 +1488,10 @@ def doctor_report_json(scan: dict, session: TargetSession) -> dict:
         # of the footer line, so a consumer can tell "no such recipe" from
         # "that theme is switched off".
         "themes": scan["themes"],
+        # The box, not the scope: version, python, platform and what the
+        # catalog loaded. This is the half of a bug report nobody thinks to
+        # include, so `doctor --json` is the one paste that has all of it.
+        "environment": environment_report(catalog),
     }
 
 
@@ -1467,7 +1500,7 @@ def handle_doctor(args: argparse.Namespace, catalog: Catalog) -> int:
     scan = doctor_scan(catalog, session)
 
     if getattr(args, "json", False):
-        print(json.dumps(doctor_report_json(scan, session), indent=2))
+        print(json.dumps(doctor_report_json(scan, session, catalog), indent=2))
         return 0
 
     console = Console()
@@ -1529,6 +1562,13 @@ def handle_doctor(args: argparse.Namespace, catalog: Catalog) -> int:
             f"[yellow]themes off:[/yellow] {escape(' · '.join(off))} "
             f"[dim]· {escape(display_path(recipes_mod.THEMES_PATH))}[/dim]"
         )
+    if catalog.errors:
+        # Nothing else on the CLI says a catalog file would not load: `list`
+        # and `run` just show a smaller catalog. A catalog that quietly shrank
+        # is the hardest report there is to answer, so doctor says it plainly.
+        for err in catalog.errors:
+            console.print(f"[red]catalog:[/red] {escape(err)}")
+
     hints = []
     if scan["needs"]["target"]:
         hints.append(f"set a target (-t) to unlock {scan['needs']['target']}")
@@ -1540,6 +1580,13 @@ def handle_doctor(args: argparse.Namespace, catalog: Catalog) -> int:
         hints.append(f"{scan['refused']} refused by the scope value (-v to see why)")
     if hints:
         console.print(f"[dim]{escape(' · '.join(hints))}[/dim]")
+
+    # The last line is the one to quote in a report: what was running, on what.
+    env = environment_report()
+    console.print(
+        f"\n[dim]fieldlog {env['version']} · python {env['python']} · {escape(env['platform'])} · "
+        f"timeout: {env['timeout_binary'] or 'not installed'}[/dim]"
+    )
     return 0
 
 
@@ -1597,7 +1644,40 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
     return 0
 
 
+def crash_report(exc: BaseException, argv: Optional[List[str]] = None) -> str:
+    """The whole of a bug report about a crash, in one block to copy.
+
+    Version, box, the command that did it, then the traceback. A traceback on
+    its own arrives without any of the first three, and asking for them costs a
+    round trip each — so they are printed together or not at all.
+    """
+    env = environment_report()
+    typed = " ".join(shlex.quote(a) for a in (sys.argv[1:] if argv is None else argv))
+    return "\n".join([
+        "fieldlog hit an error it did not expect. This is a bug, not something you did.",
+        "",
+        f"  fieldlog {env['version']} · python {env['python']} · "
+        f"{env['platform']} ({env['machine']})",
+        f"  command: fieldlog {typed}".rstrip(),
+        "",
+        "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip(),
+        "",
+        f"Please report it with everything above: {ISSUES_URL}",
+    ])
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    return run_cli(argv)
+    """The entry point every install runs. `run_cli` still raises, so a test or
+    a caller importing fieldlog keeps the exception; only the command line
+    trades it for a report a person can paste."""
+    try:
+        return run_cli(argv)
+    except KeyboardInterrupt:
+        # Ctrl+C is a decision, not a fault: 130 is what an interrupted chain
+        # already reports, and a traceback here would say nothing.
+        return 130
+    except Exception as exc:  # noqa: BLE001 — the last stop before a bare traceback
+        print(crash_report(exc, argv), file=sys.stderr)
+        return 1
 
 

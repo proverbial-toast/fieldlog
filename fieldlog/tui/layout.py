@@ -62,10 +62,18 @@ class LayoutMixin:
         stacked = self._current_layout == "stacked"
         r_title.update("RECIPES ›" if stacked and not on_recipes else "RECIPES")
         r_title.styles.color = FG if on_recipes else UNFOCUSED
-        v_title.update("VARIANTS")
+        # A chain's rows are its steps, not a list to pick from — the pane is
+        # named for what it holds, or the numbers down its left read as the
+        # variant hotkeys they are not.
+        v_title.update("STEPS" if self.selected_chain_id else "VARIANTS")
         v_title.styles.color = FG if not on_recipes else UNFOCUSED
-        if self.selected_chain_id:
-            return          # the chain branch of _refresh_variants owns the crumb
+        chain = self.selected_chain()
+        if chain is not None:
+            # A chain's crumb is the one thing here that changes with focus:
+            # in the stacked layout the expanded pane hides RECIPES, and the
+            # crumb is where `esc` is written down.
+            self.query_one("#variants-crumb", Static).update(self._chain_crumb(chain))
+            return
         tool = self.get_tool(self.selected_tool_id)
         if tool:
             preset = self.get_preset(tool, self.selected_preset_id)

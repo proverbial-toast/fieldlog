@@ -109,7 +109,10 @@ def plan_launch(
     job = ActiveJob(
         id=run_id,
         recipe_id=tool_id,
-        name=f"{tool.get('bin', tool_id)}/{preset_id} #{run_id}",
+        # The recipe id, not the binary: `pmtu/bisect` runs ping, and a line
+        # naming `ping/bisect` names a recipe nobody can type back in. The
+        # record on disk has always said the recipe id; this now agrees.
+        name=f"{tool_id}/{preset_id} #{run_id}",
         log_path=log_path,
         variant_id=preset_id,
         command=command,

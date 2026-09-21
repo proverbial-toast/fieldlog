@@ -14,7 +14,9 @@ from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widgets import Input, Static
 
-from fieldlog.recipes import chain_matches, is_tool_installed, search, steps_label
+from fieldlog.recipes import (
+    chain_matches, chain_missing, is_tool_installed, recipe_missing, search, steps_label,
+)
 from fieldlog.state import save_pinned_recent
 from fieldlog.tui.helpers import truncate_right
 from fieldlog.tui.models import TreeRow
@@ -28,7 +30,7 @@ class RecipeTreeMixin:
 
     def _chain_row(self, chain: dict) -> TreeRow:
         return TreeRow(
-            "chain", label=chain.get("name", chain["id"]), bin=chain["id"],
+            "chain", label=chain.get("name", chain["id"]), id=chain["id"],
             meta=steps_label(chain),
             blocked=self.chain_blocked_flag(chain),
         )
@@ -44,7 +46,7 @@ class RecipeTreeMixin:
             rows = [TreeRow("header", label="Results")]
             for t, p, blocked in hits:
                 rows.append(TreeRow(
-                    "entry", label=p.get("name", p["id"]), bin=t.get("bin", t["id"]),
+                    "entry", label=p.get("name", p["id"]), id=t["id"],
                     tool_id=t["id"], preset_id=p["id"], blocked=blocked,
                 ))
             rows.extend(self._chain_rows(q))
@@ -57,7 +59,7 @@ class RecipeTreeMixin:
         rows.append(TreeRow("header", label="All Recipes"))
         for t in sorted(
             self.recipes,
-            key=lambda t: (0 if is_tool_installed(t.get("bin", "")) else 1, t.get("bin", t["id"])),
+            key=lambda t: (0 if is_tool_installed(t.get("bin", "")) else 1, t["id"]),
         ):
             ok = is_tool_installed(t.get("bin", ""))
             if self.hide_missing and not ok:
@@ -65,7 +67,7 @@ class RecipeTreeMixin:
             rows.append(TreeRow(
                 "tool",
                 label=t.get("name", t["id"]),
-                bin=t.get("bin", t["id"]),
+                id=t["id"],
                 tool_id=t["id"],
                 meta=f"{len(t.get('presets', []))}v" if ok else "n/a",
                 blocked=not ok,
@@ -77,15 +79,15 @@ class RecipeTreeMixin:
         return rows
 
     def _chain_rows(self, q: str) -> List[TreeRow]:
-        """Chain rows matching `q`, hidden while blocked if runnable-only is on."""
+        """Chain rows matching `q`. Runnable-only hides one with a step that is
+        not installed; one waiting on the scope stays, blocked, as a recipe does."""
         rows = []
         for chain in self.chains:
             if q and not chain_matches(chain, q):
                 continue
-            row = self._chain_row(chain)
-            if self.hide_missing and row.blocked:
+            if self.hide_missing and chain_missing(self.catalog, chain):
                 continue
-            rows.append(row)
+            rows.append(self._chain_row(chain))
         return rows
 
     def _entry_rows(self, keys: List[str]) -> List[TreeRow]:
@@ -96,21 +98,19 @@ class RecipeTreeMixin:
                 chain = self.get_chain(preset_id)
                 if chain is None:
                     continue
-                row = self._chain_row(chain)
-                if self.hide_missing and row.blocked:
+                if self.hide_missing and chain_missing(self.catalog, chain):
                     continue
-                out.append(row)
+                out.append(self._chain_row(chain))
                 continue
             t = self.get_tool(tool_id)
             if not t:
                 continue
             p = self.get_preset(t, preset_id)
-            blocked = self.blocked_flag(t, p)
-            if self.hide_missing and blocked:
+            if self.hide_missing and recipe_missing(t, p):
                 continue
             out.append(TreeRow(
-                "entry", label=p.get("name", p["id"]), bin=t.get("bin", t["id"]),
-                tool_id=t["id"], preset_id=p["id"], blocked=blocked,
+                "entry", label=p.get("name", p["id"]), id=t["id"],
+                tool_id=t["id"], preset_id=p["id"], blocked=self.blocked_flag(t, p),
             ))
         return out
 
@@ -118,16 +118,16 @@ class RecipeTreeMixin:
         if row.kind == "header":
             return Text(f"  {row.label.upper()}", style=f"bold {MUTED}")
         if selected and not row.blocked:
-            bin_style, label_style, meta_style = f"bold {BG_BASE} on {ACCENT}", f"{BG_BASE} on {ACCENT}", f"{BG_BASE} on {ACCENT}"
+            id_style, label_style, meta_style = f"bold {BG_BASE} on {ACCENT}", f"{BG_BASE} on {ACCENT}", f"{BG_BASE} on {ACCENT}"
         elif selected:
-            bin_style, label_style, meta_style = f"bold {DIM} on #161c1b", f"{UNFOCUSED} on #161c1b", f"{MUTED} on #161c1b"
+            id_style, label_style, meta_style = f"bold {DIM} on #161c1b", f"{UNFOCUSED} on #161c1b", f"{MUTED} on #161c1b"
         elif row.blocked:
-            bin_style, label_style, meta_style = "#4a5754", UNFOCUSED, MUTED
+            id_style, label_style, meta_style = "#4a5754", UNFOCUSED, MUTED
         else:
-            bin_style, label_style, meta_style = f"bold {FG}", DIM, MUTED
+            id_style, label_style, meta_style = f"bold {FG}", DIM, MUTED
 
         label = truncate_right(row.label, width)
-        text = Text.assemble(("  ", bin_style), (row.bin, bin_style), (" ", label_style), (label, label_style))
+        text = Text.assemble(("  ", id_style), (row.id, id_style), (" ", label_style), (label, label_style))
         if row.meta:
             text.append("  " + row.meta, style=meta_style)
         return text
@@ -135,7 +135,7 @@ class RecipeTreeMixin:
     @staticmethod
     def _row_identity(row: TreeRow) -> tuple:
         """What makes a row the same row across a rebuild, index aside."""
-        return (row.kind, row.bin, row.tool_id, row.preset_id)
+        return (row.kind, row.id, row.tool_id, row.preset_id)
 
     def _row_shows(self, row: TreeRow) -> bool:
         """Whether `row` names what VARIANTS and ARGS are painting right now.
@@ -146,7 +146,7 @@ class RecipeTreeMixin:
         first one. Every other kind has to match exactly.
         """
         if row.kind == "chain":
-            return row.bin == self.selected_chain_id
+            return row.id == self.selected_chain_id
         if self.selected_chain_id is not None:
             return False
         if row.kind == "tool":
@@ -256,7 +256,9 @@ class RecipeTreeMixin:
         """A tool row selects that tool's first variant; an entry row is exact.
         A chain row selects the chain, and any other row clears it."""
         if row.kind == "chain":
-            self.selected_chain_id = row.bin
+            if row.id != self.selected_chain_id:
+                self.chain_step = 0     # a different chain is read from its first step
+            self.selected_chain_id = row.id
         elif row.kind == "tool":
             self.selected_chain_id = None
             tool = self.get_tool(row.tool_id)
@@ -294,6 +296,8 @@ class RecipeTreeMixin:
         tool = self.get_chain(chain_id)
         if tool is None:
             return
+        if chain_id != self.selected_chain_id:
+            self.chain_step = 0
         self.selected_chain_id = chain_id
         self._rebuild_tree()
         self._refresh_variants()
@@ -323,14 +327,37 @@ class RecipeTreeMixin:
         else:
             self.move_cursor(1)
 
+    def select_under_cursor(self) -> Optional[str]:
+        """Select whatever the cursor stands on, and answer with its kind."""
+        row = self._rows[self.cursor] if 0 <= self.cursor < len(self._rows) else None
+        if row is None or row.kind == "header":
+            return None
+        self._select_row(row)
+        return row.kind
+
     def action_activate(self) -> None:
-        """Enter in RECIPES selects and jumps to VARIANTS; Enter in VARIANTS runs."""
-        if self.focus_pane() == "recipes":
-            if 0 <= self.cursor < len(self._rows) and self._rows[self.cursor].kind != "header":
-                self._select_row(self._rows[self.cursor])
-            self._focus_variants()
+        """Enter in RECIPES selects and jumps to VARIANTS; Enter in VARIANTS runs.
+
+        A chain goes the same way as a recipe: Enter is how the operator gets
+        to look at what they are about to launch, and the launch is the second
+        Enter. It never runs on the first one.
+        """
+        if self.focus_pane() != "recipes":
+            self.action_run_task()
             return
-        self.action_run_task()
+        self.select_under_cursor()
+        self._focus_variants()
+
+    def commit_filter(self) -> None:
+        """Enter in the filter box: stop typing, hand the keyboard to the hit.
+
+        It runs nothing, whatever pane the keyboard was in before `/` was
+        pressed — routing it through `action_activate` meant that a filter
+        typed from VARIANTS launched the old selection on the keystroke that
+        finished the word.
+        """
+        self.select_under_cursor()
+        self._focus_variants()
 
     def action_focus_filter(self) -> None:
         self.query_one("#filter-input", Input).focus()

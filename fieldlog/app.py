@@ -413,6 +413,9 @@ class FieldlogApp(
         # Set only while a chain row is selected; every tool/preset path below
         # behaves exactly as it did when this is None.
         self.selected_chain_id: Optional[str] = None
+        # Which of that chain's steps the pane is reading. A reading glass and
+        # nothing more: every step runs, in the order the yaml sets.
+        self.chain_step: int = 0
         self.flag_edits: Dict[str, str] = {}
         self.args_raw_mode: bool = False
 
@@ -729,7 +732,7 @@ class FieldlogApp(
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "filter-input":
             self.set_focus(None)
-            self.action_activate()
+            self.commit_filter()
         elif event.input.id == "stdin-input":
             self.send_stdin_reply()
 

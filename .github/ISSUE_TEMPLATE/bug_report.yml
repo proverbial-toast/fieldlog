@@ -1,0 +1,88 @@
+name: Bug report
+description: fieldlog did something wrong, or stopped doing something right
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One paste answers most of what I would otherwise have to ask for:
+
+        ```
+        fieldlog doctor --json
+        ```
+
+        It carries the version, the platform, the python, which catalog files
+        loaded and anything the loader refused — and it runs nothing and
+        writes nothing.
+
+        It does include the scope you passed it (target, dns name, local
+        address). This is a public tracker: redact those if they belong to
+        someone else's network. `fieldlog doctor --json` with no scope flags
+        is enough for most reports.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Before you start
+      options:
+        - label: >-
+            This is about fieldlog itself, not about what a tool it ran (ping, dig, nmap, curl…)
+            reported. fieldlog runs the command and keeps the log; what the tool then says is the
+            tool's own.
+          required: true
+
+  - type: textarea
+    id: ran
+    attributes:
+      label: What you ran
+      description: The exact command, or the keys you pressed in the TUI and in what order.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: fieldlog doctor --json
+      description: >-
+        Paste the output. If fieldlog will not start far enough to run it, say so here
+        instead and paste `fieldlog --version` with your OS.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: crash
+    attributes:
+      label: Crash output, if it crashed
+      description: >-
+        The whole block starting "fieldlog hit an error it did not expect", traceback included.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal, if this is about the TUI or the copy keys
+      placeholder: iTerm2 on macOS 15 · tmux 3.4 · ssh from Windows Terminal
+    validations:
+      required: false
+
+  - type: textarea
+    id: transcript
+    attributes:
+      label: Session transcript, if the TUI behaved oddly
+      description: >-
+        The relevant lines from `<workspace>/fieldlog.log` (default `./targets/fieldlog.log`).
+        It holds everything the System tab printed, each line stamped with the time it happened.
+      render: text
+    validations:
+      required: false

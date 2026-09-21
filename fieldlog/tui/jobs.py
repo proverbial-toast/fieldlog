@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from rich.text import Text
@@ -26,6 +27,7 @@ from fieldlog.launch import LaunchPlan, plan_launch
 from fieldlog.report import chain_outcome
 from fieldlog.runner import HIDDEN_REPLY, interrupt_job, kill_job, loggable_reply, run_job, send_stdin, strip_ansi
 from fieldlog.state import ActiveJob, save_pinned_recent
+from fieldlog.transcript import TRANSCRIPT_FILE
 from fieldlog.tui.helpers import copy_text_to_clipboard, truncate_right
 from fieldlog.tui.models import TabDescriptor
 from fieldlog.tui.modals import CloseJobModal
@@ -372,6 +374,11 @@ class JobsMixin:
         truncated = False
         if tab.id == "system":
             stamp = [f"# fieldlog {VERSION} · {tab.label} · {clock}"]
+            # Say where the same lines are on disk, so a pasted System log
+            # carries its own provenance and the reader knows the file holds
+            # more than the 5000 lines kept in memory.
+            if self._transcript_ok:
+                stamp.append(f"# transcript: {self._transcript_path()}")
             lines = list(self.system_log_lines)
         else:
             job = self.jobs.get(tab.job_id or "")
@@ -412,10 +419,29 @@ class JobsMixin:
         btn.styles.color = ACCENT
         self.set_timer(1.8, lambda: (btn.update("⧉ copy log  [Ctrl+Shift+C]"), setattr(btn.styles, "color", DIM)))
 
+    def _transcript_path(self) -> Path:
+        """Where this session's System lines are being appended."""
+        return Path(self.session.workspace_dir) / TRANSCRIPT_FILE
+
     def action_copy_tail(self) -> None:
         tab = self.active_tab()
-        if not tab or tab.id == "system" or not tab.artifact:
-            self.write_system_log("[clip] harness log is not written to disk", style=WARN)
+        if not tab:
+            return
+        if tab.id == "system":
+            # It is written to disk: the transcript has held every System line
+            # since it landed, and this key went on saying otherwise. The one
+            # file a report about the harness wants is now a keystroke away.
+            if not self._transcript_ok:
+                self.write_system_log(
+                    "[clip] the transcript is not being written · nothing to tail", style=WARN
+                )
+                return
+            cmd = f"tail -f {self._transcript_path()}"
+            copy_text_to_clipboard(cmd, app=self)
+            self.write_system_log(f"[clip] {cmd}")
+            return
+        if not tab.artifact:
+            self.write_system_log("[clip] this tab has no log on disk", style=WARN)
             return
         cmd = f"tail -f {tab.artifact}"
         copy_text_to_clipboard(cmd, app=self)
@@ -508,7 +534,7 @@ class JobsMixin:
         switcher.mount(rlog)
         switcher.current = f"log-{tab_id}"
 
-        self.write_system_log(f"[runner] spawn {tool.get('bin', tool['id'])}/{preset.get('id')} #{job.id}", style=ACCENT)
+        self.write_system_log(f"[runner] spawn {tool['id']}/{preset.get('id')} #{job.id}", style=ACCENT)
         self.write_system_log(f"[artifact] {artifact}")
 
         self._refresh_tab_strip()
