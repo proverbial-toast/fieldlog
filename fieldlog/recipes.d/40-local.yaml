@@ -79,3 +79,34 @@ recipes:
         flags: >-
           -S $IFACE | awk -F': *' 'tolower($1) ~ /err|drop|miss|crc|fifo/ && $2 != 0 {print; n++}
           END {if (!n) print "no non-zero error counters"}'
+
+  # Half the "the network is slow" calls are the last three metres of it. The
+  # link recipe says whether this box is on the air at all and how well; survey
+  # says whether the channel it chose is already full of someone else's traffic.
+  - id: wifi
+    name: "Wireless Link"
+    bin: iw
+    platform: linux
+    presets:
+      - id: link
+        name: "ssid · signal · negotiated rate"
+        flags: "dev $IFACE link"
+        parse: 'signal: (?P<signal>-?\d+) dBm'
+        summary: "{signal} dBm"
+      - id: survey
+        name: "channel busy time · why it feels slow"
+        # No root and no scan: the driver already counts how long the radio
+        # heard someone else talking on the channel it is sitting on.
+        flags: "dev $IFACE survey dump"
+
+  # What iw is for on a Mac, without the sudo that wdutil wants.
+  - id: wifi
+    name: "Wireless Link"
+    bin: system_profiler
+    platform: darwin
+    presets:
+      - id: link
+        name: "ssid · signal · negotiated rate"
+        flags: "SPAirPortDataType"
+        parse: 'Signal / Noise: (?P<signal>-?\d+) dBm'
+        summary: "{signal} dBm"

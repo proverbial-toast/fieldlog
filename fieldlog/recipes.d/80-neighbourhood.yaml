@@ -1,0 +1,96 @@
+# Who else is on this wire, and what that says about where you are plugged in.
+# These mostly listen rather than probe: LLDP and CDP are what the switch says
+# about itself, an RA is what the router says, mDNS is what the hosts say, and
+# the captive check is what the network does to a request on its way out.
+# The two listeners need root or cap_net_raw and wait for a frame that is only
+# sent every 30-60 seconds, so they are slow by nature rather than by fault.
+# The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
+# $RUN_ID) and the `platform:` rule are documented in the project README.
+# Switch this theme off with `themes: {neighbourhood: false}` in
+# ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
+
+theme: neighbourhood
+
+recipes:
+  # One frame answers the question a patch panel label only claims to: which
+  # switch, which port, which vlan. Nothing is sent, so it is safe on a network
+  # you have only been asked to look at.
+  - id: wire
+    name: "What the Switch Announces"
+    bin: tcpdump
+    presets:
+      - id: lldp
+        name: "lldp · switch and port, one frame"
+        # Ethertype 0x88cc, re-announced every 30s by default: 90 covers three
+        # of them, and a switch that says nothing in 90s is not running LLDP.
+        flags: "timeout 90 tcpdump -i $IFACE -nn -v -c 1 'ether proto 0x88cc'"
+        parse: 'System Name TLV[^:\n]*(?::\s*|\n\s+)(?P<switch>\S+)'
+        summary: "uplink: {switch}"
+
+      - id: cdp
+        name: "cdp · cisco's own, one frame"
+        # CDP rides inside a SNAP header rather than its own ethertype, so it is
+        # matched by the protocol id two bytes in at offset 20. Every 60s.
+        flags: "timeout 90 tcpdump -i $IFACE -nn -v -c 1 'ether[20:2] = 0x2000'"
+        parse: "Device-ID[^\\n]*bytes: '(?P<device>[^']+)'"
+        summary: "uplink: {device}"
+
+  # A router advertisement is the one thing on a v6 segment that can rewrite
+  # your default route from across the room. rdisc6 solicits one instead of
+  # waiting out the router's own timer, which can be ten minutes.
+  - id: ra
+    name: "IPv6 Router Advertisement"
+    bin: rdisc6
+    presets:
+      - id: solicit
+        name: "who claims to be the router · one RA"
+        flags: "-1 $IFACE"
+        parse: 'from (?P<router>\S+)'
+        summary: "RA from {router}"
+
+  # The rogue DHCP server is the classic Monday-morning outage, and it is
+  # invisible until something asks. This broadcasts one DISCOVER and lists
+  # every server that answers; it accepts nothing, so no lease is consumed.
+  - id: dhcp
+    name: "Who Answers DHCP"
+    bin: nmap
+    presets:
+      - id: discover
+        name: "broadcast discover · every server that replies"
+        flags: "nmap --script broadcast-dhcp-discover -e $IFACE"
+        parse: 'Server Identifier: (?P<server>\S+)'
+        summary: "offer from {server}"
+
+  # Printers, NAS boxes, phones and anything with a Bonjour stack announce
+  # themselves unasked. On a strange network it is the fastest inventory there
+  # is, and on a quiet one the silence is the finding.
+  - id: mdns
+    name: "mDNS Announcements"
+    bin: avahi-browse
+    platform: linux
+    presets:
+      - id: browse
+        name: "everything announcing on the lan"
+        flags: >-
+          -a -r -t
+          | awk '{print} /^=/ {n++} END {printf "%d resolved announcements\n", n + 0}'
+        parse: '(?P<n>\d+) resolved announcements'
+        summary: "{n} services announcing"
+
+  # The check every phone makes on joining a network, run deliberately: a bare
+  # 204 from a page that has no content means nothing sat in the way. Anything
+  # else is a portal, a proxy or a filter, and the redirect names it. This one
+  # talks to Google's endpoint, which is the point of it.
+  - id: captive
+    name: "Captive Portal Check"
+    bin: curl
+    presets:
+      - id: check
+        name: "expect a bare 204 on the way out"
+        flags: >-
+          -sS -o /dev/null --max-time 8
+          -w "http=%{http_code} redirect=%{redirect_url} served-by=%{remote_ip}\n"
+          http://connectivitycheck.gstatic.com/generate_204
+        parse: 'http=(?P<code>\d{3})'
+        summary: "HTTP {code} on the way out"
+        expect: 'http=204'

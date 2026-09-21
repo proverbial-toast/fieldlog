@@ -74,6 +74,39 @@ recipes:
         flags: "-c 4 $TARGET"
         parse: '(?P<rx>\d+)(?: packets)? received, (?P<loss>[\d.]+)% packet loss'
         summary: "{rx} replies · {loss}% loss"
+      - id: ttl
+        name: "ttl · how far away, and what answered"
+        platform: linux
+        # The reply's ttl left the far end at that system's own default — 64 on
+        # linux and bsd, 128 on windows, 255 on most network kit — and lost one
+        # per hop on the way back, so a single probe carries both the distance
+        # and a guess at what is standing there.
+        flags: >-
+          ping -c 1 -W 2 $TARGET
+          | awk -F'ttl=' '{print}
+          /ttl=/ {split($2, f, " "); t = f[1] + 0;
+          init = t <= 64 ? 64 : (t <= 128 ? 128 : 255);
+          printf "ttl=%d · %d hops away · initial ttl %d (%s)\n", t, init - t, init,
+          init == 64 ? "linux/bsd" : (init == 128 ? "windows" : "network kit"); found = 1}
+          END {if (!found) print "no reply · no ttl to read"}'
+        parse: 'ttl=(?P<ttl>\d+) · (?P<hops>\d+) hops away'
+        summary: "{hops} hops · ttl {ttl}"
+        expect: 'hops away'
+      - id: ttl
+        name: "ttl · how far away, and what answered"
+        platform: darwin
+        # Darwin's -t is the deadline in seconds that Linux spells -W.
+        flags: >-
+          ping -c 1 -t 2 $TARGET
+          | awk -F'ttl=' '{print}
+          /ttl=/ {split($2, f, " "); t = f[1] + 0;
+          init = t <= 64 ? 64 : (t <= 128 ? 128 : 255);
+          printf "ttl=%d · %d hops away · initial ttl %d (%s)\n", t, init - t, init,
+          init == 64 ? "linux/bsd" : (init == 128 ? "windows" : "network kit"); found = 1}
+          END {if (!found) print "no reply · no ttl to read"}'
+        parse: 'ttl=(?P<ttl>\d+) · (?P<hops>\d+) hops away'
+        summary: "{hops} hops · ttl {ttl}"
+        expect: 'hops away'
 
   - id: traceroute
     name: "Path & MTU Trace"
@@ -90,6 +123,22 @@ recipes:
         name: "tcp syn :80"
         platform: linux
         flags: "-T -p 80 $TARGET"
+      - id: asn
+        name: "as number per hop · whose network is it"
+        platform: linux
+        # -A asks Cymru's whois server which AS each hop belongs to, so the
+        # trace makes a lookup of its own off to one side. Worth it: the hop
+        # where the AS changes is the hop where the problem stops being yours.
+        flags: "-A -n $TARGET"
+        parse: '\[AS(?P<asn>\d+)\]'
+        summary: "last hop seen in AS{asn}"
+      - id: asn
+        name: "as number per hop · whose network is it"
+        platform: darwin
+        # BSD traceroute spells the same lookup -a.
+        flags: "-a -n $TARGET"
+        parse: '\[AS(?P<asn>\d+)\]'
+        summary: "last hop seen in AS{asn}"
 
   - id: mtr
     name: "Continuous Path Monitor"

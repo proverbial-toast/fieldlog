@@ -1,0 +1,91 @@
+# Not whether the path works, but how well it behaves: how steady the latency
+# is, how big a packet it will carry, and whether it drops out while you watch.
+# Every recipe here is ping wearing a different hat, so they need nothing you
+# do not already have.
+# The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
+# $RUN_ID) and the `platform:` rule are documented in the project README.
+# Switch this theme off with `themes: {quality: false}` in
+# ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
+
+theme: quality
+
+recipes:
+  - id: rtt
+    name: "Latency Quality"
+    bin: ping
+    presets:
+      - id: jitter
+        name: "jitter · 20 probes, spread not average"
+        # ping already computes the deviation; the recipe's work is to say which
+        # of the four numbers matters. An average of 30 ms with 1 ms of jitter
+        # carries a call fine, and 15 ms with 25 ms of jitter does not.
+        flags: "-c 20 -q $TARGET"
+        parse: 'min/avg/max/(?:mdev|stddev) = [\d.]+/(?P<avg>[\d.]+)/(?P<max>[\d.]+)/(?P<jitter>[\d.]+)'
+        summary: "avg {avg} ms · max {max} ms · jitter {jitter} ms"
+
+      - id: flap
+        name: "flap watch · two minutes, longest outage"
+        # Loss percentage hides the shape of the loss: 5% spread evenly is a
+        # noisy link, and 5% in one block is a reconvergence. The sequence
+        # numbers ping prints are the only record of which one happened, so the
+        # gaps between them are counted as they stream past.
+        flags: >-
+          ping -c 120 -i 1 $TARGET
+          | awk '{print}
+          /icmp_seq[= ]/ {n = $0; sub(/.*icmp_seq[= ]/, "", n); sub(/[^0-9].*/, "", n); seq = n + 0;
+          if (last && seq > last + 1) {gap = seq - last - 1; lost += gap; if (gap > worst) worst = gap}
+          last = seq; got++}
+          END {printf "%d replies · %d missed · longest outage %d s\n", got + 0, lost + 0, worst + 0}'
+        parse: '(?P<got>\d+) replies · (?P<missed>\d+) missed · longest outage (?P<outage>\d+) s'
+        summary: "{got} replies · {missed} missed · worst gap {outage} s"
+
+  - id: pmtu
+    name: "Path MTU by Bisection"
+    bin: ping
+    presets:
+      - id: bisect
+        name: "largest packet the path carries · 576-1500"
+        platform: linux
+        # Binary search with the don't-fragment bit set: eleven probes name the
+        # byte where the path stops carrying, which is the number a tunnel or a
+        # broken ICMP filter argues with. -s is the payload, so the 28 bytes of
+        # ip and icmp header come off the mtu before it is asked for.
+        flags: >-
+          timeout 60 sh -c 'lo=576; hi=1500;
+          ping -M do -s 548 -c 1 -W 1 $TARGET >/dev/null 2>&1
+          || { echo "no reply at 576 bytes · nothing to bisect"; exit 1; };
+          while [ $((hi - lo)) -gt 1 ]; do mid=$(((lo + hi) / 2));
+          if ping -M do -s $((mid - 28)) -c 1 -W 1 $TARGET >/dev/null 2>&1;
+          then lo=$mid; else hi=$mid; fi; done;
+          echo "path mtu $lo bytes · ip and icmp headers included"'
+        parse: 'path mtu (?P<mtu>\d+) bytes'
+        summary: "path mtu {mtu}"
+
+      - id: bisect
+        name: "largest packet the path carries · 576-1500"
+        platform: darwin
+        # -D is Darwin's don't-fragment bit, and -t is the per-probe deadline in
+        # seconds; there is no -M do here.
+        flags: >-
+          timeout 60 sh -c 'lo=576; hi=1500;
+          ping -D -s 548 -c 1 -t 1 $TARGET >/dev/null 2>&1
+          || { echo "no reply at 576 bytes · nothing to bisect"; exit 1; };
+          while [ $((hi - lo)) -gt 1 ]; do mid=$(((lo + hi) / 2));
+          if ping -D -s $((mid - 28)) -c 1 -t 1 $TARGET >/dev/null 2>&1;
+          then lo=$mid; else hi=$mid; fi; done;
+          echo "path mtu $lo bytes · ip and icmp headers included"'
+        parse: 'path mtu (?P<mtu>\d+) bytes'
+        summary: "path mtu {mtu}"
+
+  # What pmtu/bisect finds by argument, tracepath asks the routers for — and
+  # names the hop that shrank it. No root, no raw socket.
+  - id: tracepath
+    name: "Per-Hop MTU"
+    bin: tracepath
+    platform: linux
+    presets:
+      - id: mtu
+        name: "pmtu per hop · which hop shrinks it"
+        flags: "-n $TARGET"
+        parse: 'pmtu (?P<mtu>\d+)'
+        summary: "path mtu {mtu}"

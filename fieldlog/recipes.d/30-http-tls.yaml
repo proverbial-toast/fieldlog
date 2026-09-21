@@ -93,6 +93,60 @@ recipes:
         flags: >-
           -sSL --max-redirs 10 -o /dev/null -D - http://$HOST/
           | tr -d '\r' | grep -iE '^(HTTP/|location:)'
+      - id: versions
+        name: "http/1.1, /2, /3 · what it will actually speak"
+        # Asking three times and reporting what came back beats reading the
+        # advertised protocol: a load balancer that claims h2 and negotiates
+        # 1.1 is a real answer, and so is a curl built without h3.
+        flags: >-
+          timeout 40 sh -c 'for v in 1.1 2 3; do printf "%-6s " $v;
+          curl -sS -o /dev/null --max-time 8 --http$v
+          -w "negotiated %{http_version} · HTTP %{http_code}\n" https://$HOST/ 2>&1 | tail -1; done
+          | awk "{print} /negotiated/ {if (\$3 + 0 > best + 0) best = \$3}
+          END {print \"best negotiated: HTTP/\" best}"'
+        parse: 'best negotiated: HTTP/(?P<version>[\d.]+)'
+        summary: "speaks HTTP/{version}"
+      - id: security
+        name: "security headers · which of the six are set"
+        # Not a grade, a checklist: the headers a browser acts on, and whether
+        # this response carries them. Missing is a finding to write down, not a
+        # failure, so the run passes either way.
+        flags: >-
+          -sSI --max-time 10 https://$HOST/ | tr -d '\r'
+          | awk 'BEGIN {n = split("strict-transport-security content-security-policy
+          x-content-type-options x-frame-options referrer-policy permissions-policy", want, " ")}
+          {h = tolower($1); sub(/:$/, "", h); seen[h] = 1}
+          END {for (i = 1; i <= n; i++) {ok = (want[i] in seen);
+          printf "%-28s %s\n", want[i], ok ? "present" : "missing"; c += ok}
+          printf "%d of %d security headers present\n", c + 0, n}'
+        parse: '(?P<have>\d+) of (?P<total>\d+) security headers present'
+        summary: "{have}/{total} security headers"
+      - id: skew
+        name: "clock skew · this box against the server's Date"
+        platform: linux
+        # Every http response carries the server's idea of now. A few seconds
+        # is nothing; a few minutes is the reason the tls handshake, the
+        # kerberos ticket or the signed url failed, and it is not the network.
+        flags: >-
+          timeout 20 sh -c 'srv=$(curl -sSI --max-time 10 https://$HOST/ | tr -d "\r"
+          | sed -n "s/^[Dd]ate: //p");
+          [ -n "$srv" ] || { echo "no Date header · nothing to compare"; exit 1; };
+          printf "server %s · local %s · skew %+d s\n" "$srv" "$(date -u "+%a, %d %b %Y %T GMT")"
+          $(( $(date +%s) - $(date -d "$srv" +%s) ))'
+        parse: 'skew (?P<skew>[+-]\d+) s'
+        summary: "clock skew {skew} s"
+      - id: skew
+        name: "clock skew · this box against the server's Date"
+        platform: darwin
+        # BSD date parses with -jf and a format rather than GNU's -d.
+        flags: >-
+          timeout 20 sh -c 'srv=$(curl -sSI --max-time 10 https://$HOST/ | tr -d "\r"
+          | sed -n "s/^[Dd]ate: //p");
+          [ -n "$srv" ] || { echo "no Date header · nothing to compare"; exit 1; };
+          printf "server %s · local %s · skew %+d s\n" "$srv" "$(date -u "+%a, %d %b %Y %T GMT")"
+          $(( $(date +%s) - $(date -jf "%a, %d %b %Y %T %Z" "$srv" +%s) ))'
+        parse: 'skew (?P<skew>[+-]\d+) s'
+        summary: "clock skew {skew} s"
 
   - id: openssl
     presets:

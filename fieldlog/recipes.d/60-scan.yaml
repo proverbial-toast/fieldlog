@@ -36,3 +36,32 @@ recipes:
       - id: ciphers
         name: "cipher suites + grades :443"
         flags: "-Pn -p 443 --script ssl-enum-ciphers -oA $OUTDIR/tls $HOST"
+
+  - id: arp-scan
+    presets:
+      - id: dupes
+        name: "duplicate addresses · two macs, one ip"
+        # arp-scan marks an address that answered more than once with (DUP: n).
+        # That is either a genuine conflict or a device answering for someone
+        # else, and both are worth finding before they are intermittent.
+        flags: >-
+          --interface=$IFACE --localnet
+          | awk '{print} /\(DUP: [0-9]+\)/ {n++}
+          END {printf "%d duplicate address responses\n", n + 0}'
+        parse: '(?P<dupes>\d+) duplicate address responses'
+        summary: "{dupes} duplicate addresses"
+
+  - id: tcpcheck
+    presets:
+      - id: banner
+        name: "first line a port says · PORT=25 to change"
+        # bash opens the socket itself, so there is nothing to install. A port
+        # that accepts and then says nothing reads as (silence); one that never
+        # accepts is the timeout's exit 124, which is the difference between
+        # closed and filtered worth having in the log.
+        flags: >-
+          timeout 8 bash -c 'exec 3<>/dev/tcp/$TARGET/${PORT:-22} || exit 1;
+          IFS= read -r -t 5 line <&3;
+          printf "%s:%s says: %s\n" "$TARGET" "${PORT:-22}" "${line:-(silence)}"'
+        parse: 'says: (?P<banner>.+)'
+        summary: "{banner}"

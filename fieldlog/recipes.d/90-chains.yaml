@@ -61,3 +61,22 @@ chains:
     steps:
       - openssl/selfsigned
       - python-server/https
+
+  # Three questions in the order you ask them on arriving somewhere new: what
+  # am I plugged into, who says they are the router, and does anything sit in
+  # the way on the path out. The two listeners are allowed to find nothing.
+  - id: whereami
+    name: "where am I · switch, router, way out"
+    steps:
+      - recipe: wire/lldp
+        continue: true
+      - recipe: ra/solicit
+        continue: true
+      - captive/check
+
+  - id: path-quality
+    name: "link quality · reachable, steady, and how big a packet"
+    steps:
+      - ping/quick
+      - rtt/jitter
+      - pmtu/bisect

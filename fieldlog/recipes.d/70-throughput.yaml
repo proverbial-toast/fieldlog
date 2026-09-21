@@ -30,3 +30,16 @@ recipes:
       - id: serve
         name: "one-shot server bound to $LHOST"
         flags: "-s -1 -B $LHOST"
+      - id: bloat
+        name: "bufferbloat · rtt at rest, then under load"
+        # The far end needs `iperf3 -s`. A path that answers in 8 ms idle and
+        # 300 ms while a transfer runs is not a slow link: it is a queue deep
+        # enough to hold a second of traffic, and no throughput number shows it.
+        flags: >-
+          timeout 90 sh -c 'avg() { ping -c "$1" -q $TARGET | awk -F/ "/min.avg/ {print \$5}"; };
+          idle=$(avg 5);
+          iperf3 -c $TARGET -t 12 >/dev/null 2>&1 &
+          sleep 2; load=$(avg 8); wait;
+          echo "idle ${idle:-?} ms · loaded ${load:-?} ms"'
+        parse: 'idle (?P<idle>[\d.]+) ms · loaded (?P<loaded>[\d.]+) ms'
+        summary: "rtt {idle} ms idle · {loaded} ms loaded"

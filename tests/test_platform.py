@@ -194,13 +194,14 @@ def _shipped(tmp_path: Path, platform: str) -> Catalog:
     return load_catalog(dropin_dir=dropins, platform=platform)
 
 
-# What a Linux box has had all along. Spelled out rather than derived, so a tool
+# What a Linux box gets. Spelled out rather than derived, so a tool
 # that disappears behind a mistyped `platform:` is caught here and not in the
 # README, which counts them.
 LINUX_TOOLS = [
     "ping", "traceroute", "mtr", "fping", "dig", "resolvectl", "curl", "openssl",
-    "wrk", "python-server", "ss", "ethtool", "ip", "tcpdump", "rcap", "arp-scan",
-    "tcpcheck", "nmap", "iperf3",
+    "wrk", "python-server", "ss", "ethtool", "ip", "wifi", "tcpdump", "rcap",
+    "arp-scan", "tcpcheck", "nmap", "iperf3", "rtt", "pmtu", "tracepath", "wire",
+    "ra", "dhcp", "mdns", "captive",
 ]
 
 
@@ -210,8 +211,10 @@ def test_the_shipped_catalog_is_unchanged_on_linux(tmp_path: Path):
     assert [t["id"] for t in cat.tools] == LINUX_TOOLS
     assert "-W 1" in _flags(cat, "ping", "quick")
     assert [p["id"] for p in next(t for t in cat.tools if t["id"] == "traceroute")["presets"]] == [
-        "icmp", "mtu", "tcp80",
+        "icmp", "mtu", "tcp80", "asn",
     ]
+    wifi = next(t for t in cat.tools if t["id"] == "wifi")
+    assert wifi["bin"] == "iw" and [p["id"] for p in wifi["presets"]] == ["link", "survey"]
 
 
 def test_the_shipped_catalog_loads_as_a_mac_reads_it(tmp_path: Path):
@@ -224,10 +227,16 @@ def test_the_shipped_catalog_loads_as_a_mac_reads_it(tmp_path: Path):
     assert v6["bin"] == "ping6"
 
     traceroute = next(t for t in cat.tools if t["id"] == "traceroute")
-    assert [p["id"] for p in traceroute["presets"]] == ["icmp"]
+    assert [p["id"] for p in traceroute["presets"]] == ["icmp", "asn"]
+    assert "-a -n" in _flags(cat, "traceroute", "asn"), "BSD spells the AS lookup -a"
+
+    # `wifi` is written twice, once per platform, with a different bin each
+    # time: the whole tool swaps rather than a preset inside it.
+    wifi = next(t for t in cat.tools if t["id"] == "wifi")
+    assert wifi["bin"] == "system_profiler" and [p["id"] for p in wifi["presets"]] == ["link"]
 
     ids = [t["id"] for t in cat.tools]
-    assert not {"ss", "ethtool", "resolvectl"} & set(ids)
+    assert not {"ss", "ethtool", "resolvectl", "tracepath", "mdns"} & set(ids)
     assert {"scutil", "lsof"} <= set(ids)
 
     # The stand-ins keep the chain honest: `reach` still resolves to real presets.

@@ -58,7 +58,8 @@ def test_every_shipped_file_declares_a_theme(dropins: Path):
 
     assert cat.errors == []
     assert set(cat.themes) == {
-        "reach", "dns", "http-tls", "local", "capture", "scan", "throughput", "chains",
+        "reach", "dns", "http-tls", "local", "capture", "scan", "throughput",
+        "quality", "neighbourhood", "chains",
     }
     assert all(cat.themes.values()), "nothing is off without a themes.yaml"
 

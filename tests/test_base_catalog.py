@@ -3,9 +3,12 @@ file that is not in the package."""
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
-from fieldlog.recipes import load_catalog
+import pytest
+
+from fieldlog.recipes import format_command, load_catalog
 
 
 def _base(tmp_path: Path):
@@ -32,3 +35,27 @@ def test_no_shipped_preset_reads_its_format_from_a_file(tmp_path: Path):
         if "@fmt" in str(preset.get("flags", ""))
     ]
     assert offenders == []
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_every_shipped_preset_parses_as_shell(tmp_path: Path, platform: str):
+    """`flags` is shell, and a good half of this catalog is a one-liner with an
+    awk program quoted inside it. `sh -n` parses the command without running a
+    byte of it, which is the check a quoting slip cannot get past — and the
+    only one that covers the other platform's presets, since they are filtered
+    out of this machine's catalog before anything else ever sees them."""
+    dropins = tmp_path / "recipes.d"
+    dropins.mkdir(exist_ok=True)
+    cat = load_catalog(dropin_dir=dropins, platform=platform)
+
+    unparseable = []
+    for tool in cat.tools:
+        for preset in tool.get("presets", []):
+            command = format_command(preset.get("bin", tool["bin"]), preset.get("flags", ""))
+            parsed = subprocess.run(
+                ["/bin/sh", "-n"], input=command, text=True, capture_output=True,
+            )
+            if parsed.returncode:
+                unparseable.append(f"{tool['id']}/{preset['id']}: {parsed.stderr.strip()}")
+
+    assert unparseable == []

@@ -62,3 +62,33 @@ recipes:
         name: "dnssec validation trace (delv)"
         bin: delv
         flags: "+vtrace $HOST"
+      - id: version
+        name: "what the nameserver admits to being"
+        # The CHAOS-class query is the oldest one-line fingerprint there is.
+        # A server either answers with its build or refuses, and the refusal is
+        # an answer too. Aim it at a nameserver, not at a web host.
+        flags: "@$TARGET version.bind chaos txt +short +time=2 +tries=1"
+        parse: '"(?P<version>[^"]+)"'
+        summary: "reports {version}"
+      - id: wildcard
+        name: "does a name nobody registered still resolve?"
+        # A wildcard record turns every typo into a hit, which is why a
+        # misrouted service can look like a dns fault for days. Ask for a label
+        # that cannot exist and see whether an answer comes back anyway.
+        flags: >-
+          timeout 20 sh -c 'probe=fl-$(date +%s)-$$.$HOST;
+          out=$(dig +short +time=2 +tries=1 A "$probe");
+          if [ -n "$out" ]; then echo "$probe -> $out";
+          echo "wildcard · a label nobody registered resolves";
+          else echo "$probe -> nxdomain"; echo "no wildcard"; fi'
+        parse: '(?P<verdict>(?:no )?wildcard)'
+        summary: "{verdict}"
+      - id: recursion
+        name: "will it recurse for a stranger?"
+        # Ask a resolver you are responsible for to look up a name it is not
+        # authoritative for. REFUSED is the healthy answer for anything facing
+        # the internet; NOERROR with an answer means it will do that for anyone
+        # who asks, which is how a resolver becomes someone else's amplifier.
+        flags: "@$TARGET example.com A +time=2 +tries=1"
+        parse: 'status: (?P<status>[A-Z]+)'
+        summary: "recursion for a stranger: {status}"
