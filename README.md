@@ -10,6 +10,8 @@ fieldlog runs the command, streams the output, and files the log plus a run
 record under `targets/<name>/`. The archive is the point: a week later you can
 see exactly what was run against a host, when, with what result.
 
+![The fieldlog TUI: the recipe tree and a tool's variants on the left, a finished curl run on the right, and the command it ran in the ARGS band](fieldlog-tui.png)
+
 ```bash
 fieldlog run ping/quick 192.168.1.20
 fieldlog history 192.168.1.20
