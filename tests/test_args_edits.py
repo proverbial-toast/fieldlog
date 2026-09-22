@@ -47,7 +47,9 @@ def test_override_outdir_resolves_to_the_reserved_run_dir(tmp_workspace: Path):
     session = TargetSession(target="10.0.0.1", workspace_dir=tmp_workspace)
     plan = plan_launch(session, NOOP_TOOL, NOOP_PRESET, flags_override="-w $OUTDIR/a.txt")
 
-    assert plan.command == f"true -w {plan.job.out_dir}/a.txt"
+    # Relative to the target folder, which is the job's working directory.
+    rel = plan.job.out_dir.relative_to(session.target_dir).as_posix()
+    assert plan.command == f"true -w {rel}/a.txt"
     assert plan.job.out_dir.is_dir()
 
 

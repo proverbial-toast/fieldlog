@@ -87,7 +87,7 @@ def snapshot_workspace(target_dir: Path) -> Dict[str, Tuple[int, int]]:
             # Skip hidden directories
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for filename in files:
-                if filename.startswith(".") or filename == "session.json":
+                if filename.startswith(".") or filename.startswith("session.json"):
                     continue
                 full_path = Path(root) / filename
                 try:
@@ -307,25 +307,59 @@ def manifest_environment(env: Dict[str, str]) -> Dict[str, str]:
     return {k: env.get(k, "") for k in MANIFEST_ENV_KEYS}
 
 
-def append_record(target_dir: Path, record: dict) -> None:
+# What an unreadable session.json is renamed to, with a stamp after it. Not
+# hidden: it is the operator's history and they have to be able to find it.
+UNREADABLE_MANIFEST = "session.json.unreadable-"
+
+
+def set_aside_manifest(target_dir: Path) -> Path:
+    """Rename an unreadable session.json out of the way and return where it went.
+
+    Called under the manifest lock. The name carries the moment it was set
+    aside, and a counter if two land in one second, so one never replaces another.
+    """
+    target_dir = Path(target_dir)
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    aside = target_dir / f"{UNREADABLE_MANIFEST}{stamp}"
+    n = 1
+    while aside.exists():
+        n += 1
+        aside = target_dir / f"{UNREADABLE_MANIFEST}{stamp}-{n}"
+    os.replace(target_dir / "session.json", aside)
+    return aside
+
+
+def append_record(target_dir: Path, record: dict) -> Optional[Path]:
     """Append one record to session.json, read-append-replace under the
     manifest lock, so a CLI run and the TUI finishing together cannot drop
-    each other's."""
+    each other's.
+
+    A manifest that is there and will not parse is never written over: it used
+    to be read as empty, so the next run replaced every record in it with its
+    own. It is renamed aside instead (see set_aside_manifest), the record starts
+    a fresh one, and the readers warn while the old file sits there. Returns the
+    set-aside path, or None when the manifest was sound. A manifest that cannot
+    even be read (permissions, I/O) raises: nothing is written over it either.
+    """
     target_dir = Path(target_dir)
     manifest = target_dir / "session.json"
+    aside: Optional[Path] = None
     with manifest_lock(target_dir):
-        runs = []
+        runs: list = []
         if manifest.exists():
             try:
                 parsed = json.loads(manifest.read_text(encoding="utf-8", errors="replace"))
-                if isinstance(parsed, list):
-                    runs = parsed
-            except (json.JSONDecodeError, OSError):
-                runs = []
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                runs = parsed
+            else:
+                aside = set_aside_manifest(target_dir)
         runs.append(record)
         tmp_manifest = target_dir / f".session_{record.get('id', 'x')}.json.tmp"
         tmp_manifest.write_text(json.dumps(runs, indent=2), encoding="utf-8")
         os.replace(tmp_manifest, manifest)
+    return aside
 
 
 def next_run_number(target_dir: Path) -> int:

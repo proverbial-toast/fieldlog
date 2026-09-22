@@ -171,7 +171,11 @@ defaults to `DEFAULT_INTERFACE` (`eth0`, `en0` on Darwin), one constant every su
 `prepare_job_paths` produces, for one run: the log `<log_dir><stamp>_<tool>_<preset>_<NN>.log` and the
 `$OUTDIR` `<log_dir><stamp>_<NN>/` (this pass: the run number is part of the directory name, so two runs a
 second apart never share one; a chain passes its first step's directory to every later step). If the log
-destination is unwritable it falls back to `raw/` and says so.
+destination is unwritable it falls back to `raw/` and says so. The command and the env see `$OUTDIR` through
+`state.outdir_value`: relative to the target folder (the job's `cwd`) when it is inside it, so the workspace
+path, which may contain spaces, never reaches the shell; absolute only under an outside log destination,
+which `check_recipe` refuses (`kind="outdir"`) when it would need quoting. The job and record keep the
+absolute path.
 
 Variables: `$NAME` / `${NAME}` whole names only. Canonical names `TARGET HOST IFACE LHOST OUTDIR`, with
 aliases `TARGET_IP→TARGET`, `TARGET_HOST→HOST`, `OUT_DIR→OUTDIR`. `resolve_flags` substitutes exactly what
@@ -395,7 +399,7 @@ writing to disk with nothing in the app reading it again.
 
 ## 9. Tests and CI
 
-648 tests in 58 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
+691 tests in 62 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
 unit tests (parsing, scope characters, arg tokens, path lookup); filesystem integration tests on a
 `tmp_workspace` fixture that run real `true`/`false`/`echo`/`sh` tools through `plan_launch` + `run_job` or
 `handle_run`; and async tests that drive the real app through `app.run_test()`. `test_app_structure.py`
@@ -416,5 +420,7 @@ builds the wheel, installs it clean and imports `fieldlog.app` (a hand-listed `p
 7. **The archive is append-only and cross-process safe.** Numbers under the lock; records under the lock.
 8. **An unreadable archive is never rendered as an empty one.** `read_manifest` is the one reader, and
    "nothing was run here" and "this cannot be read" are different answers with different exit codes.
+   Nor is one ever written over: `append_record` renames it `session.json.unreadable-<stamp>` and
+   starts afresh, and `read_manifest` warns while that file exists.
 9. **The TUI's highlight is what runs.** The RECIPES cursor and the VARIANTS/ARGS panes always name the
    same recipe; `_place_cursor` is where that is settled.

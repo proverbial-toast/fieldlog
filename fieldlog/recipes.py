@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
-from fieldlog.state import is_ip_address, shell_vars, template_vars
+from fieldlog.state import is_ip_address, outdir_value, shell_vars, template_vars
 
 if TYPE_CHECKING:
     from fieldlog.state import TargetSession
@@ -191,9 +191,10 @@ def timeout_binary() -> Optional[str]:
 # create_subprocess_shell), so anything outside this set — spaces, ; | & $ ` ( )
 # etc. — could break out of the command. IPs, CIDRs and hostnames need none of it.
 # A target may also be an ssh `user@host`: `@` means nothing to sh without the
-# `$` or `(` that stay refused.
+# `$` or `(` that stay refused. Nor does `%`, which an IPv6 link-local address
+# needs for its zone (`fe80::1%eth0`) and which ping, ssh and curl all accept.
 _UNSAFE_SCOPE = re.compile(r"[^A-Za-z0-9._:/-]")
-_UNSAFE_TARGET = re.compile(r"[^A-Za-z0-9._:/@-]")
+_UNSAFE_TARGET = re.compile(r"[^A-Za-z0-9._:/@%-]")
 
 # Anything an operator typing an IPv4 address could produce, right or wrong.
 _DOTTED = re.compile(r"[\d.]+")
@@ -208,7 +209,7 @@ def unsafe_scope_chars(value: str, pattern: re.Pattern = _UNSAFE_SCOPE) -> str:
 class Verdict:
     """Whether a recipe can run against a scope, and what kind of gap stops it.
 
-    `kind` is one of `ready | binary | target | dns | lhost | interface`: what
+    `kind` is one of `ready | binary | target | dns | lhost | interface | outdir`: what
     the reader would have to go and fix. It is decided here, beside the reason
     text, so doctor's buckets and the palette's labels read one answer instead
     of each re-deriving it from the English.
@@ -303,6 +304,17 @@ def check_recipe(
         bad = unsafe_scope_chars(session.interface)
         if bad:
             return Verdict(True, "interface", f"interface has unsafe characters ({bad})")
+    if "OUTDIR" in guarded or preset.get("outdir") is True:
+        # $OUTDIR is relative to the target folder, and so always clean, unless
+        # a log destination puts it somewhere else: then the path an operator
+        # chose is pasted into the command as it stands, and a space in it
+        # splits one path into two words.
+        bad = unsafe_scope_chars(outdir_value(session, session.log_dir()))
+        if bad:
+            return Verdict(
+                True, "outdir",
+                f"log destination has unsafe characters ({bad}) · choose a path without them",
+            )
     return Verdict(False, "ready", f"{bin_name} · in $PATH")
 
 

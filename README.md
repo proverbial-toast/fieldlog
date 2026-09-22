@@ -515,7 +515,7 @@ script that reads `$OUTDIR` itself.
 | `$HOST`, `$TARGET_HOST` | DNS name. If unset and the target is a hostname (not `user@host`), the target. Presets using it are not runnable without one |
 | `$LHOST` | Local IP: the one given, else the interface's IPv4 address, read when the job starts (see [TUI](#tui) to set one there). Presets using it are not runnable without one |
 | `$IFACE` | Interface name |
-| `$OUTDIR`, `$OUT_DIR` | Per-run folder for files the tool writes: `targets/<name>/raw/<timestamp>_<run>/` |
+| `$OUTDIR`, `$OUT_DIR` | Per-run folder for files the tool writes, `raw/<timestamp>_<run>`, relative to `targets/<name>/`, where every run starts. Absolute only under a log destination, which must then be a path without spaces or shell characters |
 | `$RUN_ID` | Run number, `01`, `02`, … Set in the environment only |
 
 A preset is **not runnable** while its variables are unmet or its binary is
@@ -736,6 +736,12 @@ Nothing ran, so a note carries no command, no exit code and no artifacts.
 - `--artifact-root DIR` (or the *log destination* in `T`) moves logs and
   `$OUTDIR` to `DIR/<name>/`. `session.json` stays in the workspace and records
   those files with absolute paths, since they sit outside the target folder.
+  `$OUTDIR` is pasted into commands as it stands, so a recipe that uses it is
+  refused while the log destination has a space or a shell character in it.
+- A `session.json` that fieldlog cannot parse is never written over. The next
+  run renames it `session.json.unreadable-<timestamp>` and starts a new one,
+  and `history` and `report` warn for as long as that file is there. Repair it
+  and merge its records back by hand.
 - Run numbers are per target folder, claimed under `.session.lock`, and the
   highest number handed out is kept in `.run-counter`, so a CLI run beside the
   TUI never reuses one. A dry run claims nothing.

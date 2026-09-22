@@ -74,7 +74,7 @@ def arg_groups(s: str) -> dict:
 _SHORT_MISSING = {"target": "needs target", "dns": "needs dns name", "lhost": "needs lhost"}
 _SHORT_REFUSED = {
     "target": "bad target", "dns": "bad dns name",
-    "lhost": "bad lhost", "interface": "bad interface",
+    "lhost": "bad lhost", "interface": "bad interface", "outdir": "bad log dir",
 }
 
 

@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from fieldlog.archive import UNREADABLE_MANIFEST
 from fieldlog.recipes import run_passed
 
 DEFAULT_TAIL = 40
@@ -65,13 +66,27 @@ def read_manifest(target_dir: Path) -> Manifest:
         )
     runs = [r for r in parsed if isinstance(r, dict)]
     dropped = len(parsed) - len(runs)
+    problems = []
     if dropped:
-        return Manifest(
-            runs=runs,
-            problem=f"{manifest}: {dropped} entr{'y is' if dropped == 1 else 'ies are'} "
-                    f"not a run record · skipped",
+        problems.append(
+            f"{manifest}: {dropped} entr{'y is' if dropped == 1 else 'ies are'} "
+            f"not a run record · skipped"
         )
-    return Manifest(runs=runs)
+    problems.extend(set_aside_notes(Path(target_dir)))
+    return Manifest(runs=runs, problem=" | ".join(problems))
+
+
+def set_aside_notes(target_dir: Path) -> List[str]:
+    """One warning per manifest the writer set aside as unreadable.
+
+    The runs in it are not in session.json any more, so a reader that stayed
+    quiet would present the fresh manifest as the whole history of the target.
+    """
+    return [
+        f"{path} is an earlier session.json that could not be read · "
+        f"its runs are not listed here · repair it and merge it back by hand"
+        for path in sorted(target_dir.glob(f"{UNREADABLE_MANIFEST}*"))
+    ]
 
 
 def load_runs(target_dir: Path) -> List[dict]:

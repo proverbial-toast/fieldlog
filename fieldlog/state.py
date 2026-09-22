@@ -315,6 +315,24 @@ def shell_vars(flags: str) -> set[str]:
     return {_VAR_ALIASES.get(m[1], m[1]) for m in _SHELL_VAR.finditer(flags or "")}
 
 
+def outdir_value(session: TargetSession, out_dir) -> str:
+    """`$OUTDIR` as a command sees it: relative to the target folder when it is
+    inside it, which is every run's working directory (runner's `cwd`).
+
+    The value is pasted into a shell command unquoted, and the absolute form
+    carries the whole workspace path — so a workspace under `My Work/` split
+    one path into two words, and `> $OUTDIR/x` wrote a file named `My` outside
+    the archive. Relative, it is `raw/<stamp>_<run>`, built only from
+    characters `scope_dir` and `run_stamp` allow. A log destination outside the
+    target folder stays absolute, and `check_recipe` refuses one that needs quoting.
+    """
+    text = str(out_dir)
+    try:
+        return Path(os.path.abspath(text)).relative_to(session.target_dir).as_posix()
+    except ValueError:
+        return text
+
+
 def resolve_flags(session: TargetSession, flags: str, out_dir: Optional[str] = None) -> str:
     """Replace known `$NAME` / `${NAME}` bindings, matched as whole names.
 
@@ -329,7 +347,7 @@ def resolve_flags(session: TargetSession, flags: str, out_dir: Optional[str] = N
         "HOST": session.dns_name,
         "IFACE": session.interface,
         "LHOST": session.effective_lhost(),
-        "OUTDIR": outdir,
+        "OUTDIR": outdir_value(session, outdir),
     }
     return _VAR.sub(lambda m: vals.get(_var_name(m), m[0]), flags)
 

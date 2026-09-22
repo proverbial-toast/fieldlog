@@ -9,6 +9,7 @@ terminal itself uses. Prompts are never parsed semantically.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import fcntl
 import os
 import pty
@@ -31,7 +32,7 @@ from fieldlog.archive import (
     snapshot_workspace,
 )
 from fieldlog.recipes import expect_found, fields_from_match, parse_match, summary_from_match
-from fieldlog.state import ActiveJob, TargetSession
+from fieldlog.state import ActiveJob, TargetSession, outdir_value
 
 # Called for each output line: (text, stream) where stream is "out" or "err".
 LineSink = Callable[[str, str], None]
@@ -83,6 +84,9 @@ def build_env(session: TargetSession, out_dir: Path, run_id: str) -> Dict[str, s
     expand to the same values — see the note above `state._VAR`.
     """
     env = dict(os.environ)
+    # The same text resolve_flags substitutes, so `${OUTDIR:-x}` and a script
+    # reading its env agree with the command line (see state.outdir_value).
+    outdir = outdir_value(session, out_dir)
     env.update(
         TARGET=session.target,
         TARGET_IP=session.target,
@@ -90,8 +94,8 @@ def build_env(session: TargetSession, out_dir: Path, run_id: str) -> Dict[str, s
         HOST=session.dns_name,
         LHOST=session.effective_lhost(),
         IFACE=session.interface,
-        OUT_DIR=str(out_dir),
-        OUTDIR=str(out_dir),
+        OUT_DIR=outdir,
+        OUTDIR=outdir,
         RUN_ID=run_id,
     )
     return env
@@ -329,6 +333,8 @@ async def run_job(
     try:
         lines = 0
         pending = ""          # partial line held back; it is the candidate prompt
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        held_cr = ""          # a read's trailing `\r`, until the next read is seen
         with open(job.log_path, "w", buffering=1, encoding="utf-8", errors="replace") as raw:
 
             def emit(text: str) -> None:
@@ -363,13 +369,25 @@ async def run_job(
                         on_state()
                     continue
 
-                if kind == "eof":
-                    break
                 if kind == "note":
                     emit(str(payload))
                     continue
 
-                text = payload.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+                # A read ends wherever the pty buffer did, not on a character
+                # or a line: the decoder keeps a split UTF-8 sequence for the
+                # next read (decoding each read alone made two `�` of one `é`),
+                # and a trailing `\r` waits to see whether a `\n` follows it
+                # (the pty writes `\r\n`, and split, it read as two newlines).
+                final = kind == "eof"
+                text = held_cr + decoder.decode(payload, final=final)
+                held_cr = ""
+                if not final and text.endswith("\r"):
+                    text, held_cr = text[:-1], "\r"
+                text = text.replace("\r\n", "\n").replace("\r", "\n")
+                if not text:
+                    if final:
+                        break
+                    continue
                 if job.await_prompt is not None:
                     job.await_prompt = None
                     job.await_since = None
@@ -379,6 +397,8 @@ async def run_job(
                 *complete, pending = pending.split("\n")
                 for line in complete:
                     emit(line)
+                if final:
+                    break
 
             if pending:
                 emit(pending)
@@ -409,7 +429,12 @@ async def run_job(
                 out_snap=out_snap,
             )
         job.artifact_delta = delta
-        _append_manifest(session, job, command, env, start, job.end_time, code, delta)
+        aside = _append_manifest(session, job, command, env, start, job.end_time, code, delta)
+        if aside is not None:
+            # Said where the operator is looking now; `history` and `report`
+            # keep saying it for as long as the file sits there.
+            sink(f"[fieldlog] session.json could not be read · kept as {aside.name} · "
+                 "this run starts a new one", "err")
         return code
     finally:
         try:
@@ -459,8 +484,11 @@ def _append_manifest(
     end: float,
     code: int,
     delta: ArtifactDelta,
-) -> None:
-    """Append-only run record in session.json (the durable, greppable manifest)."""
+) -> Optional[Path]:
+    """Append-only run record in session.json (the durable, greppable manifest).
+
+    Returns where an unreadable manifest was set aside, if it was (see
+    archive.append_record)."""
     artifact_entries = [
         {
             "path": a.path,
@@ -508,7 +536,8 @@ def _append_manifest(
     if job.chain:
         record["chain"] = job.chain
 
-    append_record(session.target_dir, record)
+    aside = append_record(session.target_dir, record)
     # Only now: a front-end reads this as "what the archive holds", so a write
     # that raised (a full or read-only disk) must leave it unset.
     job.record = record
+    return aside
