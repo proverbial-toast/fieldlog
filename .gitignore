@@ -17,8 +17,10 @@ dist/
 targets/*
 !targets/.gitkeep
 
-# Local drop-in recipes (a checkout's ./recipes.d is read like any other)
-/recipes.d/
+# Local drop-in recipes (a checkout's ./recipes.d is read like any other),
+# apart from the sample
+/recipes.d/*
+!/recipes.d/example.yaml.sample
 
 # Testing & caches
 .pytest_cache/

@@ -1,0 +1,34 @@
+# A starter drop-in: one tool, two presets and a chain. Copy it to
+# ~/.config/fieldlog/recipes.d/ under a name ending .yaml, and make it yours:
+#
+#   cp recipes.d/example.yaml.sample ~/.config/fieldlog/recipes.d/mine.yaml
+#
+# Only *.yaml files load, so this one never does where it is. It uses no
+# built-in recipe, so it still works with every built-in theme switched off.
+# The fields, variables and merge rules are in the project README, under Recipes.
+
+recipes:
+  - id: web                           # tool id, the first half of `web/status`
+    name: "My web checks"
+    bin: curl                         # checked in $PATH, and what runs
+    presets:
+      - id: status                    # fieldlog run web/status example.com
+        name: "status code and time"
+        flags: >-
+          -sS -o /dev/null
+          -w "HTTP %{http_code} in %{time_total}s\n"
+          https://$HOST/
+        parse: 'HTTP (?P<code>\d+) in (?P<secs>\d+\.\d\d)'
+        summary: "{code} · {secs}s"   # shown beside the run in history and report
+        expect: 'HTTP [23]\d\d'       # curl exits 0 on a 404; this fails the run
+      - id: headers
+        name: "response headers"
+        flags: "-sSI https://$HOST/"
+
+chains:
+  - id: site                          # fieldlog run site example.com
+    name: "site · status, then headers"
+    steps:
+      - recipe: web/status
+        continue: true                # show the headers even when the status fails
+      - web/headers

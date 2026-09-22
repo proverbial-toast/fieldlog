@@ -62,6 +62,31 @@ uv sync --extra dev             # or: python3 -m venv .venv && . .venv/bin/activ
 uv run pytest                   # or: pytest
 ```
 
+## Your own recipes
+
+The built-in catalog is a starting point; fieldlog is meant to hold the commands
+*you* run. A recipe is a few lines of YAML in `~/.config/fieldlog/recipes.d/`, and
+[`recipes.d/example.yaml.sample`](recipes.d/example.yaml.sample) is one to copy.
+
+To start from a blank slate, switch every built-in theme off in
+`~/.config/fieldlog/themes.yaml`. Only your own recipes load:
+
+```yaml
+themes:
+  reach: false
+  dns: false
+  http-tls: false
+  local: false
+  capture: false
+  scan: false
+  throughput: false
+  quality: false
+  neighbourhood: false
+  chains: false
+```
+
+Delete a line to bring that theme back. [Recipes](#recipes) covers the format.
+
 ## Terms
 
 | Term | Meaning | Example |
@@ -592,8 +617,9 @@ recipes:
         flags: "-c 1 -W 1 $TARGET"
 ```
 
-In a checkout, a `recipes.d/` at the repo root is ignored by git, so drop-ins
-you keep there while testing stay out of commits.
+In a checkout, the repo's `recipes.d/` holds only
+[`example.yaml.sample`](recipes.d/example.yaml.sample). Anything else in it is
+ignored by git, so drop-ins you keep there while testing stay out of commits.
 
 ### GUI recipes
 
