@@ -411,7 +411,7 @@ writing to disk with nothing in the app reading it again.
 
 ## 9. Tests and CI
 
-735 tests in 64 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
+737 tests in 64 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
 unit tests (parsing, scope characters, arg tokens, path lookup); filesystem integration tests on a
 `tmp_workspace` fixture that run real `true`/`false`/`echo`/`sh` tools through `plan_launch` + `run_job` or
 `handle_run`; and async tests that drive the real app through `app.run_test()`. `test_app_structure.py`

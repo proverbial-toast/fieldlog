@@ -201,3 +201,25 @@ def test_the_report_says_where_each_run_was_made_from(tmp_workspace: Path):
     folder.mkdir()
     out = render_report(folder, [_record("01", BLOCK)])
     assert "From: `wlan0 · 192.168.4.23 · via 192.168.4.1 · ssid Office Guest`" in out
+
+
+# ---- live: the real `ip` / `route` on whatever box runs the suite ------------
+# The tests above read canned output. These ask this machine's kernel, which is
+# the only check the macOS parsing gets: CI's macos-latest leg runs them.
+
+
+def test_live_loopback_routes_through_the_loopback_interface(monkeypatch):
+    monkeypatch.undo()          # the real get_interface_ip, not the autouse stub
+    block = vantage("127.0.0.1")
+    assert block.get("iface") in ("lo", "lo0"), block
+    assert block.get("local") == "127.0.0.1", block
+    assert block.get("route") == "target"
+
+
+def test_live_default_route_when_this_box_has_one(monkeypatch):
+    monkeypatch.undo()
+    block = vantage("")
+    if not block:
+        pytest.skip("no default route on this machine")
+    assert block["route"] == "default"
+    assert block["iface"] and block["iface"] not in ("lo", "lo0"), block
