@@ -1,6 +1,6 @@
 # fieldlog
 
-![fieldlog](fieldlog.jpg)
+<p align="center"><img src="fieldlog.png" alt="fieldlog" width="320"></p>
 
 fieldlog - log what you did in the field.
 
