@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from rich.console import Console
+from rich.console import Console as RichConsole
 from rich.markup import escape
 
 from fieldlog import __version__
@@ -598,15 +598,41 @@ async def execute_cli_job(
 
     if not quiet and not as_json:
         console = Console()
-        console.print(f"\n[bold cyan]{TAG}[/bold cyan] Spawning [bold]{escape(job.name)}[/bold]")
-        console.print(f"  [dim]Command:[/dim]     {escape(command)}")
-        console.print(f"  [dim]Log:[/dim]         {escape(str(job.log_path))}")
-        console.print(f"[dim]{'─' * 80}[/dim]")
+        try:
+            console.print(f"\n[bold cyan]{TAG}[/bold cyan] Spawning [bold]{escape(job.name)}[/bold]")
+            console.print(f"  [dim]Command:[/dim]     {escape(command)}")
+            console.print(f"  [dim]Log:[/dim]         {escape(str(job.log_path))}")
+            console.print(f"[dim]{'─' * 80}[/dim]")
+        except BrokenPipeError:
+            # The reader left during our own header, before the tool started.
+            # Nothing ran, so nothing is archived; the empty log planned for it
+            # goes too, rather than sitting in raw/ looking like a run.
+            sys.stderr.write(f"[fieldlog] output closed before {job.name} started · nothing ran\n")
+            try:
+                if job.log_path.stat().st_size == 0:
+                    job.log_path.unlink()
+            except OSError:
+                pass
+            return 130
+
+    reader_gone = False
 
     def sink(text: str, _stream: str) -> None:
-        if not as_json:
+        nonlocal reader_gone
+        if as_json or reader_gone:
+            return
+        try:
             sys.stdout.write(text + "\n")
             sys.stdout.flush()
+        except BrokenPipeError:
+            # `| head`, `| grep -m1`, or `less` quit early: whatever read our
+            # stdout has gone. That is the operator saying "enough", as Ctrl+C
+            # does, so it is treated as one — the tool is interrupted and the
+            # run is archived as interrupted. Raising here instead killed the
+            # tool mid-write and left no record at all.
+            reader_gone = True
+            silence_stdout()
+            interrupt_job(job)
 
     stdin_reader_active = False
 
@@ -1723,6 +1749,32 @@ def crash_report(exc: BaseException, argv: Optional[List[str]] = None) -> str:
     ])
 
 
+class Console(RichConsole):
+    """Rich's console, except that a closed pipe is fieldlog's to answer.
+
+    Rich's own answer is `SystemExit(1)`, so `fieldlog history | head` reported
+    a failure that never happened. Raised on as BrokenPipeError, it reaches
+    `main`, which exits 0 quietly (Rich documents this override).
+    """
+
+    def on_broken_pipe(self) -> None:
+        self.quiet = True
+        silence_stdout()
+        raise BrokenPipeError
+
+
+def silence_stdout() -> None:
+    """Point stdout at /dev/null once whatever was reading it has gone, so
+    nothing later — a closing banner, the interpreter's own final flush — trips
+    over the closed pipe again."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
+    except (OSError, ValueError):
+        pass
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """The entry point every install runs. `run_cli` still raises, so a test or
     a caller importing fieldlog keeps the exception; only the command line
@@ -1733,6 +1785,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         # Ctrl+C is a decision, not a fault: 130 is what an interrupted chain
         # already reports, and a traceback here would say nothing.
         return 130
+    except BrokenPipeError:
+        # `fieldlog history | head`: the reader took what it wanted and left.
+        # Nothing failed, so nothing is reported and the status is 0.
+        silence_stdout()
+        return 0
     except Exception as exc:  # noqa: BLE001 — the last stop before a bare traceback
         print(crash_report(exc, argv), file=sys.stderr)
         return 1
