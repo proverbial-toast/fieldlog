@@ -220,14 +220,14 @@ fieldlog history                         # target folders, with run counts and e
 fieldlog history 192.168.1.20            # runs for one folder
 fieldlog history router1 --json
 fieldlog history router1 --recipe ping/quick --fields    # one column per parsed field, across runs
-fieldlog history router1 --since 12                      # only runs #12 and up
+fieldlog history router1 --since 3h                      # only runs from the last three hours
 
 fieldlog note router1 "customer confirmed the outage at 14:10"   # a timestamped note in the archive
 
 fieldlog report 192.168.1.20                        # every run as Markdown on stdout
 fieldlog report router1 --tail 10                   # 10 lines of each log instead of 40
 fieldlog report router1 --full -o run-report.md     # whole logs, written to a file
-fieldlog report router1 --since 12                  # only runs #12 and up
+fieldlog report router1 --since today -o today.md  # today's visit, ready for your notes
 fieldlog report router1 --recipe ping/quick         # only that recipe's runs
 
 fieldlog doctor                                     # what can run now, and what's missing
@@ -293,7 +293,7 @@ and `--json`. It touches nothing on disk and exits 0.
 | `-o`, `--output FILE` | Write the Markdown to `FILE`, creating parent folders. `-` is stdout |
 | `--tail N` | Lines of each run's log to include (default 40) |
 | `--full` | Include each log in full |
-| `--since ID` | Only runs numbered `ID` or higher |
+| `--since WHEN` | Only runs started since `WHEN`: a date (`2026-09-20`, from midnight), a date and time (`2026-09-20T14:00`), a span back from now (`90m`, `3h`, `2d`, `1w`), `today` or `yesterday` |
 | `--recipe KEY` | Only records of one recipe key, `chain/<id>` or `note`. Exact, never a prefix |
 
 `--since` and `--recipe` compose, and a filtered report says so in its summary

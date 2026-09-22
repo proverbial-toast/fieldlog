@@ -124,8 +124,8 @@ def test_missing_log_says_so_instead_of_a_code_block(target_dir: Path, tmp_works
     assert "line 122" not in out
 
 
-def test_since_filters_by_run_number(target_dir: Path, tmp_workspace: Path, capsys):
-    out = _report(tmp_workspace, capsys, "--since", "2")
+def test_since_filters_by_date(target_dir: Path, tmp_workspace: Path, capsys):
+    out = _report(tmp_workspace, capsys, "--since", "2026-09-13")
     assert "· 1 run ·" in out
     assert "tcpdump/capture" in out
     assert "ping/quick" not in out

@@ -2,8 +2,8 @@
 
 `history` had `--recipe` and `report` had `--since`, each written where it
 happened to be wanted. An operator could narrow a listing to the nmap runs and
-then had no way to make a report of them; they could report from run #12 and
-then had no way to list what that window held. Both flags now work on both
+then had no way to make a report of them; they could report from one point on
+and then had no way to list what that window held. Both flags now work on both
 readers, through one `filter_runs`, so the two cannot drift on what a filter
 means.
 
@@ -19,7 +19,11 @@ from pathlib import Path
 
 import pytest
 
-from fieldlog.cli import build_parser, filter_note, filter_runs, handle_history, handle_report
+from datetime import datetime
+
+from fieldlog.cli import (
+    build_parser, filter_note, filter_runs, handle_history, handle_report, parse_since,
+)
 
 
 def _record(run_id: str, recipe: str, **extra) -> dict:
@@ -65,8 +69,10 @@ def _run(command: str, workspace: Path, *rest) -> int:
     [
         ("", "", ["01", "02", "03", "04", "05"]),
         ("ping/quick", "", ["01", "03"]),
-        ("", "03", ["03", "04", "05"]),
-        ("ping/quick", "02", ["03"]),              # both at once, and they compose
+        ("", "2026-09-19T09:03", ["03", "04", "05"]),
+        ("ping/quick", "2026-09-19T09:02", ["03"]),   # both at once, and they compose
+        ("", "2026-09-19", ["01", "02", "03", "04", "05"]),   # a date is from its midnight
+        ("", "2026-09-20", []),
         ("chain/reach", "", ["04"]),               # a chain summary is a record like any other
         ("note", "", ["05"]),
         ("ping", "", []),                          # exact, never a prefix: `ping` is not a recipe
@@ -79,24 +85,66 @@ def test_the_filter_keeps_exactly_what_was_asked_for(recipe, since, expected):
     assert [r["id"] for r in kept] == expected
 
 
-def test_a_since_that_is_not_a_number_is_refused_not_guessed():
-    kept, error = filter_runs(RUNS, since="yesterday")
+def test_a_since_that_names_no_moment_is_refused_not_guessed():
+    kept, error = filter_runs(RUNS, since="lastweek")
 
     assert kept == []
-    assert "--since expects a run number" in error
+    assert "--since expects a date" in error
+
+
+def test_a_run_number_is_no_longer_a_since():
+    # Replaced outright, not kept beside the dates: `12` is not a moment.
+    assert filter_runs(RUNS, since="12")[1].startswith("Error")
+
+
+NOW = datetime(2026, 9, 22, 15, 30)
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("today", datetime(2026, 9, 22)),
+        ("yesterday", datetime(2026, 9, 21)),
+        ("Today", datetime(2026, 9, 22)),
+        ("90m", datetime(2026, 9, 22, 14, 0)),
+        ("3h", datetime(2026, 9, 22, 12, 30)),
+        ("2d", datetime(2026, 9, 20, 15, 30)),
+        ("1w", datetime(2026, 9, 15, 15, 30)),
+        ("2026-09-20", datetime(2026, 9, 20)),
+        ("2026-09-20T14:00", datetime(2026, 9, 20, 14, 0)),
+        ("2026-09-20 14:00", datetime(2026, 9, 20, 14, 0)),
+        ("lastweek", None),
+        ("12", None),
+        ("3y", None),
+        ("", None),
+    ],
+)
+def test_since_reads_dates_times_spans_and_words(text, expected):
+    assert parse_since(text, now=NOW) == expected
+
+
+def test_a_span_counts_back_from_now(tmp_workspace):
+    recent = {"id": "09", "recipe": "ping/quick", "start_time": "2026-09-22T15:00:00"}
+    kept, _ = filter_runs(RUNS + [recent], since="1h", now=NOW)
+    assert [r["id"] for r in kept] == ["09"]
+
+
+def test_a_record_with_no_readable_start_time_drops_out_of_a_window():
+    odd = {"id": "07", "recipe": "ping/quick", "start_time": "sometime"}
+    assert filter_runs([odd], since="2026-01-01")[0] == []
 
 
 def test_the_note_says_what_was_narrowed():
     assert filter_note("", "") == ""
     assert filter_note("ping/quick", "") == "recipe `ping/quick`"
-    assert filter_note("ping/quick", "3") == "recipe `ping/quick` · from #3"
+    assert filter_note("ping/quick", "3h") == "recipe `ping/quick` · since 3h"
 
 
 # ---- both readers take both flags ---------------------------------------
 
 
 def test_history_takes_since(workspace: Path, capsys):
-    assert _run("history", workspace, "--since", "04") == 0
+    assert _run("history", workspace, "--since", "2026-09-19T09:04") == 0
 
     out = capsys.readouterr().out
     assert "#04" in out and "#05" in out
@@ -113,11 +161,11 @@ def test_report_takes_recipe(workspace: Path, capsys):
 
 
 def test_a_filtered_report_says_it_is_a_slice_of_the_archive(workspace: Path, capsys):
-    assert _run("report", workspace, "--recipe", "ping/quick", "--since", "02") == 0
+    assert _run("report", workspace, "--recipe", "ping/quick", "--since", "2026-09-19T09:02") == 0
 
     out = capsys.readouterr().out
-    # `#02` as the operator typed it: the note quotes the flag, it does not renumber it.
-    assert "1 run · recipe `ping/quick` · from #02" in out
+    # As the operator typed it: the note quotes the flag.
+    assert "1 run · recipe `ping/quick` · since 2026-09-19T09:02" in out
 
 
 def test_an_unfiltered_report_says_nothing_extra(workspace: Path, capsys):
@@ -130,4 +178,4 @@ def test_an_unfiltered_report_says_nothing_extra(workspace: Path, capsys):
 @pytest.mark.parametrize("command", ["history", "report"])
 def test_both_readers_refuse_the_same_bad_since(workspace: Path, command, capsys):
     assert _run(command, workspace, "--since", "lastweek") == 1
-    assert "--since expects a run number" in capsys.readouterr().err
+    assert "--since expects a date" in capsys.readouterr().err

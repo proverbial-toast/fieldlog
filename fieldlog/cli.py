@@ -10,6 +10,7 @@ import json
 import math
 import os
 import platform
+import re
 import shlex
 import shutil
 import signal
@@ -19,6 +20,7 @@ import termios
 import time
 import traceback
 import tty
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -42,7 +44,6 @@ from fieldlog.report import (
     record_kind,
     record_ok,
     render_report,
-    run_number,
 )
 from fieldlog.recipes import (
     Catalog,
@@ -231,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     hist_p.add_argument("-w", "--workspace", default="", help="Target workspace root (default: ./targets)")
     hist_p.add_argument("--json", action="store_true", help="Emit history records as JSON")
     hist_p.add_argument("--recipe", default="", help="Only records of this recipe key, or 'chain/<id>', or 'note'")
-    hist_p.add_argument("--since", default="", help="Only runs with an id at or above this number")
+    hist_p.add_argument("--since", default="", help="Only runs started since a date, time or span: 2026-09-20, 3h, 2d, today")
     hist_p.add_argument("--fields", action="store_true", help="One row per run, one column per parsed field")
 
     # note
@@ -249,7 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_p.add_argument("-o", "--output", default="-", help="Write Markdown to FILE ('-' for stdout)")
     report_p.add_argument("--tail", type=int, default=DEFAULT_TAIL, help=f"Lines of each log to include (default: {DEFAULT_TAIL})")
     report_p.add_argument("--full", action="store_true", help="Include each log in full instead of a tail")
-    report_p.add_argument("--since", default="", help="Only runs with an id at or above this number")
+    report_p.add_argument("--since", default="", help="Only runs started since a date, time or span: 2026-09-20, 3h, 2d, today")
     report_p.add_argument("--recipe", default="", help="Only records of this recipe key, or 'chain/<id>', or 'note'")
 
     # doctor
@@ -1104,11 +1105,57 @@ def filter_note(recipe: str, since: str) -> str:
     if recipe:
         bits.append(f"recipe `{recipe}`")
     if since:
-        bits.append(f"from #{since}")
+        bits.append(f"since {since}")
     return " · ".join(bits)
 
 
-def filter_runs(runs: List[dict], recipe: str = "", since: str = "") -> Tuple[List[dict], str]:
+SINCE_FORMS = "a date (2026-09-20), a date and time (2026-09-20T14:00), a span (90m, 3h, 2d, 1w), today or yesterday"
+
+_SPAN = re.compile(r"(\d+)\s*([mhdw])")
+_SPAN_UNIT = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+
+
+def parse_since(text: str, now: Optional[datetime] = None) -> Optional[datetime]:
+    """The moment `--since` names, as naive local time — what a record's
+    `start_time` is written in — or None when it names none.
+
+    A date means from its midnight; a span counts back from now. What the
+    operator remembers is when they were on site, not which run number the
+    first job of the visit was handed.
+    """
+    now = now or datetime.now()
+    text = (text or "").strip().lower()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if text == "today":
+        return midnight
+    if text == "yesterday":
+        return midnight - timedelta(days=1)
+    span = _SPAN.fullmatch(text)
+    if span:
+        return now - timedelta(**{_SPAN_UNIT[span[2]]: int(span[1])})
+    try:
+        return _naive_local(datetime.fromisoformat(text.upper().replace(" ", "T")))
+    except ValueError:
+        return None
+
+
+def _naive_local(moment: datetime) -> datetime:
+    """`moment` as naive local time. Records are written naive and local, so a
+    zone on either side is converted before the two are compared."""
+    return moment.astimezone().replace(tzinfo=None) if moment.tzinfo else moment
+
+
+def record_start(record: dict) -> Optional[datetime]:
+    """When a record's run began, or None when it does not say in a form we read."""
+    try:
+        return _naive_local(datetime.fromisoformat(str(record.get("start_time", ""))))
+    except ValueError:
+        return None
+
+
+def filter_runs(
+    runs: List[dict], recipe: str = "", since: str = "", now: Optional[datetime] = None,
+) -> Tuple[List[dict], str]:
     """`(kept, error)` — the records a reader was asked for.
 
     One filter for both readers, because they read one archive: `history` had
@@ -1118,17 +1165,16 @@ def filter_runs(runs: List[dict], recipe: str = "", since: str = "") -> Tuple[Li
 
     `recipe` is an exact key — a prefix match would make `ping` mean the tool
     here and the preset everywhere else — and matches `chain/<id>` and `note`
-    as written on the record. `since` is a run number; a record with an id
-    that is not a number cannot be compared and drops out of the window.
+    as written on the record. `since` is a moment (see parse_since); a record
+    with no readable start time cannot be placed and drops out of the window.
     """
     if recipe:
         runs = [r for r in runs if r.get("recipe") == recipe]
     if since:
-        try:
-            floor = int(since)
-        except ValueError:
-            return [], f"Error: --since expects a run number, got '{since}'\n"
-        runs = [r for r in runs if (run_number(r) or 0) >= floor]
+        floor = parse_since(since, now)
+        if floor is None:
+            return [], f"Error: --since expects {SINCE_FORMS}, got '{since}'\n"
+        runs = [r for r in runs if (record_start(r) or datetime.min) >= floor]
     return runs, ""
 
 

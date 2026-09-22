@@ -332,7 +332,8 @@ summary has `steps`, `stopped_at`, an empty `artifact_log`, no artifacts, and `s
   table cells escape `|`. Chain summaries render as a step table.
 - **Both readers take the same two filters**, through `cli.filter_runs`: `--recipe <key>` (exact; `chain/<id>`
   and `note` count — a prefix match would make `ping` the tool here and the preset everywhere else) and
-  `--since N` (a run number; a record whose id is not a number cannot be compared and drops out). They
+  `--since WHEN` (`cli.parse_since`: a date, a date and time, a span such as `3h`, or `today`/`yesterday`,
+  compared against each record's naive local `start_time`; a record with none readable drops out). They
   compose. `cli.filter_note` renders what was narrowed, which `render_report(selection=…)` puts in the
   report's summary line — a filtered report is read away from the command that made it and must not pass as
   the whole archive. [confirmed: `tests/test_reader_filters.py`]
@@ -399,7 +400,7 @@ writing to disk with nothing in the app reading it again.
 
 ## 9. Tests and CI
 
-691 tests in 62 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
+714 tests in 63 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
 unit tests (parsing, scope characters, arg tokens, path lookup); filesystem integration tests on a
 `tmp_workspace` fixture that run real `true`/`false`/`echo`/`sh` tools through `plan_launch` + `run_job` or
 `handle_run`; and async tests that drive the real app through `app.run_test()`. `test_app_structure.py`
