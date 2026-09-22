@@ -42,7 +42,7 @@ which Terminal.app does not support — iTerm2 and others do (see [Keys](#keys))
 
 ```bash
 pipx install git+https://github.com/proverbial-toast/fieldlog        # latest main
-pipx install git+https://github.com/proverbial-toast/fieldlog@v0.2.0 # a release
+pipx install git+https://github.com/proverbial-toast/fieldlog@v0.4.0 # a release
 fieldlog            # opens the TUI
 ```
 
@@ -51,10 +51,8 @@ Every tagged release also carries a built wheel and sdist on its
 would rather install one directly than build from a checkout:
 
 ```bash
-pipx install https://github.com/proverbial-toast/fieldlog/releases/download/v0.2.0/fieldlog-0.2.0-py3-none-any.whl
+pipx install https://github.com/proverbial-toast/fieldlog/releases/download/v0.4.0/fieldlog-0.4.0-py3-none-any.whl
 ```
-
-Say which version you are on when reporting something — `fieldlog --version`.
 
 For development:
 
@@ -216,33 +214,28 @@ Wherever `run`, `show` or a chain step expects a recipe ID, a tool id alone
 means that tool's first preset, and for `run` and `show` a chain id means the
 chain. The bare form `fieldlog <recipe> <target>` takes all three, as long as
 the id is not itself a command name (`list`, `show`, `run`, `history`,
-`report`, `doctor`, `tui`, or their aliases `ls`, `recipes`, `info`, `exec`,
-`log`, `runs`, `check`).
+`note`, `report`, `doctor`, `tui`, or their aliases `ls`, `recipes`, `info`,
+`exec`, `log`, `runs`, `check`).
 
-`history` and `report` take a folder name, not a target, whether as an argument
-or with `-t`. The folder is the DNS name if the runs had one, else the target:
-after `fieldlog run ping/quick 192.168.1.20 -H router1`, use
-`fieldlog history router1`, because `history 192.168.1.20` finds nothing.
-`fieldlog history` with no name lists the folders.
+`history` and `report` look up a target folder, named for the DNS name if the
+runs had one, else the target. Either spelling finds it: after
+`fieldlog run ping/quick 192.168.1.20 -H router1`, both `history router1` and
+`history 192.168.1.20` work. With no name, or one it does not know,
+`fieldlog history` lists the folders.
 
-`fieldlog note <name> "text"` writes the operator's own words into a target's
-archive: a record with `recipe: "note"`, the text and a timestamp, and a run
-number of its own — like a chain's summary record, so `history`'s counts rise
-with it. It takes the folder or the target as its first argument, the same
-lookup `history` uses, and creates the folder when the name is new, so
-"starting on box.htb" can be written before the first run against it. Both
-arguments are positional — there is no `-t` for the first — and it takes `-w`
-and `--json`. `history` and `report` then show the note in the timeline, in its
-place among the runs. A note about one particular run is either `--note` on the
-run itself or a note that names it: a note is a new record, never an edit of
-one already written.
+`fieldlog note <name> "text"` adds a timestamped note to a target's archive.
+It takes a run number of its own, so `history` and `report` show it in its
+place among the runs. `<name>` is the folder or the target, as for `history`
+(there is no `-t`), and a new name creates the folder, so "starting on box.htb"
+can be written before the first run. It takes `-w` and `--json`. A note never
+edits an earlier record: for a note on one run, use `--note` on that run, or
+write a note that names it.
 
 `doctor` (alias `check`) reads the whole catalog against a scope and reports what
 is runnable, what is missing from `$PATH`, and which scope values would unlock
-the rest — a preflight before a job. Each verdict is the same
-one `run` would reach. It takes the scope flags `-t`, `-H`, `-i`, `-l` (or a bare
-target), plus `-v` for a per-preset breakdown and `--json`. It touches nothing on
-disk and exits 0.
+the rest, with the same verdicts `run` would reach. It takes the scope flags
+`-t`, `-H`, `-i`, `-l` (or a bare target), plus `-v` for a per-preset breakdown
+and `--json`. It touches nothing on disk and exits 0.
 
 ### `run` options
 
@@ -263,10 +256,8 @@ disk and exits 0.
 
 `show` accepts `-t`, `-H`, `-i` and `-l`. `history` accepts `-t`, `-w`,
 `--json`, `--recipe` and `--since` (the same two filters `report` takes) and
-`--fields` (a table with one column per parsed field; with `--json` it changes
-nothing, the records already carry `fields`). `list` accepts `-r`/`--runnable`,
-`-V`/`--verbose`, `-q`/`--names` and `--json`. `doctor` accepts `-t`, `-H`,
-`-i`, `-l`, `-v`/`--verbose` and `--json`.
+`--fields` (one column per parsed field). `list` accepts `-r`/`--runnable`,
+`-V`/`--verbose`, `-q`/`--names` and `--json`.
 
 ### `report` options
 
@@ -280,9 +271,8 @@ nothing, the records already carry `fields`). `list` accepts `-r`/`--runnable`,
 | `--since ID` | Only runs numbered `ID` or higher |
 | `--recipe KEY` | Only records of one recipe key, `chain/<id>` or `note`. Exact, never a prefix |
 
-`--since` and `--recipe` are the same two filters on both readers, and they
-compose. A filtered report says so in its summary line, since the document is
-read away from the command that made it.
+`--since` and `--recipe` compose, and a filtered report says so in its summary
+line.
 
 A report is one Markdown document: a summary table of every run — its exit,
 file count and summary — then a section per run with its command, timings,
@@ -325,17 +315,13 @@ themes:
   capture: false     # no tcpdump or rcap
 ```
 
-Only the names written `false` are off, so the file stays a short list of
-exceptions; with no file at all, every theme loads. A theme that is off is not
-hidden but *absent* — its recipes never enter the catalog, exactly as a recipe
-marked for another platform does not. `fieldlog doctor` names the themes that
-are off and the file that did it, and so does the recipe manager (`M`).
+Only the themes set to `false` are off; with no file, every theme loads. A theme
+that is off is not hidden but *absent*: its recipes never enter the catalog.
+`fieldlog doctor` and the recipe manager (`M`) name the themes that are off and
+the file that did it.
 
-A chain whose step belongs to a switched-off theme is skipped and says which
-theme took it; that is reported as an override, not as an error, because it is
-your own setting rather than a fault in the catalog. A file that cannot be read
-switches nothing off and says so — a catalog that quietly shrinks is the one
-failure worth avoiding here.
+A chain with a step from a switched-off theme is skipped and says which theme
+took it. A `themes.yaml` that cannot be read switches nothing off, and says so.
 
 A drop-in of your own may carry a `theme:` too, and is then switchable the same
 way. One without a `theme:` always loads.
@@ -375,13 +361,10 @@ recipes:
 | `platform` | tool or preset | no | `linux`, `darwin` or a list; the entry exists only on those platforms (see below) |
 
 A recipe that needs different flags on different systems is written once per
-platform under the same id: `platform:` is applied when the file is read, so only
-the entry for this system is ever in the catalog, and the other is not a repeated
-definition. On a tool it carries every preset with it; a tool left with no presets
-goes too. What `list`, `show` and `doctor` report is always this platform's
-catalog — the shipped `ping/quick` is `-W 1` on Linux and `-t 6` on macOS, and
-`ss`, `ethtool` and `resolvectl` are simply absent there, where `lsof` and
-`scutil` stand in.
+platform under the same id. `platform:` is applied when the file is read, so only
+this system's entry is ever in the catalog; on a tool it applies to every preset.
+The shipped `ping/quick` is `-W 1` on Linux and `-t 6` on macOS, and `ss`,
+`ethtool` and `resolvectl` are absent there, where `lsof` and `scutil` stand in.
 
 ### How the command is built
 
@@ -480,22 +463,18 @@ nothing about what they found:
 - The exit code stays the tool's own. The record carries the check beside it as
   `"expect": {"pattern": "…", "found": true}`, so a reader next year sees both
   what was checked and how it went.
-- Any match counts, anywhere in the window; there is no last-match rule to think
-  about as there is for `parse:`.
+- Any match, anywhere in the window, counts.
 - One rule, the same readers as `success:`: `fieldlog run` exits 1 for a tool
   that exited 0 but missed its expectation, `history` and `report` read
   `0 (expect not met)`, a chain stops at that step unless it says
   `continue: true`, and the TUI's tab shows failed.
-- An interrupted run (`Ctrl+C`) makes no claim about its expectation: the tool
-  never got to print its closing line, so the record stores
-  `"found": null` and every reader treats it as unchecked rather than as a
-  miss. A timed-out run is not exempt — the log it left is what the tool
-  printed, and the run fails on exit 124 anyway.
+- An interrupted run (`Ctrl+C`) is left unchecked, `"found": null`, rather than
+  counted as a miss: the tool never got to print its closing line. A timed-out
+  run is still checked, and fails on exit 124 anyway.
 - A regex that does not compile is reported at load; the preset still runs,
   without the check.
-- An expectation that is too specific fails good runs, and a run that failed for
-  no reason is worse than one nobody checked. Anchor on the tool's own closing
-  line, and prefer `success:` wherever the exit code already says it.
+- An expectation that is too specific fails good runs. Anchor on the tool's own
+  closing line, and prefer `success:` wherever the exit code already says it.
 
 ### Variables
 
@@ -522,9 +501,7 @@ they are pasted into a shell command. Targets may also contain `@`, for an ssh
 flag (`--target=-f` is a flood ping, not a target), and a target made only of
 digits and dots has to be a valid address: `10.0.0.256` is refused rather than
 run. `--extra-args` and TUI args edits are appended as typed and are not
-checked; they are the operator's own shell. The same trust applies to
-`./recipes.d/`: a recipe's `flags` is shell, so running fieldlog inside a
-directory you do not trust and choosing one of its recipes runs that recipe.
+checked; they are the operator's own shell.
 
 ### Chains
 
@@ -552,22 +529,20 @@ chains:
 
 - A chain stops at the first step that does not pass — a non-zero exit outside
   its `success:` codes, or a missed `expect:` — unless that step says
-  `continue: true`. `Ctrl+C` always stops it. The chain's own exit status is the
-  first failing step's code — 1 when that step exited 0 and only missed its
-  expectation — including one from a step it continued past, or 130 if it was
-  interrupted. So a chain whose `continue: true` step failed still exits
-  non-zero, even when every later step succeeds.
+  `continue: true`. `Ctrl+C` always stops it. The chain exits with the first
+  failing step's code, even one it continued past (1 if that step only missed
+  its expectation, 130 if interrupted), so a failed `continue: true` step still
+  makes the chain exit non-zero.
 - A chain is runnable only when every step is. The reason names the step.
 - Every step shares one `$OUTDIR` — the first step's — so side files from one
   chain land together. Logs stay separate, one per step.
 - Each step is archived as its own run record, tagged with its position. When
   the chain ends, it appends one summary record named `chain/<id>` to the same
   `session.json`: each step's run number, exit code, `summary` and `expect`,
-  where it stopped, and the shared `$OUTDIR`. The summary record carries a
-  `summary` of its own when any step had one — each step's, prefixed with its
-  tool and joined with `→`, so `report` reads the chain as a checklist. The
-  summary takes a run number of its own, so a three-step chain that runs to
-  the end adds four runs to `history`'s count.
+  where it stopped, and the shared `$OUTDIR`. Its own `summary` joins the
+  steps' with `→`, so `report` reads the chain as a checklist. It takes a run
+  number too, so a three-step chain that runs to the end adds four runs to
+  `history`'s count.
 - Steps are checked once every file is merged, so a built-in chain may name a
   preset that a drop-in adds. A chain with a bad id, no steps, or an unknown
   recipe is skipped with a message; the rest of the catalog still loads.
@@ -580,14 +555,13 @@ reach      reachability · ping, trace, ptr    ping/quick → traceroute/icmp? �
 ```
 
 In the TUI, chains sit under the recipes. Selecting one turns the VARIANTS
-pane into `STEPS`: the chain's steps in the order they run, `?` on the ones it
-continues past, with `▸` on the step being read. `↑ ↓`, `,` `.` and the number
-keys walk that marker, and the ARGS band below shows that step's command in
-full, resolved against the current scope — a chain's steps are not a list to
-pick from, so nothing there changes what runs. `Enter` runs the whole chain,
-one tab per step. Per-recipe args edits (`E` on the recipe itself) still apply
-inside a chain, and a step carrying one is marked `*`. The steps themselves are
-edited in the YAML.
+pane into `STEPS`: the chain's steps in order, `?` on the ones it continues
+past, `▸` on the one being read. `↑ ↓`, `,` `.` and the number keys move the
+`▸`, and the ARGS band shows that step's command resolved against the current
+scope; reading a step does not change what runs. `Enter` runs the whole chain,
+one tab per step. Args edits made with `E` on a recipe still apply inside a
+chain, and a step carrying one is marked `*`. The steps themselves are edited
+in the YAML.
 
 ### Drop-in files
 
@@ -605,7 +579,7 @@ directory first, then `./recipes.d/`.
   still load. Editor leftovers (`*~`, `*.swp`, `*.bak`, `*.orig`) are ignored.
 - A recipe's `flags` is shell. `./recipes.d/` is read from wherever you start
   fieldlog, so treat a checkout's drop-ins the way you would its `Makefile`: do
-  not run one you have not read (see [Variables](#variables)).
+  not run one you have not read.
 
 Adding a preset to the built-in `ping`:
 
@@ -710,18 +684,12 @@ Nothing ran, so a note carries no command, no exit code and no artifacts.
   `192.168.1.0/24` gets the folder `192.168.1.0_24`. Then any character still
   outside `[A-Za-z0-9._-]` becomes `-`: `fe80::1` gets `fe80--1` and
   `operator@jump1` gets `operator-jump1`.
-- `fieldlog history <name>` and `report <name>` take either the folder name or
-  the target the runs were made against. A run made with `-t 10.10.11.50 -H
-  box.htb` lands in `targets/box.htb/`, and both spellings find it. An
-  unrecognised name lists the folders that do have runs.
 - The exit code is the tool's own, never fabricated. `ping` catches SIGINT,
   prints its statistics and exits 0; the record says `exit_code: 0` and
   `interrupted: true`. A tool that does not handle SIGINT is killed by it and
   shows 130, the shell's 128 + signal.
 - `artifacts` lists the files the run owns: its primary log, then what it wrote
-  into `$OUTDIR`. The list stays right however many runs are in flight — which a
-  scan of the target folder could not, since "changed while this ran" and "this
-  run wrote it" are only the same thing when runs are serialised.
+  into `$OUTDIR`. The list stays right however many runs are in flight.
 - A chain's steps share one `$OUTDIR`, which is how a step uses what the step
   before it produced. Each step still records only the files it wrote or changed
   itself, so the shared folder does not make every step claim all of them.
@@ -745,24 +713,18 @@ Nothing ran, so a note carries no command, no exit code and no artifacts.
 - Run numbers are per target folder, claimed under `.session.lock`, and the
   highest number handed out is kept in `.run-counter`, so a CLI run beside the
   TUI never reuses one. A dry run claims nothing.
-- `<workspace>/fieldlog.log` is the session transcript: every line the TUI
-  writes to its System tab — kill and detach decisions, scope changes, reloads,
-  args resets and the boot preflight — appended with the local time it happened,
-  to the second. One entry per event, one file per workspace, and no rotation:
-  the file grows with the operator's own activity, and a long day of it is tens
-  of KB. A workspace that cannot be written is said once in the System tab, and
-  the session carries on.
+- `<workspace>/fieldlog.log` is the TUI's session transcript (see [Jobs](#jobs)),
+  one file per workspace. It is never rotated; a long day adds tens of KB. A
+  workspace that cannot be written is said once in the System tab, and the
+  session carries on.
 - Log filenames and record timestamps use local time.
 
 ## Scope
 
 Built for tools that run to completion and write to stdout or files: ping,
 curl, dig, traceroute, iperf3 and similar. Answering a one-line prompt works;
-long interactive sessions are out of scope.
-
-A preset's `parse` rule turns its own output into one line on the run record, so
-a ping run reads as `4 replies · 0% loss` without opening the log. Everything
-else stays a log you read yourself.
+long interactive sessions are out of scope. Beyond a preset's one-line `parse`
+summary, output stays a log you read yourself.
 
 ## Reporting a problem
 
@@ -783,7 +745,7 @@ did not expect`, with the version, the command and the traceback together.
 Paste the whole of it rather than the traceback alone.
 
 If the TUI behaved oddly rather than crashing, `<workspace>/fieldlog.log` holds
-everything the System tab printed, each line stamped with the time it happened.
+everything the System tab printed, timestamped.
 
 A tool that fails is usually not a fieldlog bug: `fieldlog show <recipe> -t
 <target>` prints the exact command line, and running that command yourself says
