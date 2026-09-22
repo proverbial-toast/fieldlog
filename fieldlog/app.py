@@ -602,7 +602,7 @@ class FieldlogApp(
                 yield Static("[R] reset", id="args-btn-reset", markup=False)
                 yield Static("[E] edit raw", id="args-btn-mode", markup=False)
             with Horizontal(id="args-body-row"):
-                yield Static("$ ping", id="args-bin-label")
+                yield Static("", id="args-bin-label")
                 with VerticalScroll(id="args-tokens-scroll"):
                     with Vertical(id="args-tokens-wrap"):
                         pass
