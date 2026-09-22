@@ -33,6 +33,7 @@ from fieldlog.archive import (
 )
 from fieldlog.recipes import expect_found, fields_from_match, parse_match, summary_from_match
 from fieldlog.state import ActiveJob, TargetSession, outdir_value
+from fieldlog.vantage import vantage
 
 # Called for each output line: (text, stream) where stream is "out" or "err".
 LineSink = Callable[[str, str], None]
@@ -293,6 +294,13 @@ async def run_job(
             extra_roots[log_root] = snapshot_workspace(log_root)
     if env is None:
         env = build_env(session, job.out_dir or work_dir, job.id)
+    # Where this run is made from, asked before it starts: the route a tool is
+    # about to use is the one worth recording. A thread, so a slow `ip` or
+    # `route` never stalls the TUI; best effort, so it never stops the run.
+    try:
+        job.vantage = await asyncio.to_thread(vantage, session.target)
+    except Exception:  # noqa: BLE001
+        job.vantage = {}
     start = time.time()
 
     master, slave = _open_pty(echo=echo)
@@ -508,6 +516,9 @@ def _append_manifest(
         "recipe": recipe_key,
         "command": command,
         "environment": manifest_environment(env),
+        # The interface, local address, gateway and network the target was
+        # reached through, when the OS would say (see vantage.py).
+        **({"vantage": job.vantage} if job.vantage else {}),
         "artifact_log": str(job.log_path),
         "out_dir": str(job.out_dir) if job.out_dir else "",
         "start_time": datetime.fromtimestamp(start).isoformat(),

@@ -673,7 +673,9 @@ A run record:
   "recipe": "ping/quick",
   "command": "ping -c 4 -W 1 192.168.1.20",
   "environment": {"TARGET": "192.168.1.20", "TARGET_IP": "192.168.1.20", "TARGET_HOST": "",
-                  "LHOST": "192.168.1.5", "IFACE": "eth0", "OUT_DIR": "…/raw/20260912T180156_01", "RUN_ID": "01"},
+                  "LHOST": "192.168.1.5", "IFACE": "eth0", "OUT_DIR": "raw/20260912T180156_01", "RUN_ID": "01"},
+  "vantage": {"iface": "wlan0", "local": "192.168.1.5", "gateway": "192.168.1.1",
+              "ssid": "Office Guest", "route": "target"},
   "artifact_log": "…/targets/192.168.1.20/raw/20260912T180156_ping_quick_01.log",
   "out_dir": "…/targets/192.168.1.20/raw/20260912T180156_01",
   "start_time": "2026-09-12T18:01:56.734145",
@@ -710,6 +712,14 @@ Nothing ran, so a note carries no command, no exit code and no artifacts.
   `192.168.1.0/24` gets the folder `192.168.1.0_24`. Then any character still
   outside `[A-Za-z0-9._-]` becomes `-`: `fe80::1` gets `fe80--1` and
   `operator@jump1` gets `operator-jump1`.
+- `vantage` is where the run was made from: the interface, local address,
+  gateway and wireless network the kernel would use to reach the target, asked
+  as the run starts (`ip route get` on Linux, `route -n get` on macOS, the SSID
+  from `iw` or `ipconfig getsummary`). A hostname is never resolved for it; the
+  default route stands in and `route` says `default`. Anything the OS will not
+  say is left out, and the whole block when not even the interface is known.
+  `history` prints it under the first run and again whenever it changes; the
+  report prints it under every run.
 - The exit code is the tool's own, never fabricated. `ping` catches SIGINT,
   prints its statistics and exits 0; the record says `exit_code: 0` and
   `interrupted: true`. A tool that does not handle SIGINT is killed by it and

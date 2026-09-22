@@ -75,6 +75,7 @@ from fieldlog.recipes import (
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
 from fieldlog.runner import interrupt_job, run_job
+from fieldlog.vantage import vantage_line
 from fieldlog.state import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_INTERFACE,
@@ -1257,6 +1258,7 @@ def handle_history(args: argparse.Namespace) -> int:
         print_field_table(console, runs)
         return 0
 
+    last_vantage = ""
     for r in runs:
         rid = r.get("id", "??")
         recipe = r.get("recipe", "unknown")
@@ -1285,6 +1287,15 @@ def handle_history(args: argparse.Namespace) -> int:
         summary = str(r.get("summary", "") or "")
         if summary:
             console.print(f"      [cyan]{escape(summary)}[/cyan]")
+        # Where it ran from, said on the first run and then only when it
+        # changes: a move from the switch port to the guest Wi-Fi is the line
+        # worth seeing, and the same line under every run would bury it.
+        vantage = vantage_line(r.get("vantage"))
+        if vantage and vantage != last_vantage:
+            changed = "[yellow]from[/yellow]" if last_vantage else "[dim]from[/dim]"
+            console.print(f"      {changed} [dim]{escape(vantage)}[/dim]")
+        if vantage:
+            last_vantage = vantage
         note = str(r.get("note", "") or "")
         if note:
             console.print(f"      [dim]✎ {escape(note)}[/dim]")

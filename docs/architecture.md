@@ -58,7 +58,8 @@ The graph is acyclic. Two edges are worth knowing about:
 `tui/theme.py` imports nothing of fieldlog's own (guarded by `tests/test_theme_is_pure.py`); the one
 palette hint that needed the catalog path lives with the palette in `tui/modals.py`. `transcript.py` is
 stdlib-only and is imported by `app.py` alone: it appends the TUI's System-tab lines to
-`<workspace>/fieldlog.log` (§ 8).
+`<workspace>/fieldlog.log` (§ 8). `vantage.py` imports only `state.get_interface_ip`; `runner.py` calls it at
+spawn and `report.py`/`cli.py` import its `vantage_line`.
 
 Textual is imported only under `app.py` and `tui/`; `cli.py` imports `fieldlog.app` lazily inside the `tui`
 branch, so `fieldlog list -q` in a pipeline never pays for it (measured in the repo's own comments: a catalog
@@ -294,6 +295,14 @@ older whole-folder before/after diff (`detect_artifact_deltas`), which is only a
 serialised. Each artifact carries `path` (relative to the target folder, absolute when outside it), `bytes`,
 `lines` (None for binary) and `binary`.
 
+**Vantage.** Each run record carries `vantage: {iface, local, gateway, ssid, route}` (empty keys left out,
+the whole block when the interface is unknown): `vantage.vantage(target)` asks the kernel which route it
+would use — `ip -o route get` / `route -n get`, the SSID from `iw`/`iwgetid` or `ipconfig getsummary` —
+run by `run_job` in a thread before spawn, each probe bounded to 1 s, every failure swallowed. A hostname is
+never resolved (DNS can hang); the default route stands in and `route` says `default`. `history` prints it
+on the first run and again when it changes; the report prints it per run. Notes and chain summaries carry
+none: nothing ran, or the steps carry their own.
+
 **A note record** (`fieldlog note`) is `{id, recipe: "note", note, start_time}` and nothing else: no
 command, exit code, log or artifacts. It takes a run number from the same counter. `report.record_kind`
 tells the three kinds apart — `chain` (a non-empty `steps`), `note` (`recipe == "note"` and no `command`),
@@ -400,7 +409,7 @@ writing to disk with nothing in the app reading it again.
 
 ## 9. Tests and CI
 
-714 tests in 63 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
+734 tests in 64 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
 unit tests (parsing, scope characters, arg tokens, path lookup); filesystem integration tests on a
 `tmp_workspace` fixture that run real `true`/`false`/`echo`/`sh` tools through `plan_launch` + `run_job` or
 `handle_run`; and async tests that drive the real app through `app.run_test()`. `test_app_structure.py`

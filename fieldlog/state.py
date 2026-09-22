@@ -442,6 +442,8 @@ class ActiveJob:
     artifact_delta: Optional[ArtifactDelta] = None
     # Free text the operator gave with `--note`: why this run was made.
     note: str = ""
+    # Where the run was made from (vantage.vantage), read as it starts.
+    vantage: Dict[str, str] = field(default_factory=dict)
     # The archived record, set when the manifest is written, so a front-end can
     # show exactly what was archived rather than rebuilding its own version.
     record: Optional[dict] = None

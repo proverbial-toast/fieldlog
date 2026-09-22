@@ -12,6 +12,7 @@ from typing import List, Optional
 
 from fieldlog.archive import UNREADABLE_MANIFEST
 from fieldlog.recipes import run_passed
+from fieldlog.vantage import vantage_line
 
 DEFAULT_TAIL = 40
 
@@ -614,6 +615,12 @@ def render_report(
         if shown_log:
             meta += f" · log `{shown_log}`"
         lines += [meta, ""]
+
+        vantage = vantage_line(record.get("vantage"))
+        if vantage:
+            # Where it was run from: the same check from the VPN and from the
+            # switch port are two different results.
+            lines += [f"From: `{vantage.replace('`', '')}`", ""]
 
         summary = str(record.get("summary", "") or "")
         if summary:
