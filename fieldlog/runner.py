@@ -18,6 +18,7 @@ import shlex
 import signal
 import struct
 import termios
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,10 @@ LineSink = Callable[[str, str], None]
 
 # Quiet time after a partial line before we call the job blocked.
 BLOCK_GRACE = 0.4
+
+# The longest a run waits to learn where it is being made from (vantage.py).
+# A route lookup takes milliseconds; this bounds a probe that has wedged.
+VANTAGE_DEADLINE = 1.5
 
 # The pty we hand the child. Wide enough that table-shaped output is not
 # rewrapped into nonsense by the tool itself.
@@ -256,6 +261,37 @@ def _make_ctty(slave: int) -> Callable[[], None]:
     return preexec
 
 
+async def _vantage_within(target: str, deadline: float) -> Dict[str, str]:
+    """`vantage(target)`, or {} if it fails or has not answered by `deadline`.
+
+    A daemon thread rather than the loop's executor: `asyncio.run` waits for
+    that executor on the way out, so a wedged probe abandoned here would still
+    hold the CLI open after the job had finished.
+    """
+    loop = asyncio.get_running_loop()
+    answer: asyncio.Future = loop.create_future()
+
+    def settle(result: Dict[str, str]) -> None:
+        if not answer.done():
+            answer.set_result(result)
+
+    def probe() -> None:
+        try:
+            result = vantage(target)
+        except Exception:  # noqa: BLE001
+            result = {}
+        try:
+            loop.call_soon_threadsafe(settle, result)
+        except RuntimeError:      # the loop is gone; nobody is waiting any more
+            pass
+
+    threading.Thread(target=probe, name="fieldlog-vantage", daemon=True).start()
+    try:
+        return await asyncio.wait_for(answer, deadline)
+    except asyncio.TimeoutError:
+        return {}
+
+
 async def run_job(
     command: str,
     job: ActiveJob,
@@ -296,11 +332,9 @@ async def run_job(
         env = build_env(session, job.out_dir or work_dir, job.id)
     # Where this run is made from, asked before it starts: the route a tool is
     # about to use is the one worth recording. A thread, so a slow `ip` or
-    # `route` never stalls the TUI; best effort, so it never stops the run.
-    try:
-        job.vantage = await asyncio.to_thread(vantage, session.target)
-    except Exception:  # noqa: BLE001
-        job.vantage = {}
+    # `route` never stalls the TUI, under one deadline for all its probes, so a
+    # wedged one delays the run by at most that. Any failure is just no block.
+    job.vantage = await _vantage_within(session.target, VANTAGE_DEADLINE)
     start = time.time()
 
     master, slave = _open_pty(echo=echo)

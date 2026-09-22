@@ -145,6 +145,25 @@ async def test_a_failed_vantage_leaves_the_key_off_and_the_run_alone(tmp_workspa
     assert "vantage" not in record
 
 
+async def test_a_wedged_probe_delays_the_run_by_the_deadline_at_most(tmp_workspace: Path, monkeypatch):
+    import time
+
+    def slow(target):
+        time.sleep(1)
+        return dict(BLOCK)
+    monkeypatch.setattr(runner_mod, "vantage", slow)
+    monkeypatch.setattr(runner_mod, "VANTAGE_DEADLINE", 0.2)
+    session = TargetSession(target="10.0.0.1", workspace_dir=tmp_workspace)
+    plan = plan_launch(session, {"id": "sh", "bin": "sh"}, {"id": "t", "flags": "-c true"})
+
+    started = time.monotonic()
+    assert await run_job(plan.command, plan.job, session, lambda t, s: None, env=plan.env) == 0
+    assert time.monotonic() - started < 0.8
+
+    record = json.loads((session.target_dir / "session.json").read_text())[-1]
+    assert "vantage" not in record
+
+
 def test_the_line_readers_show():
     assert vantage_line(BLOCK) == "wlan0 · 192.168.4.23 · via 192.168.4.1 · ssid Office Guest"
     assert vantage_line({"iface": "lo"}) == "lo"

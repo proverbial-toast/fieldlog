@@ -298,7 +298,9 @@ serialised. Each artifact carries `path` (relative to the target folder, absolut
 **Vantage.** Each run record carries `vantage: {iface, local, gateway, ssid, route}` (empty keys left out,
 the whole block when the interface is unknown): `vantage.vantage(target)` asks the kernel which route it
 would use — `ip -o route get` / `route -n get`, the SSID from `iw`/`iwgetid` or `ipconfig getsummary` —
-run by `run_job` in a thread before spawn, each probe bounded to 1 s, every failure swallowed. A hostname is
+run by `run_job` in a daemon thread before spawn, each probe bounded to 1 s and the whole lookup to
+`runner.VANTAGE_DEADLINE` (1.5 s), every failure swallowed — a wedged probe costs the run at most that, and
+nothing waits for its thread on exit. A hostname is
 never resolved (DNS can hang); the default route stands in and `route` says `default`. `history` prints it
 on the first run and again when it changes; the report prints it per run. Notes and chain summaries carry
 none: nothing ran, or the steps carry their own.
@@ -409,7 +411,7 @@ writing to disk with nothing in the app reading it again.
 
 ## 9. Tests and CI
 
-734 tests in 64 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
+735 tests in 64 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
 unit tests (parsing, scope characters, arg tokens, path lookup); filesystem integration tests on a
 `tmp_workspace` fixture that run real `true`/`false`/`echo`/`sh` tools through `plan_launch` + `run_job` or
 `handle_run`; and async tests that drive the real app through `app.run_test()`. `test_app_structure.py`
