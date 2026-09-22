@@ -42,6 +42,19 @@ from fieldlog.tui.widgets import StdinChip, StdinInput, TabItem
 # explained by a slow tool.
 STDIN_FOCUS_AFTER = 1.0
 
+# A job tab shows the newest this-many lines and scrolls, like a terminal. The
+# full output is always the log on disk; this bounds only what is on screen.
+TAB_TAIL_LINES = 2000
+# How often a tab repaints from the lines that arrived since the last paint.
+# Painting per line let a burst (`seq 300000`) starve the UI; batching means a
+# burst costs at most TAB_TAIL_LINES rows of rendering per tick, however fast
+# the tool writes.
+TAB_PAINT_INTERVAL = 0.05
+# The most rows one tick paints. A flood scrolls past faster than anyone reads
+# it, so a tick paints a screenful of the newest lines and skips the rest (the
+# gutter numbers show the gap); the whole tail is painted once when the job ends.
+TAB_PAINT_MAX = 200
+
 
 class JobsMixin:
     """Running jobs: the tab strip, the status band, the stdin bar, and the"""
@@ -529,7 +542,9 @@ class JobsMixin:
         ))
         self.active_tab_id = tab_id
 
-        rlog = RichLog(id=f"log-{tab_id}", wrap=True, markup=False, min_width=20)
+        rlog = RichLog(
+            id=f"log-{tab_id}", wrap=True, markup=False, min_width=20, max_lines=TAB_TAIL_LINES,
+        )
         switcher = self.query_one("#tab-content", ContentSwitcher)
         switcher.mount(rlog)
         switcher.current = f"log-{tab_id}"
@@ -577,9 +592,12 @@ class JobsMixin:
 
     async def _run(self, plan: LaunchPlan, rlog: RichLog, tab_id: str) -> None:
         job = plan.job
-        UI_LINE_CAP = 500
-        capped = False
         line_num = 0
+        # Numbered lines waiting for the next paint. Only the newest
+        # TAB_TAIL_LINES can ever be on screen, so older ones are dropped here
+        # rather than rendered and then scrolled away.
+        waiting: List[Tuple[int, str]] = []
+        paint_timer = None
 
         def _safe_write(renderable) -> None:
             if rlog.is_mounted:
@@ -589,25 +607,61 @@ class JobsMixin:
                 except Exception:
                     pass
 
+        # The newest lines whether painted or not, so that when a flood made the
+        # ticks skip some (`skipped`), the end of the job can redraw the tail whole.
+        recent: List[Tuple[int, str]] = []
+        skipped = False
+
+        def paint(limit: int = TAB_PAINT_MAX) -> None:
+            nonlocal paint_timer, skipped
+            paint_timer = None
+            if len(waiting) > limit:
+                skipped = True
+            batch = waiting[-limit:]
+            waiting.clear()
+            for num, text in batch:
+                _safe_write(Text.assemble((f"{num:3d}  ", GUTTER), (text, FG)))
+
+        def flush() -> None:
+            """Paint what is waiting now, not at the next tick — and when a
+            flood made the ticks skip lines, redraw the tail whole, once."""
+            nonlocal skipped
+            if paint_timer is not None:
+                paint_timer.stop()
+            if skipped:
+                skipped = False
+                waiting[:] = recent[-TAB_TAIL_LINES:]
+                if rlog.is_mounted:
+                    rlog.clear()
+                paint(TAB_TAIL_LINES)
+            else:
+                paint()
+
         def sink(text: str, _stream: str) -> None:
-            nonlocal line_num, capped
+            nonlocal line_num, paint_timer
             line_num += 1
-            if line_num <= UI_LINE_CAP:
-                _safe_write(Text.assemble((f"{line_num:3d}  ", GUTTER), (text, FG)))
-                job.log_lines.append(text)
-            elif not capped:
-                capped = True
-                msg = f"[Preview capped at {UI_LINE_CAP} lines · full output streaming to {job.log_path}]"
-                _safe_write(Text(msg, style=WARN))
-                job.log_lines.append(msg)
+            waiting.append((line_num, text))
+            recent.append((line_num, text))
+            if len(waiting) > 2 * TAB_TAIL_LINES:
+                del waiting[:-TAB_TAIL_LINES]
+            if len(recent) > 2 * TAB_TAIL_LINES:
+                del recent[:-TAB_TAIL_LINES]
+            # The copy fallback, for a job whose log file is gone: bounded the
+            # same way the screen is.
+            job.log_lines.append(text)
+            if len(job.log_lines) > 2 * TAB_TAIL_LINES:
+                del job.log_lines[:-TAB_TAIL_LINES]
+            if paint_timer is None:
+                paint_timer = self.set_timer(TAB_PAINT_INTERVAL, paint)
 
         code = 130 if job.interrupted else 1
         try:
             code = await run_job(plan.command, job, self.session, sink, on_state=self._on_job_block, env=plan.env)
-            if line_num > UI_LINE_CAP:
-                msg = f"[UI omitted {line_num - UI_LINE_CAP} lines · see {job.log_path}]"
-                _safe_write(Text(msg, style=DIM))
-                job.log_lines.append(msg)
+            flush()
+            if line_num > TAB_TAIL_LINES:
+                # Said once, at the end, where the scrolled-off lines went.
+                note = f"[showing the last {TAB_TAIL_LINES} of {line_num} lines · full log: {job.log_path}]"
+                _safe_write(Text(note, style=DIM))
             exit_line = f"[Runner] exit {code} in {job.elapsed:.2f}s"
             if job.interrupted:
                 exit_line += " · interrupted"
@@ -620,6 +674,7 @@ class JobsMixin:
             job.exit_code = code = 127
             job.end_time = time.time()
             err = f"[Runner] failed: {exc}"
+            flush()
             _safe_write(Text(err, style=ERR))
             job.log_lines.append(err)
         finally:
