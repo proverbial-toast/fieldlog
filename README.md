@@ -618,10 +618,8 @@ recipes:
         flags: "-c 1 -W 1 $TARGET"
 ```
 
-The repo's own `recipes.d/` is empty: what used to live there — the example
-recipes and the chains built from them — is now part of the shipped themed
-catalog, so an installed wheel and a checkout hold the same 19 tools and six
-chains. The directory stays as the local drop-in slot.
+In a checkout, a `recipes.d/` at the repo root is ignored by git, so drop-ins
+you keep there while testing stay out of commits.
 
 ### GUI recipes
 

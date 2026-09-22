@@ -17,6 +17,9 @@ dist/
 targets/*
 !targets/.gitkeep
 
+# Local drop-in recipes (a checkout's ./recipes.d is read like any other)
+/recipes.d/
+
 # Testing & caches
 .pytest_cache/
 .coverage
