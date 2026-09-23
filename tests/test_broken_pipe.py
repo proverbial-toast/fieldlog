@@ -10,6 +10,7 @@ SystemExit; they now exit 0, since nothing went wrong.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -60,7 +61,18 @@ def test_a_run_whose_reader_leaves_is_archived_as_interrupted(box: Path):
 
 
 def test_a_reader_leaving_during_the_header_runs_nothing_and_says_so(box: Path):
-    code, err = _read_then_leave(box, "run", "s/many", "10.0.0.2", lines=1)
+    # A reader already gone when fieldlog starts. Reading a line first and then
+    # closing raced the header: a fast box printed all of it into the pipe
+    # before the close, and the tool ran (seen on CI's ubuntu 3.14 leg).
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "fieldlog", "run", "s/many", "10.0.0.2"],
+        cwd=box, stdout=write_end, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+    )
+    os.close(write_end)
+    _, err = proc.communicate(timeout=60)
+    code, err = proc.returncode, err.decode()
 
     assert code == 130
     assert "nothing ran" in err
