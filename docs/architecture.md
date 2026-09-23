@@ -411,7 +411,7 @@ writing to disk with nothing in the app reading it again.
 
 ## 9. Tests and CI
 
-742 tests in 65 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
+754 tests in 67 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
 unit tests (parsing, scope characters, arg tokens, path lookup); filesystem integration tests on a
 `tmp_workspace` fixture that run real `true`/`false`/`echo`/`sh` tools through `plan_launch` + `run_job` or
 `handle_run`; and async tests that drive the real app through `app.run_test()`. `test_app_structure.py`
@@ -436,3 +436,6 @@ builds the wheel, installs it clean and imports `fieldlog.app` (a hand-listed `p
    starts afresh, and `read_manifest` warns while that file exists.
 9. **The TUI's highlight is what runs.** The RECIPES cursor and the VARIANTS/ARGS panes always name the
    same recipe; `_place_cursor` is where that is settled.
+10. **Every way a run can end is archived.** Ctrl+C, a closed stdout pipe, SIGHUP and SIGTERM to fieldlog
+    all become SIGINT to the tool's group (SIGKILL after `runner.STOP_SIGNAL_GRACE`), and `run_job` writes
+    the record; an interrupt that arrives before the spawn is kept and delivered once the process exists.

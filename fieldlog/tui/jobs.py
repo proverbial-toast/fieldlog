@@ -54,6 +54,10 @@ TAB_PAINT_INTERVAL = 0.05
 # it, so a tick paints a screenful of the newest lines and skips the rest (the
 # gutter numbers show the gap); the whole tail is painted once when the job ends.
 TAB_PAINT_MAX = 200
+# The most characters of one line a tab draws. The runner hands over lines of
+# up to a megabyte (binary on stdout, one-line JSON); wrapping those froze the
+# UI, and nobody reads them on screen. The log on disk keeps every character.
+TAB_LINE_CHARS = 4000
 
 
 class JobsMixin:
@@ -620,6 +624,9 @@ class JobsMixin:
             batch = waiting[-limit:]
             waiting.clear()
             for num, text in batch:
+                if len(text) > TAB_LINE_CHARS:
+                    more = len(text) - TAB_LINE_CHARS
+                    text = f"{text[:TAB_LINE_CHARS]} … {more} more characters in the log"
                 _safe_write(Text.assemble((f"{num:3d}  ", GUTTER), (text, FG)))
 
         def flush() -> None:

@@ -724,6 +724,14 @@ Nothing ran, so a note carries no command, no exit code and no artifacts.
   prints its statistics and exits 0; the record says `exit_code: 0` and
   `interrupted: true`. A tool that does not handle SIGINT is killed by it and
   shows 130, the shell's 128 + signal.
+- A run ends the same way whatever stops it: Ctrl+C, a reader closing the pipe
+  (`fieldlog run … | head`), or fieldlog itself getting SIGHUP (the ssh session
+  it runs in dropped) or SIGTERM. The tool gets SIGINT, then SIGKILL 5 s later
+  if it is still running, and the run is archived with `"interrupted": true`.
+  The TUI does the same for every running job, then exits.
+- A line longer than 1 MiB (binary on stdout, one-line JSON) is written to the
+  log in 1 MiB pieces as it arrives, rather than held until it ends; a job tab
+  shows the first 4000 characters of any line.
 - `artifacts` lists the files the run owns: its primary log, then what it wrote
   into `$OUTDIR`. The list stays right however many runs are in flight.
 - A chain's steps share one `$OUTDIR`, which is how a step uses what the step

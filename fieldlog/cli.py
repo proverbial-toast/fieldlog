@@ -74,7 +74,7 @@ from fieldlog.recipes import (
 )
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
-from fieldlog.runner import interrupt_job, run_job
+from fieldlog.runner import STOP_SIGNAL_GRACE, STOP_SIGNALS, interrupt_job, kill_job, run_job
 from fieldlog.vantage import vantage_line
 from fieldlog.state import (
     DEFAULT_ARTIFACT_ROOT,
@@ -624,12 +624,13 @@ async def execute_cli_job(
         try:
             sys.stdout.write(text + "\n")
             sys.stdout.flush()
-        except BrokenPipeError:
-            # `| head`, `| grep -m1`, or `less` quit early: whatever read our
-            # stdout has gone. That is the operator saying "enough", as Ctrl+C
-            # does, so it is treated as one — the tool is interrupted and the
-            # run is archived as interrupted. Raising here instead killed the
-            # tool mid-write and left no record at all.
+        except OSError:
+            # `| head`, `| grep -m1`, or `less` quit early (EPIPE), or the
+            # terminal itself is gone (EIO): whatever read our stdout has left.
+            # That is the operator saying "enough", as Ctrl+C does, so it is
+            # treated as one — the tool is interrupted and the run archived as
+            # interrupted. Raising here killed the tool mid-write and left no
+            # record at all.
             reader_gone = True
             silence_stdout()
             interrupt_job(job)
@@ -637,11 +638,20 @@ async def execute_cli_job(
     stdin_reader_active = False
 
     def forward_stdin() -> None:
+        nonlocal stdin_reader_active
         try:
             chunk = os.read(sys.stdin.fileno(), 1024)
-        except (OSError, BlockingIOError):
+        except BlockingIOError:
+            return
+        except OSError:
             chunk = b""
-        if chunk and job.pty_fd is not None:
+        if not chunk:
+            # EOF, or the terminal hung up: the fd stays readable for ever, so
+            # a reader left in place would spin the loop until the job ended.
+            loop.remove_reader(sys.stdin.fileno())
+            stdin_reader_active = False
+            return
+        if job.pty_fd is not None:
             try:
                 os.write(job.pty_fd, chunk)
             except OSError:
@@ -649,6 +659,20 @@ async def execute_cli_job(
 
     def on_sigint() -> None:
         interrupt_job(job)
+
+    def on_stop_signal(signum: int) -> None:
+        # SIGHUP (the ssh session to the jump box dropped) or SIGTERM (a kill,
+        # a supervisor). Dying of it left the tool without its controlling
+        # terminal and the run without a record; a tool that ignores SIGHUP ran
+        # on as an orphan. It is Ctrl+C instead, with a SIGKILL behind it for a
+        # tool that ignores that too, so the run ends and is archived.
+        nonlocal reader_gone
+        if signum == signal.SIGHUP:
+            # The terminal is gone: nothing more is shown, and nothing written
+            # to it later (the closing banner, a crash report) can fail.
+            reader_gone = True
+            silence_stdout(stderr=True)
+        kill_job(job, STOP_SIGNAL_GRACE)
 
     code = 1
     try:
@@ -663,6 +687,8 @@ async def execute_cli_job(
 
         try:
             loop.add_signal_handler(signal.SIGINT, on_sigint)
+            for signum in STOP_SIGNALS:
+                loop.add_signal_handler(signum, on_stop_signal, signum)
         except (NotImplementedError, RuntimeError):
             pass
 
@@ -696,10 +722,11 @@ async def execute_cli_job(
         if not as_json:
             sys.stderr.write(f"\n[fieldlog] Execution error: {exc}\n")
     finally:
-        try:
-            loop.remove_signal_handler(signal.SIGINT)
-        except Exception:
-            pass
+        for signum in (signal.SIGINT, *STOP_SIGNALS):
+            try:
+                loop.remove_signal_handler(signum)
+            except Exception:
+                pass
 
         if stdin_reader_active:
             try:
@@ -1763,13 +1790,15 @@ class Console(RichConsole):
         raise BrokenPipeError
 
 
-def silence_stdout() -> None:
-    """Point stdout at /dev/null once whatever was reading it has gone, so
-    nothing later — a closing banner, the interpreter's own final flush — trips
-    over the closed pipe again."""
+def silence_stdout(stderr: bool = False) -> None:
+    """Point stdout (and with `stderr`, stderr) at /dev/null once whatever was
+    reading it has gone, so nothing later — a closing banner, the interpreter's
+    own final flush — trips over the closed pipe or dead terminal again."""
+    streams = [sys.stdout] + ([sys.stderr] if stderr else [])
     try:
         devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, sys.stdout.fileno())
+        for stream in streams:
+            os.dup2(devnull, stream.fileno())
         os.close(devnull)
     except (OSError, ValueError):
         pass

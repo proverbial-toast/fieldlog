@@ -419,6 +419,9 @@ class ActiveJob:
     # a grace (runner.kill_job). Kept on the job so a shutdown that lands
     # inside the grace can finish the kill rather than lose it.
     kill_requested: bool = False
+    # The grace kill_job was given, kept for an interrupt that lands before the
+    # process exists and has to be delivered by run_job once it does.
+    kill_grace: float = 10.0
     # `{"id": "reach", "step": 2, "of": 3}` when this run is a chain's step.
     chain: Optional[dict] = None
     # The preset's parse rule (see recipes.parse_rule), and the one-line summary

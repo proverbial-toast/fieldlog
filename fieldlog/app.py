@@ -27,6 +27,8 @@ which only works while the code that calls them resolves them here too.
 
 from __future__ import annotations
 
+import asyncio
+import signal
 import socket
 import time
 from contextlib import contextmanager
@@ -67,6 +69,7 @@ from fieldlog.state import (
     load_pinned_recent,
     save_last_scope,
 )
+from fieldlog.runner import STOP_SIGNAL_GRACE, STOP_SIGNALS, kill_job
 from fieldlog.transcript import TRANSCRIPT_FILE, append_transcript
 from fieldlog.tui.helpers import (
     parse_iface_field,
@@ -640,9 +643,57 @@ class FieldlogApp(
         # line was written and never re-wraps, so a pre-layout boot transcript
         # is pinned to a guessed width for the life of the session.
         self.call_after_refresh(self._log_boot_transcript)
+        self._watch_stop_signals(True)
 
     def on_unmount(self) -> None:
+        self._watch_stop_signals(False)
         save_last_scope(self.session)
+
+    # ---- Hang-up and kill -------------------------------------------------
+    _stopping = False
+
+    def _watch_stop_signals(self, on: bool) -> None:
+        """Answer SIGHUP and SIGTERM for as long as the app is up.
+
+        Unanswered, either one killed the TUI outright: every running job lost
+        its controlling terminal mid-write and none of them was archived — the
+        ssh session to a jump box dropping took the evidence with it.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        for signum in STOP_SIGNALS:
+            try:
+                if on:
+                    loop.add_signal_handler(signum, self._on_stop_signal, signum)
+                else:
+                    loop.remove_signal_handler(signum)
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass
+
+    def _on_stop_signal(self, signum: int) -> None:
+        """Stop every running job as Ctrl+C would, keep their records, then leave."""
+        if self._stopping:
+            return
+        self._stopping = True
+        running = [job for job in self.jobs.values() if job.running]
+        name = signal.Signals(signum).name
+        self.write_system_log(
+            f"[fieldlog] {name} · stopping {len(running)} running job(s) and keeping their records",
+            style=WARN,
+        )
+        for job in running:
+            kill_job(job, STOP_SIGNAL_GRACE)
+        self.run_worker(self._exit_once_archived(), name="stop signal", exclusive=False)
+
+    async def _exit_once_archived(self) -> None:
+        """Exit when every job has ended — each writes its own record as it
+        does — or when the SIGKILL grace has run out with time to spare."""
+        deadline = time.monotonic() + STOP_SIGNAL_GRACE + 2.0
+        while any(job.running for job in self.jobs.values()) and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        self.exit()
 
     def _log_boot_transcript(self) -> None:
         self.write_system_log(f"[fieldlog] v{VERSION} · harness up")

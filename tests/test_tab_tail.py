@@ -75,3 +75,18 @@ async def test_the_copy_fallback_is_bounded_too(tmp_workspace: Path):
     job = next(iter(app.jobs.values()))
     assert len(job.log_lines) <= 2 * jobs_mod.TAB_TAIL_LINES + 1
     assert job.log_lines[-2] == "20000"                     # then the exit line
+
+
+async def test_a_huge_line_is_clipped_on_screen_not_in_the_log(tmp_workspace: Path):
+    app = FieldlogApp(TargetSession(target="10.0.0.1", workspace_dir=tmp_workspace))
+    tool = {"id": "sh", "bin": "sh"}
+    preset = {"id": "t", "flags": """-c 'head -c 50000 /dev/zero | tr "\\000" a; echo'"""}
+    async with app.run_test(size=(140, 40)) as pilot:
+        app._spawn_job(tool, preset, "sh/t")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        rlog = app.query_one(f"#log-{app.active_tab().id}", RichLog)
+        shown = " ".join(_lines(rlog))
+        job = next(iter(app.jobs.values()))
+    assert f"{50000 - jobs_mod.TAB_LINE_CHARS} more characters in the log" in shown
+    assert Path(job.log_path).read_text().count("a") == 50000

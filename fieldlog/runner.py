@@ -46,6 +46,21 @@ BLOCK_GRACE = 0.4
 # A route lookup takes milliseconds; this bounds a probe that has wedged.
 VANTAGE_DEADLINE = 1.5
 
+# What ends a run the way Ctrl+C does when it reaches fieldlog itself rather
+# than the tool: the terminal hanging up (an ssh session to a jump box
+# dropping), or a polite kill. Both front-ends answer them the same way. The
+# grace is how long a tool gets to stop on its SIGINT before its group is
+# SIGKILLed.
+STOP_SIGNALS = (signal.SIGHUP, signal.SIGTERM)
+STOP_SIGNAL_GRACE = 5.0
+
+# The longest partial line held in memory; past it, the line is written out
+# in pieces (each a line of its own in the log).
+LINE_MAX = 1024 * 1024
+
+# One line end: `\r\n`, or `\r\r\n`, the tty's rendering of a `\r` then a `\n`.
+_LINE_END = re.compile(r"\r+\n")
+
 # The pty we hand the child. Wide enough that table-shaped output is not
 # rewrapped into nonsense by the tool itself.
 PTY_ROWS, PTY_COLS = 24, 200
@@ -108,10 +123,18 @@ def build_env(session: TargetSession, out_dir: Path, run_id: str) -> Dict[str, s
 
 
 def interrupt_job(job: ActiveJob) -> bool:
-    """Send SIGINT to a running job's process group."""
-    if not job.running or job.process is None:
+    """Send SIGINT to a running job's process group.
+
+    A job planned but not yet spawned (run_job looks up the vantage first) has
+    no process to signal: the interrupt is recorded instead and run_job
+    delivers it the moment the process exists. Ignoring it lost a Ctrl+C
+    pressed in that window, and the tool then ran anyway.
+    """
+    if not job.running:
         return False
     job.interrupted = True
+    if job.process is None:
+        return True
     try:
         os.killpg(os.getpgid(job.process.pid), signal.SIGINT)
         return True
@@ -132,6 +155,9 @@ def kill_job(job: ActiveJob, grace: float = 10.0) -> bool:
     if not interrupt_job(job):
         return False
     job.kill_requested = True
+    job.kill_grace = grace
+    if job.process is None:
+        return True                    # run_job arms the SIGKILL once it spawns
     pgid = job.process.pid
 
     def force() -> None:
@@ -354,6 +380,14 @@ async def run_job(
     job.process = proc
     job.pid = proc.pid
     job.pty_fd = master
+    if job.interrupted:
+        # Asked to stop before there was a process to ask (see interrupt_job).
+        # Delivered now, so the tool stops as it would have and the run is
+        # archived as interrupted rather than running on unasked.
+        if job.kill_requested:
+            kill_job(job, job.kill_grace)
+        else:
+            interrupt_job(job)
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
@@ -376,7 +410,11 @@ async def run_job(
         lines = 0
         pending = ""          # partial line held back; it is the candidate prompt
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        held_cr = ""          # a read's trailing `\r`, until the next read is seen
+        held_cr = ""          # a read's trailing `\r`s, until the next read is seen
+        # A line the loop committed before its newline arrived (a prompt, or a
+        # line that ended in `\r` and then paused) is owed that newline: when
+        # it comes, it ends the committed line and is not a blank line of its own.
+        owed_lf = False
         with open(job.log_path, "w", buffering=1, encoding="utf-8", errors="replace") as raw:
 
             def emit(text: str) -> None:
@@ -401,6 +439,13 @@ async def run_job(
                 try:
                     kind, payload = await asyncio.wait_for(queue.get(), timeout)
                 except asyncio.TimeoutError:
+                    owed_lf = True
+                    if held_cr:
+                        # It ended in `\r`: a finished line whose `\n` is late
+                        # (a slow runner, a busy box), never a prompt.
+                        emit(pending)
+                        pending = held_cr = ""
+                        continue
                     job.await_prompt = pending.strip()
                     job.await_since = time.time()
                     # Commit the prompt as a real line now, so the artifact
@@ -423,9 +468,12 @@ async def run_job(
                 final = kind == "eof"
                 text = held_cr + decoder.decode(payload, final=final)
                 held_cr = ""
-                if not final and text.endswith("\r"):
-                    text, held_cr = text[:-1], "\r"
-                text = text.replace("\r\n", "\n").replace("\r", "\n")
+                if not final:
+                    body = text.rstrip("\r")
+                    text, held_cr = body, text[len(body):]
+                # `\r\n` ends a line, and so does the `\r\r\n` a tty makes of a
+                # `\r` then a `\n`; a bare `\r` (a progress bar) ends one too.
+                text = _LINE_END.sub("\n", text).replace("\r", "\n")
                 if not text:
                     if final:
                         break
@@ -435,10 +483,23 @@ async def run_job(
                     job.await_since = None
                     if on_state:
                         on_state()
-                pending += text
-                *complete, pending = pending.split("\n")
-                for line in complete:
-                    emit(line)
+                if owed_lf:
+                    owed_lf = False
+                    if text.startswith("\n"):
+                        text = text[1:]
+                # Split only when a line ended: re-splitting the whole partial
+                # line on every read made a long newline-free output quadratic.
+                if "\n" in text:
+                    *complete, pending = (pending + text).split("\n")
+                    for line in complete:
+                        emit(line)
+                else:
+                    pending += text
+                if len(pending) > LINE_MAX:
+                    # Binary on stdout, or a megabyte of JSON on one line: it is
+                    # written out in pieces rather than held until it ends.
+                    emit(pending)
+                    pending = ""
                 if final:
                     break
 
