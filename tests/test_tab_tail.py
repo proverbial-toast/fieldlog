@@ -62,8 +62,10 @@ async def test_a_short_run_is_shown_whole_with_no_note(tmp_workspace: Path):
 async def test_a_burst_of_output_does_not_stall_the_tab(tmp_workspace: Path):
     # 300k lines. Painted one by one this took the UI minutes; batched, the
     # tab renders at most TAB_TAIL_LINES rows per tick.
+    # ~1.5 s on a laptop; a slow CI Mac once took 11.5. The bound only has to
+    # tell seconds from minutes.
     _app, _rlog, elapsed, lines = await _run_in_tab(tmp_workspace, "1 300000")
-    assert elapsed < 10
+    assert elapsed < 30
     # The ticks skipped most of the flood; the finished tab is the tail, whole.
     tail = jobs_mod.TAB_TAIL_LINES
     values = _values(lines)
