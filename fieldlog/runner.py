@@ -73,6 +73,10 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)
 def strip_ansi(text: str) -> str:
     """`text` without the escapes a pty makes tools emit — what the log holds,
     and what a prompt has to be read as before its shape means anything."""
+    # Every escape starts with ESC, and most lines have none: one C scan for
+    # it is far cheaper than running the pattern over every line of a flood.
+    if "\x1b" not in text:
+        return text
     return _ANSI.sub("", text)
 
 
@@ -433,7 +437,11 @@ async def run_job(
         # line that ended in `\r` and then paused) is owed that newline: when
         # it comes, it ends the committed line and is not a blank line of its own.
         owed_lf = False
-        with open(job.log_path, "w", buffering=1, encoding="utf-8", errors="replace") as raw:
+        # Buffered, and flushed whenever the loop is about to wait (below): the
+        # log on disk is as current as a line-buffered one wherever it can be
+        # read from outside, without a write call per line. Line buffering was
+        # half the CPU of a run that printed a million lines.
+        with open(job.log_path, "w", encoding="utf-8", errors="replace") as raw:
 
             def emit(text: str) -> None:
                 nonlocal lines
@@ -454,6 +462,8 @@ async def run_job(
                 # only whitespace strips to an empty prompt, which is still a
                 # prompt the tool has to be seen resuming from.
                 timeout = BLOCK_GRACE if (pending and job.await_prompt is None) else None
+                if queue.empty():
+                    raw.flush()
                 try:
                     kind, payload = await asyncio.wait_for(queue.get(), timeout)
                 except asyncio.TimeoutError:

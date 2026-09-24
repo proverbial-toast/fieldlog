@@ -221,7 +221,8 @@ out_dir, note)` → `LaunchPlan(job, command, env, timeout, warnings)`** — the
   pipeline or list keeps the shell. The controlling tty is why `/dev/tty` prompts (sudo, ssh) work;
   `setsid` is why `killpg(pid)` reaches the whole job;
 - `loop.add_reader(master)` feeds an `asyncio.Queue`; the loop splits chunks into lines, writes the
-  ANSI-stripped line to the log (line-buffered) and hands the raw line to the front-end's `sink`;
+  ANSI-stripped line to the log (buffered, and flushed whenever the loop waits for the tool, so the
+  file is current whenever the tool is quiet) and hands the raw line to the front-end's `sink`;
 - **prompt heuristic:** a partial line followed by 0.4 s of silence marks the job "awaiting input"
   (`job.await_prompt`, which may be `''` for a whitespace-only line — the flag is `is not None`), and the
   partial line is committed to the log so the artifact reads question-then-answer. Nothing is parsed

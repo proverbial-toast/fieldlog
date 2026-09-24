@@ -641,13 +641,27 @@ async def execute_cli_job(
             return 130
 
     reader_gone = False
+    # Lines waiting for stdout, written once per turn of the loop rather than
+    # once per line: a tool printing a million lines made two million write
+    # and flush calls. The loop turns as soon as the runner has handled one
+    # read of the pty, so no line waits longer than that.
+    out_lines: List[str] = []
 
     def sink(text: str, _stream: str) -> None:
-        nonlocal reader_gone
         if as_json or reader_gone:
             return
+        if not out_lines:
+            loop.call_soon(write_out)
+        out_lines.append(text + "\n")
+
+    def write_out() -> None:
+        nonlocal reader_gone
+        text = "".join(out_lines)
+        out_lines.clear()
+        if not text or reader_gone:
+            return
         try:
-            sys.stdout.write(text + "\n")
+            sys.stdout.write(text)
             sys.stdout.flush()
         except OSError:
             # `| head`, `| grep -m1`, or `less` quit early (EPIPE), or the
@@ -762,6 +776,8 @@ async def execute_cli_job(
         if not as_json:
             sys.stderr.write(f"\n[fieldlog] {problem}\n")
     finally:
+        # Whatever the tool printed last goes out before anything said about it.
+        write_out()
         for signum in CLI_SIGNALS:
             try:
                 if latch is not None:
