@@ -674,13 +674,23 @@ class FieldlogApp(
 
     def _on_stop_signal(self, signum: int) -> None:
         """Stop every running job as Ctrl+C would, keep their records, then leave."""
+        self._stop_and_exit(signal.Signals(signum).name)
+
+    def _stop_and_exit(self, why: str) -> None:
+        """The one way out while jobs run: a hang-up, a kill, or a confirmed quit.
+
+        Every running job — detached ones included, which `self.jobs` still
+        holds — is interrupted with a SIGKILL behind it, each writes its own
+        record as it ends, and a chain stops at the step it was on and writes
+        its summary. Quitting used to cancel the workers instead, which killed
+        the jobs unarchived and let a chain read the cancel as a failed step.
+        """
         if self._stopping:
             return
         self._stopping = True
         running = [job for job in self.jobs.values() if job.running]
-        name = signal.Signals(signum).name
         self.write_system_log(
-            f"[fieldlog] {name} · stopping {len(running)} running job(s) and keeping their records",
+            f"[fieldlog] {why} · stopping {len(running)} running job(s) and keeping their records",
             style=WARN,
         )
         for job in running:
@@ -900,10 +910,15 @@ class FieldlogApp(
 
     def action_quit(self) -> None:  # type: ignore[override]
         running = sum(1 for j in self.jobs.values() if j.running)
-        if running and not isinstance(self.screen, QuitConfirm):
-            self.push_screen(QuitConfirm(running), lambda ok: self.exit() if ok else None)
-        else:
+        if not running or self._stopping:
+            # Nothing to stop, or already stopping and asked again: the
+            # operator is done waiting. Leaving now still SIGKILLs a job that
+            # was asked to die (run_job's cleanup), unarchived.
             self.exit()
+        elif isinstance(self.screen, QuitConfirm):
+            self._stop_and_exit("quit")
+        else:
+            self.push_screen(QuitConfirm(running), lambda ok: self._stop_and_exit("quit") if ok else None)
 
     def action_target_scope(self) -> None:
         def done(_saved) -> None:

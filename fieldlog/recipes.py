@@ -562,9 +562,24 @@ def _bin_text(value) -> str:
     return str(value)
 
 
+# Keys read as text everywhere downstream — compared with what the operator
+# typed, joined into messages, padded into columns. YAML reads `id: 443` as an
+# int and `id: on` as a bool, and one such preset took down every command that
+# loads the catalog: a chain step naming its tool raised inside load_catalog.
+_TEXT_KEYS = ("id", "name", "flags")
+
+
+def _as_text(entry: dict) -> dict:
+    """`entry` with its text keys as strings, as written; None stays absent."""
+    return dict(entry, **{
+        k: (_bin_text(entry[k]) if isinstance(entry[k], bool) else str(entry[k])).strip()
+        for k in _TEXT_KEYS if entry.get(k) is not None
+    })
+
+
 def normalize_recipe(r: dict) -> dict:
-    """Ensure id, bin and presets exist."""
-    item = dict(r)
+    """Ensure id, bin and presets exist, and that ids, names and flags are text."""
+    item = _as_text(r)
     item["id"] = str(item.get("id", "")).strip()
 
     if "bin" not in item:
@@ -584,7 +599,8 @@ def normalize_recipe(r: dict) -> dict:
         item["presets"] = [preset_dict]
 
     item["presets"] = [
-        dict(p, **({"bin": _bin_text(p["bin"])} if "bin" in p else {})) for p in item["presets"]
+        _as_text(dict(p, **({"bin": _bin_text(p["bin"])} if "bin" in p else {})))
+        for p in item["presets"]
     ]
     return item
 

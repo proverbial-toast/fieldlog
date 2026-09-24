@@ -151,7 +151,7 @@ interfaces: without `-i` it uses that same default.
 | `Shift+R` | Reload recipes. Running jobs are untouched |
 | `L` | Toggle split / stacked layout (stacked is automatic under 120 columns) |
 | `H` | Show / hide the hotkey bar |
-| `Q Q` | Quit (double-tap). Asks first if jobs are running |
+| `Q Q` | Quit (double-tap). Asks first if jobs are running (detached ones too), then stops them and keeps their records; quit again to leave without waiting |
 
 Both copy keys use OSC 52: fieldlog writes the text as an escape sequence and
 your terminal puts it on the clipboard. That works over ssh, and nothing is

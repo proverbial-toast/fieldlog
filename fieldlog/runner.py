@@ -218,8 +218,9 @@ def send_stdin(job: ActiveJob, text: str) -> bool:
     return True
 
 
-def _open_pty(echo: bool = False) -> tuple[int, int]:
-    """The pty handed to the child. `echo` decides who shows the reply.
+def _open_pty(echo: bool = False, size: Optional[Tuple[int, int]] = None) -> tuple[int, int]:
+    """The pty handed to the child. `echo` decides who shows the reply; `size`
+    is `(rows, cols)`, PTY_ROWS x PTY_COLS when there is no terminal to copy.
 
     Off (the TUI): the operator's reply appears once, from the explicit
     `› reply` note. With echo on it lands twice and the second copy is raw,
@@ -232,8 +233,9 @@ def _open_pty(echo: bool = False) -> tuple[int, int]:
     secret stays hidden and a confirmation is visible, exactly as in a terminal.
     """
     master, slave = pty.openpty()
+    rows, cols = size or (PTY_ROWS, PTY_COLS)
     try:
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", PTY_ROWS, PTY_COLS, 0, 0))
+        set_winsize(slave, rows, cols)
         if not echo:
             attrs = termios.tcgetattr(slave)
             attrs[3] &= ~termios.ECHO
@@ -241,6 +243,11 @@ def _open_pty(echo: bool = False) -> tuple[int, int]:
     except (OSError, termios.error):
         pass
     return master, slave
+
+
+def set_winsize(fd: int, rows: int, cols: int) -> None:
+    """Size the pty behind `fd`; the kernel tells the tool with a SIGWINCH."""
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
 def exec_form(command: str) -> str:
@@ -251,9 +258,13 @@ def exec_form(command: str) -> str:
     code proc.wait() saw was the shell's, never the tool's. exec makes the
     tool the process we wait on. A list or pipeline keeps the shell: exec
     would drop everything after the first command. Redirections are fine.
+
+    A newline ends a command only outside quotes. One inside them is part of
+    an argument — a script handed to `sh -c`, or that same command wrapped in
+    `timeout … sh -c '…'` — and still leaves one simple command. Skipping exec
+    for those left coreutils timeout a child of the shell, free to move into a
+    process group of its own that no interrupt ever reached.
     """
-    if "\n" in command:
-        return command
     try:
         lex = shlex.shlex(command, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
@@ -261,6 +272,10 @@ def exec_form(command: str) -> str:
     except ValueError:              # unbalanced quote: let the shell complain
         return command
     if not tokens or tokens[0] == "exec":
+        return command
+    # shlex splits on an unquoted newline and keeps a quoted one in its token,
+    # so any newline missing from the tokens was a command separator.
+    if command.count("\n") != sum(tok.count("\n") for tok in tokens):
         return command
     for tok in tokens:
         if set(tok) <= set("();<>|&") and not (tok[0] in "<>" and set(tok) <= set("<>&")):
@@ -326,6 +341,7 @@ async def run_job(
     on_state: Optional[Callable[[], None]] = None,
     env: Optional[Dict[str, str]] = None,
     echo: bool = False,
+    winsize: Optional[Tuple[int, int]] = None,
 ) -> int:
     """Run `command` on a pty, stream lines to `sink`, tee raw output to
     job.log_path, and append a manifest record to session.json.
@@ -334,7 +350,9 @@ async def run_job(
     UI can raise and drop the stdin bar. `env` is the launch plan's env; it is
     built from the session when omitted. `echo` leaves the pty's own echo on,
     which is what a front-end without a reply note wants (see `_open_pty`).
-    Returns the exit code.
+    `winsize` is the `(rows, cols)` the tool should see, set before it starts:
+    a size applied after the spawn reached it only if the vantage lookup
+    happened to finish first, and it rarely did. Returns the exit code.
     """
     work_dir = session.ensure_dirs()
     # Only a `scan: true` recipe needs the before-and-after picture; the default
@@ -363,7 +381,7 @@ async def run_job(
     job.vantage = await _vantage_within(session.target, VANTAGE_DEADLINE)
     start = time.time()
 
-    master, slave = _open_pty(echo=echo)
+    master, slave = _open_pty(echo=echo, size=winsize)
     try:
         proc = await asyncio.create_subprocess_shell(
             exec_form(command),

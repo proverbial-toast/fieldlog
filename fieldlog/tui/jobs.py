@@ -342,10 +342,16 @@ class JobsMixin:
             return
         was_active = (self.active_tab_id == tab_id)
         tab = self.tabs.pop(idx)
-        # The tab was the only thing holding the job: its buffered lines and
-        # artifact record go with it. A detached job keeps running and keeps
-        # writing to its log; nothing in the app reads it again either way.
-        self.jobs.pop(tab.job_id or "", None)
+        # A finished job goes with its tab: its buffered lines and artifact
+        # record have nothing left to be shown in. A running one — detached, or
+        # killed and not dead yet — stays registered until its worker ends
+        # (see _run): the scope form's guard, quit and the stop signals all ask
+        # `self.jobs` what is still running, and a job missing from it was
+        # archived into whatever target the scope named next, or killed on quit
+        # without a word and without a record.
+        job = self.jobs.get(tab.job_id or "")
+        if job is None or not job.running:
+            self.jobs.pop(tab.job_id or "", None)
         self._stdin_dismissed.pop(tab.job_id or "", None)
         if was_active:
             new_idx = max(0, min(idx, len(self.tabs) - 1))
@@ -484,6 +490,9 @@ class JobsMixin:
         that keeps a history of what the harness was asked to do.
         """
         chain = self.selected_chain()
+        if chain is not None and getattr(self, "_stopping", False):
+            self.write_system_log(f"[blocked] chain {chain['id']} · fieldlog is stopping", style=WARN)
+            return
         if chain is not None:
             verdict = check_chain(self.catalog, chain, self.session, self.flag_edits)
             if verdict.blocked:
@@ -497,6 +506,9 @@ class JobsMixin:
             return
         tool, preset, key, _ = self.current_flags()
         if not tool:
+            return
+        if getattr(self, "_stopping", False):
+            self.write_system_log(f"[blocked] {key} · fieldlog is stopping", style=WARN)
             return
         verdict = self.verdict(tool, preset)
         if verdict.blocked:
@@ -564,7 +576,14 @@ class JobsMixin:
     def _spawn_job(self, tool: dict, preset: dict, key: str) -> None:
         """plan_launch captures root, stamp and out_dir onto the job; every
         displayed path renders from those captured fields, never from live state."""
-        plan = plan_launch(self.session, tool, preset, flags_override=self.flag_edits.get(key))
+        try:
+            plan = plan_launch(self.session, tool, preset, flags_override=self.flag_edits.get(key))
+        except OSError as exc:
+            # A target folder left owned by root by an earlier `sudo fieldlog`,
+            # a full disk, a read-only remount. Raised, it took the app down and
+            # every other running job with it.
+            self.write_system_log(f"[blocked] {key} · cannot write to the archive · {exc}", style=ERR)
+            return
         rlog, tab_id = self._open_job_tab(plan, tool, preset)
         self._remember(key)
         self.run_worker(self._run(plan, rlog, tab_id), name=plan.job.name, exclusive=False)
@@ -583,10 +602,18 @@ class JobsMixin:
             await self._run(plan, rlog, tab_id)
             return plan.job.exit_code if plan.job.exit_code is not None else 1
 
-        result = await run_chain(
-            self.session, self.catalog, chain,
-            run_step=run_step, flags_overrides=self.flag_edits,
-        )
+        try:
+            result = await run_chain(
+                self.session, self.catalog, chain,
+                run_step=run_step, flags_overrides=self.flag_edits,
+            )
+        except OSError as exc:
+            # A step could not be planned, or the summary not written: the
+            # archive is not writable. Said here rather than raised into the app.
+            self.write_system_log(
+                f"[chain] {cid} · stopped · cannot write to the archive · {exc}", style=ERR
+            )
+            return
         record = result.record
         if record["stopped_at"]:
             style = ERR
@@ -663,7 +690,12 @@ class JobsMixin:
 
         code = 130 if job.interrupted else 1
         try:
-            code = await run_job(plan.command, job, self.session, sink, on_state=self._on_job_block, env=plan.env)
+            # The plan's own copy of the scope, never the live one: the scope form
+            # can change the target while a detached job is still running.
+            code = await run_job(
+                plan.command, job, plan.session or self.session, sink,
+                on_state=self._on_job_block, env=plan.env,
+            )
             flush()
             if line_num > TAB_TAIL_LINES:
                 # Said once, at the end, where the scrolled-off lines went.
@@ -677,10 +709,20 @@ class JobsMixin:
         except asyncio.CancelledError:
             job.exit_code = code = 130 if job.interrupted else 1
             job.end_time = time.time()
+            # Passed on, not absorbed: a chain awaiting this step has to stop
+            # too. Swallowed here, the chain read the cancel as a failed step
+            # and went on to plan the next one while the app was going down.
+            raise
         except Exception as exc:  # noqa: BLE001
-            job.exit_code = code = 127
-            job.end_time = time.time()
-            err = f"[Runner] failed: {exc}"
+            if job.exit_code is None:
+                job.exit_code = 127
+                err = f"[Runner] failed: {exc}"
+            else:
+                # The tool ran to its end and only the archiving failed (a full
+                # or read-only disk): its own code stands.
+                err = f"[Runner] exit {job.exit_code} · the run could not be archived: {exc}"
+            code = job.exit_code
+            job.end_time = job.end_time or time.time()
             flush()
             _safe_write(Text(err, style=ERR))
             job.log_lines.append(err)
@@ -691,6 +733,10 @@ class JobsMixin:
                 if t.id == tab_id:
                     t.status = "done" if run_passed(code, job.success_codes, job.expect_found) else "failed"
                     break
+            else:
+                # Detached while it ran: _drop_tab kept it registered only so
+                # the running count stayed true. It has ended, so it goes.
+                self.jobs.pop(tab_id.removeprefix("job-"), None)
             self._refresh_tab_strip()
             self._refresh_header()
             self._refresh_results_chrome()

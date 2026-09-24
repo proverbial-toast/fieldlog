@@ -232,11 +232,19 @@ out_dir, note)` → `LaunchPlan(job, command, env, timeout, warnings)`** — the
 - on exit: `shell_exit_code` (signal death → 128+N), then one read of the log tail for both the summary
   and fields (`parse:`) and the expectation (`expect:`), artifact attribution (§6), then `_append_manifest` builds the record, stores it on `job.record`, and
   `archive.append_record` writes it;
-- on cancellation (the TUI quitting): closing the pty master hangs up the child's controlling terminal
+- on cancellation (the app going down without the stop path below): closing the pty master hangs up the child's controlling terminal
   (SIGHUP, the end of most tools), then SIGTERM to the process group — or SIGKILL if `kill_job` had already
   been asked for this job (`job.kill_requested`), since the SIGKILL it scheduled dies with the loop.
 
 Interrupt is `os.killpg(SIGINT)` (`interrupt_job`); the TUI's kill adds SIGKILL after 10 s (`kill_job`).
+A confirmed quit, SIGHUP and SIGTERM all take `FieldlogApp._stop_and_exit`: every running job is killed
+that way and the app waits for their records (and a chain's summary) before it exits. `_run` re-raises a
+cancel after its bookkeeping, so a chain never reads one as a failed step.
+
+Every run executes against `LaunchPlan.session`, a copy of the scope taken at plan time, and `run_chain`
+copies the scope and the args edits once at launch — the TUI's live session stays editable while jobs
+run, and must never move one. The CLI hands the tool its terminal's size before the spawn (`winsize`) and
+follows SIGWINCH; stdin is forwarded whenever it is a terminal, whatever stdout is.
 
 **D. `run_chain(session, catalog, chain, *, run_step, timeout, flags_overrides, note)`** — inverted control.
 The driver plans each step lazily (a halted chain reserves no numbers for steps that never ran), shares the
@@ -407,11 +415,12 @@ refactor #5 from the previous review.
 Jobs: `_spawn_job` → `plan_launch` → `_open_job_tab` (tab, RichLog, transcript) → worker `_run` →
 `run_job` with a sink that writes the first 500 lines to the RichLog and caps the in-memory copy. A chain
 worker awaits each step's `_run` in turn. Closing a running tab asks kill or detach; a detached job keeps
-writing to disk with nothing in the app reading it again.
+writing to disk with nothing in the app reading it again, but stays in `self.jobs` until its worker ends,
+so the scope form's guard, quit and the stop signals still count it.
 
 ## 9. Tests and CI
 
-754 tests in 67 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
+775 tests in 68 files (376 in 35 when this document was written), ~35 s. Three tiers: pure
 unit tests (parsing, scope characters, arg tokens, path lookup); filesystem integration tests on a
 `tmp_workspace` fixture that run real `true`/`false`/`echo`/`sh` tools through `plan_launch` + `run_job` or
 `handle_run`; and async tests that drive the real app through `app.run_test()`. `test_app_structure.py`

@@ -5,16 +5,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import difflib
-import fcntl
 import json
 import math
 import os
 import platform
 import re
 import shlex
-import shutil
 import signal
-import struct
 import sys
 import termios
 import time
@@ -74,7 +71,7 @@ from fieldlog.recipes import (
 )
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
-from fieldlog.runner import STOP_SIGNAL_GRACE, STOP_SIGNALS, interrupt_job, kill_job, run_job
+from fieldlog.runner import STOP_SIGNAL_GRACE, STOP_SIGNALS, interrupt_job, kill_job, run_job, set_winsize
 from fieldlog.vantage import vantage_line
 from fieldlog.state import (
     DEFAULT_ARTIFACT_ROOT,
@@ -580,19 +577,47 @@ def handle_show(args: argparse.Namespace, catalog: Catalog) -> int:
     return 0
 
 
+def terminal_size() -> Optional[Tuple[int, int]]:
+    """`(rows, cols)` of the terminal stdout is drawn on, or None when it is not one."""
+    try:
+        size = os.get_terminal_size(sys.stdout.fileno())
+    except (OSError, ValueError):
+        return None
+    return (size.lines, size.columns) if size.lines and size.columns else None
+
+
+# The signals a CLI run answers: Ctrl+C, and the two that end it the same way.
+CLI_SIGNALS = (signal.SIGINT, *STOP_SIGNALS)
+
+
 async def execute_cli_job(
     plan: LaunchPlan,
     session: TargetSession,
     quiet: bool = False,
     as_json: bool = False,
     emit_json: bool = True,
+    latch: Optional[List[int]] = None,
 ) -> int:
     """Run one planned job on this terminal. `emit_json` is what a chain turns
     off: its steps stay silent under `--json` so the summary record is the
-    only thing on stdout."""
+    only thing on stdout.
+
+    `latch` is a chain's: signals that landed while no step was running. They
+    are delivered to this step as it starts, and on the way out this step
+    leaves its handlers pointing back at the latch rather than removing them —
+    removed, Python's defaults took a Ctrl+C or a hang-up between two steps and
+    the chain died without its summary.
+    """
     job, command, timeout = plan.job, plan.command, plan.timeout
     loop = asyncio.get_running_loop()
-    is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+    # Reading what the operator types needs a terminal to read from, and
+    # nothing more. Requiring stdout to be one as well meant `| tee` left a
+    # sudo prompt unanswerable: the keys stayed in the terminal, echoed in
+    # plain sight, and went to the shell once fieldlog was gone.
+    stdin_tty = sys.stdin.isatty()
+    # The tool is sized to the terminal it is drawn on; output going into a
+    # pipe keeps the runner's wide default.
+    winsize = terminal_size() if sys.stdout.isatty() else None
     old_termios = None
     start_time = time.time()
 
@@ -660,6 +685,14 @@ async def execute_cli_job(
     def on_sigint() -> None:
         interrupt_job(job)
 
+    def on_winch() -> None:
+        size = terminal_size()
+        if size and job.pty_fd is not None:
+            try:
+                set_winsize(job.pty_fd, *size)
+            except OSError:
+                pass
+
     def on_stop_signal(signum: int) -> None:
         # SIGHUP (the ssh session to the jump box dropped) or SIGTERM (a kill,
         # a supervisor). Dying of it left the tool without its controlling
@@ -676,7 +709,7 @@ async def execute_cli_job(
 
     code = 1
     try:
-        if is_tty:
+        if stdin_tty:
             try:
                 old_termios = termios.tcgetattr(sys.stdin.fileno())
                 tty.setcbreak(sys.stdin.fileno())
@@ -689,44 +722,58 @@ async def execute_cli_job(
             loop.add_signal_handler(signal.SIGINT, on_sigint)
             for signum in STOP_SIGNALS:
                 loop.add_signal_handler(signum, on_stop_signal, signum)
+            if winsize is not None:
+                loop.add_signal_handler(signal.SIGWINCH, on_winch)
         except (NotImplementedError, RuntimeError):
             pass
+        if latch:
+            # Asked to stop between two steps: this step is the one to stop,
+            # which run_job does the moment its process exists.
+            for signum in latch:
+                if signum == signal.SIGINT:
+                    on_sigint()
+                else:
+                    on_stop_signal(signum)
+            latch.clear()
 
         run_task = asyncio.create_task(
             # echo on: nothing here renders the operator's reply, so the pty's
             # own echo is what makes it visible and what puts it in the log.
             # The tool keeps control of it, so a password prompt stays hidden.
-            run_job(command, job, session, sink, on_state=None, env=plan.env, echo=is_tty)
+            run_job(
+                command, job, plan.session or session, sink, on_state=None, env=plan.env,
+                echo=stdin_tty, winsize=winsize,
+            )
         )
-
-        # Propagate real terminal dimensions to PTY slave
-        if is_tty:
-            await asyncio.sleep(0.02)
-            if job.pty_fd is not None:
-                try:
-                    cols, rows = shutil.get_terminal_size()
-                    fcntl.ioctl(
-                        job.pty_fd,
-                        termios.TIOCSWINSZ,
-                        struct.pack("HHHH", rows, cols, 0, 0),
-                    )
-                except (OSError, termios.error):
-                    pass
 
         code = await run_task
         if timeout and code == 124 and not as_json:
             sys.stderr.write(f"\n[fieldlog] Job timed out after {timeout:g}s\n")
 
     except Exception as exc:
-        code = 127
+        if job.exit_code is None:
+            code = 127
+            problem = f"Execution error: {exc}"
+        else:
+            # The tool ran to its end and only the archiving failed (a full or
+            # read-only disk): its own code stands, and says what happened.
+            code = job.exit_code
+            problem = f"the run could not be archived: {exc}"
         if not as_json:
-            sys.stderr.write(f"\n[fieldlog] Execution error: {exc}\n")
+            sys.stderr.write(f"\n[fieldlog] {problem}\n")
     finally:
-        for signum in (signal.SIGINT, *STOP_SIGNALS):
+        for signum in CLI_SIGNALS:
             try:
-                loop.remove_signal_handler(signum)
+                if latch is not None:
+                    loop.add_signal_handler(signum, latch.append, signum)
+                else:
+                    loop.remove_signal_handler(signum)
             except Exception:
                 pass
+        try:
+            loop.remove_signal_handler(signal.SIGWINCH)
+        except Exception:
+            pass
 
         if stdin_reader_active:
             try:
@@ -875,9 +922,15 @@ def handle_run_chain(args: argparse.Namespace, catalog: Catalog, chain: dict) ->
         return 1
 
     console = Console()
+    # Signals that land while no step is running, held for the next one.
+    latch: List[int] = []
 
     async def run_step(plan: LaunchPlan) -> int:
         info = plan.job.chain or {}
+        if signal.SIGHUP in latch:
+            # The terminal went while no step was running: the step header
+            # below must not be written to it.
+            silence_stdout(stderr=True)
         if not quiet and not as_json:
             console.print(
                 f"\n[bold cyan]{TAG}[/bold cyan] chain {escape(chain['id'])} · "
@@ -886,14 +939,40 @@ def handle_run_chain(args: argparse.Namespace, catalog: Catalog, chain: dict) ->
             )
         for warning in plan.warnings:
             sys.stderr.write(f"Warning: {warning}\n")
-        return await execute_cli_job(plan, session, quiet=quiet, as_json=as_json, emit_json=False)
-
-    result = asyncio.run(
-        run_chain(
-            session, catalog, chain, run_step=run_step, timeout=timeout,
-            note=getattr(args, "note", "").strip(),
+        return await execute_cli_job(
+            plan, session, quiet=quiet, as_json=as_json, emit_json=False, latch=latch,
         )
-    )
+
+    async def drive():
+        loop = asyncio.get_running_loop()
+        for signum in CLI_SIGNALS:
+            try:
+                loop.add_signal_handler(signum, latch.append, signum)
+            except (NotImplementedError, RuntimeError):
+                pass
+        try:
+            return await run_chain(
+                session, catalog, chain, run_step=run_step, timeout=timeout,
+                note=getattr(args, "note", "").strip(),
+            )
+        finally:
+            for signum in CLI_SIGNALS:
+                try:
+                    loop.remove_signal_handler(signum)
+                except Exception:
+                    pass
+
+    try:
+        result = asyncio.run(drive())
+    except BrokenPipeError:
+        raise                      # the reader left: main's to answer, quietly
+    except OSError as exc:
+        # A step that could not be planned or a summary that could not be
+        # written: the archive is not writable. An answer, not a crash report.
+        sys.stderr.write(f"Error: chain '{chain['id']}' stopped · {exc}\n")
+        return 1
+    if signal.SIGHUP in latch:
+        silence_stdout(stderr=True)
     record = result.record
 
     if as_json:
@@ -933,17 +1012,23 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
         return 1
 
     dry_run = getattr(args, "dry_run", False)
-    plan = plan_launch(
-        session,
-        tool,
-        preset,
-        extra_args=getattr(args, "extra_args", ""),
-        timeout=getattr(args, "timeout", None),
-        dry_run=dry_run,
-        # Stripped here: `--note "  "` is not a note, and an empty one keeps
-        # the key off the record entirely.
-        note=getattr(args, "note", "").strip(),
-    )
+    try:
+        plan = plan_launch(
+            session,
+            tool,
+            preset,
+            extra_args=getattr(args, "extra_args", ""),
+            timeout=getattr(args, "timeout", None),
+            dry_run=dry_run,
+            # Stripped here: `--note "  "` is not a note, and an empty one keeps
+            # the key off the record entirely.
+            note=getattr(args, "note", "").strip(),
+        )
+    except OSError as exc:
+        # A target folder left owned by root by an earlier `sudo fieldlog`, a
+        # full disk, a read-only mount: the operator's to fix, not a bug report.
+        sys.stderr.write(f"Error: cannot write to the archive · {exc}\n")
+        return 1
 
     if dry_run:
         print_dry_run(plan)
@@ -964,6 +1049,11 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
     # tool's own code either way, so nothing in it is fabricated. The tool's own
     # code is the exit status of a failure, except that a tool that exited 0
     # against a failed expectation cannot be reported as 0.
+    if plan.job.record is None and plan.job.exit_code is not None:
+        # The tool ran to its end and the archive write failed: the
+        # execution-error status, whatever the tool itself said. Its own code
+        # is still the one printed and kept on the job.
+        return 127
     passed = run_passed(code, plan.job.success_codes, plan.job.expect_found)
     return 0 if passed else (code if code != 0 else 1)
 
@@ -1186,7 +1276,10 @@ def parse_since(text: str, now: Optional[datetime] = None) -> Optional[datetime]
         return midnight - timedelta(days=1)
     span = _SPAN.fullmatch(text)
     if span:
-        return now - timedelta(**{_SPAN_UNIT[span[2]]: int(span[1])})
+        try:
+            return now - timedelta(**{_SPAN_UNIT[span[2]]: int(span[1])})
+        except OverflowError:       # `999999d` reaches back before year 1
+            return None
     try:
         return _naive_local(datetime.fromisoformat(text.upper().replace(" ", "T")))
     except ValueError:

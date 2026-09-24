@@ -307,7 +307,7 @@ class QuitConfirm(ModalScreen[bool]):
         with Vertical(id="modal-box"):
             yield Static("┤ CONFIRM QUIT ├", id="modal-title")
             plural = "scan" if self.running == 1 else "scans"
-            yield Label(f"{self.running} {plural} still running — quitting kills them.")
+            yield Label(f"{self.running} {plural} still running — quitting stops them and keeps their records.")
             yield Static("[Enter/Y] quit     [Esc/N] cancel", id="quit-hint")
 
     def action_confirm(self) -> None:

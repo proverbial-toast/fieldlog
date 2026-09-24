@@ -10,7 +10,7 @@ terminal, the TUI opens a tab for it, and both hand that in as `run_step`.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional
@@ -48,10 +48,16 @@ async def run_chain(
     operator's per-recipe args edits apply inside a chain too. `note` is the
     operator's `--note`; it goes on the summary record, not on every step.
     """
+    # The scope and the args edits as they stood at launch, which is what the
+    # front-end checked the chain against. Both are copies: the TUI's live
+    # session and its edits stay editable while a chain runs, and reading them
+    # step by step moved later steps onto a target nobody launched them at,
+    # with values the gate never saw.
+    session = replace(session)
+    overrides = dict(flags_overrides or {})
     steps = chain_steps(catalog, chain)
     stamp = run_stamp()
     start = time.time()
-    overrides = flags_overrides or {}
 
     # The first step's directory, which every later step then reuses. A chain
     # without steps is dropped at load, so the empty string is never archived.

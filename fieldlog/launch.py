@@ -8,7 +8,7 @@ front-end builds a command itself; a dry run just prints the plan.
 from __future__ import annotations
 
 import shlex
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -33,6 +33,10 @@ class LaunchPlan:
     env: Dict[str, str]
     timeout: Optional[float] = None
     warnings: List[str] = field(default_factory=list)
+    # The scope as it stood when the run was planned: its own copy, so a
+    # front-end that edits its live session (the TUI's scope form) cannot move
+    # a run that is already under way into another target's folder.
+    session: Optional[TargetSession] = None
 
 
 def next_run_id(session: TargetSession, reserve: bool = True) -> str:
@@ -126,4 +130,6 @@ def plan_launch(
         scan_workspace=scans_workspace(preset),
         note=note,
     )
-    return LaunchPlan(job, command, build_env(session, out_dir, run_id), timeout, warnings)
+    return LaunchPlan(
+        job, command, build_env(session, out_dir, run_id), timeout, warnings, session=replace(session),
+    )
