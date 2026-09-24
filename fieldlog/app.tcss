@@ -343,7 +343,10 @@ Screen {
     height: 100%;
     overflow-x: auto;
     overflow-y: hidden;
-    scrollbar-size: 1 1;
+    /* No bar: the strip has two rows and the tabs need both. A bar took the
+       second one — every label — as soon as the tabs outgrew the width. The
+       active tab is kept in view instead, and the wheel still scrolls it. */
+    scrollbar-size-horizontal: 0;
 }
 
 #tabs-list {

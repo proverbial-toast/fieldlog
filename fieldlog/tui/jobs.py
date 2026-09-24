@@ -271,6 +271,7 @@ class JobsMixin:
                 item.remove()
                 del existing[tid]
 
+        active_item = None
         for tab in self.tabs:
             is_active = (tab.id == self.active_tab_id)
             job = self.jobs.get(tab.job_id or "")
@@ -281,7 +282,15 @@ class JobsMixin:
                 item.set_class(not is_active, "tab-item")
                 item.update_tab(tab, is_active, awaiting)
             else:
-                tabs_list.mount(TabItem(tab, is_active=is_active, awaiting=awaiting))
+                item = TabItem(tab, is_active=is_active, awaiting=awaiting)
+                tabs_list.mount(item)
+            if is_active:
+                active_item = item
+        if active_item is not None:
+            # The strip scrolls without a bar (app.tcss), so a tab opened past
+            # its right edge would otherwise be out of sight. After the refresh:
+            # a tab mounted just now has no place in the layout yet.
+            self.call_after_refresh(active_item.scroll_visible, animate=False)
 
         try:
             finished = sum(1 for t in self.tabs if t.id != "system" and t.status != "active")
