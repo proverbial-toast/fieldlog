@@ -1,7 +1,7 @@
 # Packets to a file, locally or over ssh from somewhere else.
 # These need root or the right capabilities; fieldlog does not escalate.
 # The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
-# $RUN_ID) and the `platform:` rule are documented in the project README.
+# $RUN_ID) and the `platform:` rule are documented in docs/recipes.md.
 # Switch this theme off with `themes: {capture: false}` in
 # ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
 

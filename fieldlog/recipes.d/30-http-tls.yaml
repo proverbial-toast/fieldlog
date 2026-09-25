@@ -1,7 +1,7 @@
 # What the service answers, and what its certificate claims.
 # python-server serves a directory for the other side to fetch from.
 # The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
-# $RUN_ID) and the `platform:` rule are documented in the project README.
+# $RUN_ID) and the `platform:` rule are documented in docs/recipes.md.
 # Switch this theme off with `themes: {http-tls: false}` in
 # ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
 

@@ -1,6 +1,6 @@
 # How much the path actually carries. Needs a cooperating far end.
 # The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
-# $RUN_ID) and the `platform:` rule are documented in the project README.
+# $RUN_ID) and the `platform:` rule are documented in docs/recipes.md.
 # Switch this theme off with `themes: {throughput: false}` in
 # ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
 

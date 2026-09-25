@@ -5,7 +5,7 @@
 # The two listeners need root or cap_net_raw and wait for a frame that is only
 # sent every 30-60 seconds, so they are slow by nature rather than by fault.
 # The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
-# $RUN_ID) and the `platform:` rule are documented in the project README.
+# $RUN_ID) and the `platform:` rule are documented in docs/recipes.md.
 # Switch this theme off with `themes: {neighbourhood: false}` in
 # ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
 

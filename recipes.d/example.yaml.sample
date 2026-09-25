@@ -5,7 +5,7 @@
 #
 # Only *.yaml files load, so this one never does where it is. It uses no
 # built-in recipe, so it still works with every built-in theme switched off.
-# The fields, variables and merge rules are in the project README, under Recipes.
+# The fields, variables and merge rules are in docs/recipes.md.
 
 recipes:
   - id: web                           # tool id, the first half of `web/status`

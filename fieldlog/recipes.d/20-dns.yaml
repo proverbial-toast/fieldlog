@@ -1,7 +1,7 @@
 # What does the name resolve to, and who says so.
 # resolvectl is Linux, scutil is its macOS stand-in.
 # The variables a recipe may use ($TARGET, $HOST, $LHOST, $IFACE, $OUTDIR,
-# $RUN_ID) and the `platform:` rule are documented in the project README.
+# $RUN_ID) and the `platform:` rule are documented in docs/recipes.md.
 # Switch this theme off with `themes: {dns: false}` in
 # ~/.config/fieldlog/themes.yaml; `fieldlog doctor` lists what is off.
 
