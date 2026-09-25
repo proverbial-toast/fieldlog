@@ -1,6 +1,6 @@
 # fieldlog
 
-<p align="center"><img src="fieldlog.png" alt="fieldlog" width="320"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/proverbial-toast/fieldlog/main/fieldlog.png" alt="fieldlog" width="320"></p>
 
 fieldlog - log what you did in the field.
 
@@ -10,7 +10,7 @@ fieldlog runs the command, streams the output, and files the log plus a run
 record under `targets/<name>/`. The archive is the point: a week later you can
 see exactly what was run against a host, when, with what result.
 
-![The fieldlog TUI: the recipe tree and a tool's variants on the left, a finished curl run on the right, and the command it ran in the ARGS band](fieldlog-tui.png)
+![The fieldlog TUI: the recipe tree and a tool's variants on the left, a finished curl run on the right, and the command it ran in the ARGS band](https://raw.githubusercontent.com/proverbial-toast/fieldlog/main/fieldlog-tui.png)
 
 ```bash
 fieldlog run ping/quick 192.168.1.20
@@ -66,7 +66,7 @@ uv run pytest                   # or: pytest
 
 The built-in catalog is a starting point; fieldlog is meant to hold the commands
 *you* run. A recipe is a few lines of YAML in `~/.config/fieldlog/recipes.d/`, and
-[`recipes.d/example.yaml.sample`](recipes.d/example.yaml.sample) is one to copy.
+[`recipes.d/example.yaml.sample`](https://github.com/proverbial-toast/fieldlog/blob/main/recipes.d/example.yaml.sample) is one to copy.
 
 To start from a blank slate, switch every built-in theme off in
 `~/.config/fieldlog/themes.yaml`. Only your own recipes load:
@@ -85,7 +85,7 @@ themes:
   chains: false
 ```
 
-Delete a line to bring that theme back. [docs/recipes.md](docs/recipes.md) covers the format.
+Delete a line to bring that theme back. [docs/recipes.md](https://github.com/proverbial-toast/fieldlog/blob/main/docs/recipes.md) covers the format.
 
 ## Terms
 
@@ -308,7 +308,7 @@ are listed, never quoted.
 
 ## Recipes
 
-The built-in catalog is [`fieldlog/recipes.d/`](fieldlog/recipes.d/), one file
+The built-in catalog is [`fieldlog/recipes.d/`](https://github.com/proverbial-toast/fieldlog/tree/main/fieldlog/recipes.d/), one file
 per **theme**, all of them shipped in the wheel:
 
 | Theme | What is in it |
@@ -355,7 +355,7 @@ way. One without a `theme:` always loads.
 
 The YAML format, how the command line is built, summaries, exit codes,
 expectations, variables, chains, drop-in files and GUI recipes are covered in
-[docs/recipes.md](docs/recipes.md).
+[docs/recipes.md](https://github.com/proverbial-toast/fieldlog/blob/main/docs/recipes.md).
 
 ## The archive
 
