@@ -1,0 +1,55 @@
+name: Publish
+
+# Run by hand, never by a push: a GitHub release is where a version is tried
+# out, and sending it on to an index is a separate, deliberate step. An index
+# never takes the same version twice, so a mistake there costs a version number.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release to publish, e.g. v0.5.0"
+        required: true
+      index:
+        description: "Where to publish it"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # The trusted publisher on each index names this workflow and this
+    # environment, so the environment decides which index accepts the upload.
+    environment:
+      name: ${{ inputs.index }}
+      url: ${{ inputs.index == 'testpypi' && 'https://test.pypi.org/p/fieldlog' || 'https://pypi.org/p/fieldlog' }}
+    permissions:
+      contents: read
+      # Trusted publishing: the index trades this job's OIDC token for a
+      # short-lived upload token, so no API token is stored anywhere.
+      id-token: write
+
+    steps:
+      - name: Download the release's wheel and sdist
+        # The files already on the release page, not a fresh build: those are
+        # the ones the tag's test matrix and smoke test passed, and the ones
+        # tried out by hand before this ran.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::'$TAG' is not a release tag like v0.5.0"; exit 1 ;;
+          esac
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.whl' --pattern '*.tar.gz' --dir dist
+          ls -l dist
+
+      - name: Upload to ${{ inputs.index }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ inputs.index == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
