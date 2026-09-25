@@ -42,7 +42,7 @@ which Terminal.app does not support — iTerm2 and others do (see [Keys](#keys))
 
 ```bash
 pipx install git+https://github.com/proverbial-toast/fieldlog        # latest main
-pipx install git+https://github.com/proverbial-toast/fieldlog@v0.4.0 # a release
+pipx install git+https://github.com/proverbial-toast/fieldlog@v0.5.0 # a release
 fieldlog            # opens the TUI
 ```
 
@@ -51,7 +51,7 @@ Every tagged release also carries a built wheel and sdist on its
 would rather install one directly than build from a checkout:
 
 ```bash
-pipx install https://github.com/proverbial-toast/fieldlog/releases/download/v0.4.0/fieldlog-0.4.0-py3-none-any.whl
+pipx install https://github.com/proverbial-toast/fieldlog/releases/download/v0.5.0/fieldlog-0.5.0-py3-none-any.whl
 ```
 
 For development:
