@@ -210,6 +210,15 @@ class JobsMixin:
         art_widget.tooltip = tab.artifact
 
     def _refresh_stdin_bar(self) -> None:
+        # The tick calls this every second, and one can land while the app is
+        # being torn down: the bar found, its children already gone. A job
+        # still blocked at quit made that a crash report on the way out.
+        try:
+            self._paint_stdin_bar()
+        except (NoMatches, WrongType, ScreenStackError):
+            pass
+
+    def _paint_stdin_bar(self) -> None:
         try:
             bar = self.query_one("#stdin-bar", Vertical)
         except Exception:

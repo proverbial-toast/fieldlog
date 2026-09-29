@@ -308,6 +308,17 @@ async def test_t3_ctrl_c_in_the_reply_field_interrupts_the_job(tmp_workspace: Pa
         assert job.interrupted
 
 
+async def test_a_tick_during_teardown_does_not_crash_on_a_blocked_job(tmp_workspace: Path):
+    """Found by CI (macOS, 3.11): the one-second tick landed while the app was
+    being torn down, with the bar still there and its prompt line gone."""
+    app = _app(tmp_workspace)
+    async with app.run_test(size=(160, 40)) as pilot:
+        _attach(app, _job(tmp_workspace, "Password:"))
+        await app.query_one("#stdin-prompt-text").remove()
+        await pilot.pause()
+        app._refresh_stdin_bar()             # raised NoMatches
+
+
 # ---- T4. Tab under a modal is Tab -------------------------------------------
 
 
