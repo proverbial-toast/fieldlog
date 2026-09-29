@@ -25,6 +25,7 @@ from fieldlog.recipes import (
     load_catalog,
     writes_outdir,
 )
+from fieldlog.state import load_pinned_recent
 from fieldlog.tui.helpers import copy_text_to_clipboard
 from fieldlog.tui.modals import RecipeManagerModal
 from fieldlog.tui.theme import ACCENT, DIM, FAINT, FG, MUTED, UNFOCUSED, WARN
@@ -40,6 +41,17 @@ class CatalogMixin:
 
     def _total_variants(self) -> int:
         return sum(len(t.get("presets", [])) for t in self.recipes)
+
+    def load_pins(self) -> None:
+        """Pinned and recent, as far as this catalog can show them. Every change
+        to either is saved as it is made, so reading them again loses nothing,
+        and a key this catalog lacks stays on disk (see state._WITHHELD)."""
+        valid_keys = {
+            f"{t['id']}/{p['id']}"
+            for t in self.catalog.tools
+            for p in t.get("presets", [])
+        } | {f"chain/{c['id']}" for c in self.catalog.chains}
+        self.pinned, self.recent = load_pinned_recent(self.session.workspace_dir, valid_keys=valid_keys)
 
     def get_tool(self, tool_id: str) -> Optional[dict]:
         return next((t for t in self.recipes if t["id"] == tool_id), None)
@@ -122,6 +134,8 @@ class CatalogMixin:
         self.catalog = load_catalog()
         self._recipes = self.catalog.tools
         new_keys = {f"{t['id']}/{p['id']}" for t in self._recipes for p in t.get("presets", [])}
+        # A fixed drop-in brings back the pins its recipes had.
+        self.load_pins()
 
         if self.selected_chain_id and self.get_chain(self.selected_chain_id) is None:
             self.selected_chain_id = None   # a chain the reloaded yaml no longer defines

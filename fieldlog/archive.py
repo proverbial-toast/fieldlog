@@ -357,9 +357,23 @@ def append_record(target_dir: Path, record: dict) -> Optional[Path]:
                 aside = set_aside_manifest(target_dir)
         runs.append(record)
         tmp_manifest = target_dir / f".session_{record.get('id', 'x')}.json.tmp"
-        tmp_manifest.write_text(json.dumps(runs, indent=2), encoding="utf-8")
-        os.replace(tmp_manifest, manifest)
+        replace_durably(tmp_manifest, json.dumps(runs, indent=2), manifest)
     return aside
+
+
+def replace_durably(tmp: Path, text: str, dest: Path) -> None:
+    """Write `text` to `tmp`, on the disk and not just in the page cache, then
+    swap it in for `dest`.
+
+    Without the fsync a power cut can land the rename before the data, and
+    `dest` comes back empty — for session.json that is every record, since
+    each append rewrites them all. A crash of the process alone never needed it.
+    """
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, dest)
 
 
 def next_run_number(target_dir: Path) -> int:
@@ -397,15 +411,16 @@ def reserve_run_number(target_dir: Path) -> int:
     target_dir = Path(target_dir)
     with manifest_lock(target_dir):
         number = next_run_number(target_dir)
-        tmp = target_dir / f"{RUN_COUNTER}.tmp"
-        tmp.write_text(f"{number}\n", encoding="utf-8")
-        os.replace(tmp, target_dir / RUN_COUNTER)
+        replace_durably(target_dir / f"{RUN_COUNTER}.tmp", f"{number}\n", target_dir / RUN_COUNTER)
     return number
 
 
-def append_note(target_dir: Path, text: str, when: Optional[float] = None) -> dict:
+def append_note(
+    target_dir: Path, text: str, when: Optional[float] = None
+) -> Tuple[dict, Optional[Path]]:
     """Write the operator's own words into a target's archive, as a record of
-    its own, and return what was written.
+    its own. Returns what was written, and where an unreadable session.json
+    was set aside to make room for it, if one was (see append_record).
 
     A note is a new record, never an edit of an old one: there is no
     `amend_record`, so "the archive is append-only" stays true in fact rather
@@ -425,5 +440,4 @@ def append_note(target_dir: Path, text: str, when: Optional[float] = None) -> di
         # Naive local time, exactly as a run record carries it.
         "start_time": datetime.fromtimestamp(when if when is not None else time.time()).isoformat(),
     }
-    append_record(target_dir, record)
-    return record
+    return record, append_record(target_dir, record)

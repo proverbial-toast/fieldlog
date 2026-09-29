@@ -70,14 +70,14 @@ def test_a_note_takes_the_next_run_number(tmp_workspace: Path):
         {"id": "02", "recipe": "ping/quick", "command": "ping", "exit_code": 0},
     ]), encoding="utf-8")
 
-    assert append_note(target, NOTE)["id"] == "03"
+    assert append_note(target, NOTE)[0]["id"] == "03"
     # And the counter moves on, as it does for a run.
-    assert append_note(target, "and another")["id"] == "04"
+    assert append_note(target, "and another")[0]["id"] == "04"
 
 
 def test_the_record_is_the_text_a_number_and_a_time(tmp_workspace: Path):
     when = 1_600_000_000.0
-    record = append_note(tmp_workspace / "box.htb", NOTE, when=when)
+    record, _ = append_note(tmp_workspace / "box.htb", NOTE, when=when)
 
     assert set(record) == {"id", "recipe", "note", "start_time"}
     assert record["id"] == "01"

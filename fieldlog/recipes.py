@@ -379,11 +379,15 @@ def parse_match(rule: Optional[dict], text: str) -> Optional[re.Match]:
     """
     if not rule:
         return None
+    last = None
     try:
-        matches = list(re.finditer(rule["parse"], text, re.MULTILINE))
+        # Walked, not listed: a rule that matches everywhere made a list of
+        # tens of thousands of matches to keep one.
+        for last in re.finditer(rule["parse"], text, re.MULTILINE):
+            pass
     except re.error:
         return None
-    return matches[-1] if matches else None
+    return last
 
 
 def fields_from_match(match: Optional[re.Match]) -> Dict[str, str]:

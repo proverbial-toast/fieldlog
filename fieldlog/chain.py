@@ -29,6 +29,9 @@ RunStep = Callable[[LaunchPlan], Awaitable[int]]
 class ChainResult:
     record: dict            # the chain summary record, as archived
     exit_code: int
+    # Where an unreadable session.json went when the summary was written, if
+    # it was: the front-end says so, as it does for a step's own record.
+    aside: Optional[Path] = None
 
 
 async def run_chain(
@@ -138,5 +141,5 @@ async def run_chain(
         "duration_sec": round(end - start, 2),
         "artifacts": [],
     }
-    append_record(session.target_dir, record)
-    return ChainResult(record=record, exit_code=exit_code)
+    aside = append_record(session.target_dir, record)
+    return ChainResult(record=record, exit_code=exit_code, aside=aside)

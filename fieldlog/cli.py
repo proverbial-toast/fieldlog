@@ -71,7 +71,7 @@ from fieldlog.recipes import (
 )
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
-from fieldlog.runner import STOP_SIGNAL_GRACE, STOP_SIGNALS, interrupt_job, kill_job, run_job, set_winsize
+from fieldlog.runner import STOP_SIGNAL_GRACE, STOP_SIGNALS, kill_job, run_job, set_winsize
 from fieldlog.vantage import vantage_line
 from fieldlog.state import (
     DEFAULT_ARTIFACT_ROOT,
@@ -672,7 +672,7 @@ async def execute_cli_job(
             # record at all.
             reader_gone = True
             silence_stdout()
-            interrupt_job(job)
+            kill_job(job, STOP_SIGNAL_GRACE)
 
     stdin_reader_active = False
 
@@ -697,7 +697,10 @@ async def execute_cli_job(
                 pass
 
     def on_sigint() -> None:
-        interrupt_job(job)
+        # With the SIGKILL behind it that every other stop has: a tool that
+        # catches SIGINT and carries on otherwise ran until someone killed
+        # fieldlog itself, and a second Ctrl+C only asked it again.
+        kill_job(job, STOP_SIGNAL_GRACE)
 
     def on_winch() -> None:
         size = terminal_size()
@@ -925,6 +928,9 @@ def handle_run_chain(args: argparse.Namespace, catalog: Catalog, chain: dict) ->
             )
             shared = plan.job.out_dir
             print_dry_run(plan, f"step {index}/{len(steps)}")
+        blocked, reason = chain_blocked(catalog, chain, session)
+        if blocked:
+            sys.stderr.write(f"Note: this chain would not run now · {reason}\n")
         return 0
 
     blocked, reason = chain_blocked(catalog, chain, session)
@@ -990,6 +996,9 @@ def handle_run_chain(args: argparse.Namespace, catalog: Catalog, chain: dict) ->
     if signal.SIGHUP in latch:
         silence_stdout(stderr=True)
     record = result.record
+    if result.aside is not None:
+        sys.stderr.write(f"Warning: session.json could not be read · kept as {result.aside.name} · "
+                         "the chain summary starts a new one\n")
 
     if as_json:
         print(json.dumps(record, indent=2))
@@ -1016,9 +1025,12 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
         return 1
 
     session = run_session(args)
+    dry_run = getattr(args, "dry_run", False)
 
+    # A preview of a run that cannot happen yet is still worth reading, as a
+    # chain's is: it is shown, and the refusal is said beneath it.
     blocked, reason = is_blocked(tool, preset, session)
-    if blocked:
+    if blocked and not dry_run:
         sys.stderr.write(f"Error: Cannot run '{tool['id']}/{preset['id']}': {reason}\n")
         return 1
 
@@ -1027,7 +1039,6 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
         sys.stderr.write(problem)
         return 1
 
-    dry_run = getattr(args, "dry_run", False)
     try:
         plan = plan_launch(
             session,
@@ -1048,6 +1059,8 @@ def handle_run(args: argparse.Namespace, catalog: Catalog) -> int:
 
     if dry_run:
         print_dry_run(plan)
+        if blocked:
+            sys.stderr.write(f"Note: this would not run now · {reason}\n")
         return 0
 
     for warning in plan.warnings:
@@ -1364,12 +1377,15 @@ def handle_note(args: argparse.Namespace) -> int:
     target_dir = find_target_dir(workspace, target) or workspace / scope_dir(target)
 
     try:
-        record = append_note(target_dir, text)
+        record, aside = append_note(target_dir, text)
     except OSError as exc:
         # A folder that cannot be made or written — a file sitting where it
         # belongs, a full or read-only disk — is an answer, not a traceback.
         sys.stderr.write(f"Error: could not write the note to {target_dir}: {exc}\n")
         return 1
+    if aside is not None:
+        sys.stderr.write(f"Warning: session.json could not be read · kept as {aside.name} · "
+                         "this note starts a new one\n")
 
     if getattr(args, "json", False):
         print(json.dumps(record, indent=2))

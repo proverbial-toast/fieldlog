@@ -66,7 +66,6 @@ from fieldlog.state import (
     ActiveJob,
     TargetSession,
     get_interface_ip,
-    load_pinned_recent,
     save_last_scope,
 )
 from fieldlog.runner import STOP_SIGNAL_GRACE, STOP_SIGNALS, kill_job
@@ -100,6 +99,7 @@ from fieldlog.tui.theme import (
 )
 from fieldlog.tui.widgets import (
     ArgsTextArea,
+    InterruptInput,
     StdinInput,
 )
 
@@ -297,24 +297,25 @@ class TargetModal(ModalScreen[bool]):
 
         running = sum(1 for j in self.app.jobs.values() if j.running)
         if running and (new_target != self.session.target or new_host != self.session.hostname):
+            # Only the target and DNS name are locked while jobs run. Returning
+            # here threw away an interface or log destination changed in the
+            # same visit, which may change at any time, without a word.
             self.app.write_system_log(
                 f"[scope] Cannot change target while {running} scan(s) are actively running. "
-                "Stop running jobs first.",
+                "Stop running jobs first · target left as it was, interface and log destination saved.",
                 style=ERR,
             )
-            self.dismiss(False)
-            return
+        else:
+            # Two independent fields. Neither is ever derived from the other here.
+            self.session.target = new_target
+            self.session.hostname = new_host
 
-        # Two independent fields. Neither is ever derived from the other here.
-        self.session.target = new_target
-        self.session.hostname = new_host
-
-        if self.session.slug != old_slug:
-            self.app.write_system_log(
-                f"[scope] workspace now targets/{self.session.slug} "
-                f"(prior evidence remains in targets/{old_slug})"
-            )
-            self.app.resume_session()
+            if self.session.slug != old_slug:
+                self.app.write_system_log(
+                    f"[scope] workspace now targets/{self.session.slug} "
+                    f"(prior evidence remains in targets/{old_slug})"
+                )
+                self.app.resume_session()
 
         # Empty means the default: the target workspace's raw/ dir.
         self.session.artifact_root = self.query_one("#in-log-dest", Input).value.strip().rstrip("/")
@@ -433,12 +434,9 @@ class FieldlogApp(
         self.kbd_pane: str = "recipes"          # keyboard focus: recipes | variants
         self.show_hotkey_bar: bool = False      # hidden on first paint; H toggles
 
-        valid_keys = {
-            f"{t['id']}/{p['id']}"
-            for t in self.catalog.tools
-            for p in t.get("presets", [])
-        } | {f"chain/{c['id']}" for c in self.catalog.chains}
-        self.pinned, self.recent = load_pinned_recent(self.session.workspace_dir, valid_keys=valid_keys)
+        self.pinned: List[str] = []
+        self.recent: List[str] = []
+        self.load_pins()
         self.filter_text: str = ""
         self.hide_missing: bool = True          # runnable-only is the default
         self._stdin_replies: List[str] = []
@@ -449,6 +447,8 @@ class FieldlogApp(
         self._job_seq = 0
         self._start = time.time()
         self._stdin_dismissed: Dict[str, Optional[float]] = {}
+        # The block each job's reply field last took the keyboard for (see _refresh_stdin_bar).
+        self._stdin_taken: Dict[str, Optional[float]] = {}
 
 
     # ---- Logging ---------------------------------------------------------
@@ -544,7 +544,7 @@ class FieldlogApp(
                     with Horizontal(id="recipes-header"):
                         yield Static("RECIPES", id="recipes-title")
                         yield Static("/", id="filter-prompt")
-                        yield Input(placeholder="filter", id="filter-input")
+                        yield InterruptInput(placeholder="filter", id="filter-input")
                         yield Static("[!] runnable", id="avail-toggle", markup=False)
                         yield Static("[M]", id="mgr-chip", markup=False)
                     with VerticalScroll(id="recipe-tree", can_focus=False):
@@ -582,7 +582,12 @@ class FieldlogApp(
                         yield Static("↳", id="pinned-art-sigil")
                         yield Static("", id="pinned-art", markup=False)
                 with ContentSwitcher(id="tab-content", initial="log-system"):
-                    yield RichLog(id="log-system", wrap=True, markup=True, min_width=20)
+                    # Capped as the transcript kept for copying is: a session left
+                    # open for a day grew this without end.
+                    yield RichLog(
+                        id="log-system", wrap=True, markup=True, min_width=20,
+                        max_lines=self.SYSTEM_LOG_MAX,
+                    )
                 with Vertical(id="stdin-bar", classes="hidden"):
                     with Horizontal(id="stdin-top"):
                         yield Static("⌨ STDIN", id="stdin-title")
@@ -803,7 +808,7 @@ class FieldlogApp(
         if event.text_area.id == "args-raw-area" and self.args_raw_mode:
             tool, preset, key, _ = self.current_flags()
             if tool:
-                self.flag_edits[key] = event.text_area.text
+                self.keep_args_edit(key, preset, event.text_area.text)
                 self._refresh_args_band()
 
 

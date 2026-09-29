@@ -98,7 +98,10 @@ beside that run, and the record carries it as `summary`.
   (`{"rx": "4", "loss": "0"}`) beside the formatted summary, so `history --json`
   can trend a value across runs without re-parsing the logs.
 - The last 64 KB of the log is scanned, so a server recipe that ran for hours
-  still summarises at the same cost.
+  still summarises at the same cost. A `parse:` or `expect:` regex gets 2 s
+  there; one that runs longer (a pattern that backtracks without end, such as
+  `(a+)+b`) is not applied, the run says so, and it is archived without a
+  summary and with its expectation unchecked.
 - A regex that does not compile, or a template naming a group that does not
   exist, is reported at load; the preset still runs, without a summary.
 
@@ -175,7 +178,8 @@ A preset is **not runnable** while its variables are unmet or its binary is
 missing. The TUI says why; the CLI refuses with the same reason. Targets and
 DNS names may only contain letters, digits, `.`, `:`, `/`, `-` and `_`, since
 they are pasted into a shell command. Targets may also contain `@`, for an ssh
-`user@host`. None of them may start with `-`, which would be read as one more
+`user@host`, and `%`, for an IPv6 address's zone (`fe80::1%eth0`). None of
+them may start with `-`, which would be read as one more
 flag (`--target=-f` is a flood ping, not a target), and a target made only of
 digits and dots has to be a valid address: `10.0.0.256` is refused rather than
 run. `--extra-args` and TUI args edits are appended as typed and are not

@@ -113,11 +113,18 @@ def test_the_cli_refuses_a_target_that_would_become_a_flag(tmp_path: Path, tmp_w
               - id: t
                 flags: "-c 4 $TARGET"
         """)
+    # Refused before anything is planned: no run number, no log, no spawn.
+    args = build_parser().parse_args(["run", "ping-like/t", "--target=-f", "-w", str(tmp_workspace)])
+    assert handle_run(args, cat) == 1
+    assert "must not start with -" in capsys.readouterr().err
+    assert not any(tmp_workspace.rglob("*.log"))
+
+    # A preview still shows what it would have been, and says why it will not run.
     args = build_parser().parse_args(
         ["run", "ping-like/t", "--target=-f", "-w", str(tmp_workspace), "--dry-run"]
     )
-    assert handle_run(args, cat) == 1
-    assert "must not start with -" in capsys.readouterr().err
+    assert handle_run(args, cat) == 0
+    assert "would not run now · target must not start with -" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("target", ["1.2.3", "10.0.0.256", "192.168.001.020"])

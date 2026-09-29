@@ -70,9 +70,18 @@ def save_last_scope(session: "TargetSession") -> None:
 
 PINNED_RECENT_FILE = ".pinned-recent.json"
 
+# The keys load_pinned_recent left out because the catalog lacked them, per
+# workspace. Written back on every save: a drop-in that failed to parse one
+# morning took its recipes out of the catalog, and the next pin or launch then
+# saved the pins without them — gone for good, even once the yaml was fixed.
+_WITHHELD: dict[str, tuple[list[str], list[str]]] = {}
+
 
 def load_pinned_recent(workspace_dir, valid_keys: Optional[set[str]] = None) -> tuple[list[str], list[str]]:
-    """Load (pinned, recent) recipe keys from workspace file, dropping unknown keys."""
+    """Load (pinned, recent) recipe keys from workspace file, leaving out unknown
+    keys — kept aside, not dropped: save_pinned_recent writes them back."""
+    withheld: tuple[list[str], list[str]] = ([], [])
+    _WITHHELD[str(Path(workspace_dir).resolve())] = withheld
     try:
         data = json.loads((Path(workspace_dir) / PINNED_RECENT_FILE).read_text(encoding="utf-8"))
         if not isinstance(data, dict):
@@ -84,6 +93,8 @@ def load_pinned_recent(workspace_dir, valid_keys: Optional[set[str]] = None) -> 
         pinned = [str(k) for k in raw_pinned if isinstance(k, str)]
         recent = [str(k) for k in raw_recent if isinstance(k, str)]
         if valid_keys is not None:
+            withheld[0].extend(k for k in pinned if k not in valid_keys)
+            withheld[1].extend(k for k in recent if k not in valid_keys)
             pinned = [k for k in pinned if k in valid_keys]
             recent = [k for k in recent if k in valid_keys]
         return pinned, recent
@@ -92,12 +103,17 @@ def load_pinned_recent(workspace_dir, valid_keys: Optional[set[str]] = None) -> 
 
 
 def save_pinned_recent(workspace_dir, pinned: list[str], recent: list[str]) -> None:
-    """Save pinned and recent lists next to .last-scope.json."""
+    """Save pinned and recent lists next to .last-scope.json, with the keys the
+    load left out after them (see _WITHHELD)."""
     try:
         p = Path(workspace_dir)
+        extra_pinned, extra_recent = _WITHHELD.get(str(p.resolve()), ([], []))
         p.mkdir(parents=True, exist_ok=True)
         (p / PINNED_RECENT_FILE).write_text(
-            json.dumps({"pinned": pinned, "recent": recent}, indent=2),
+            json.dumps({
+                "pinned": pinned + [k for k in extra_pinned if k not in pinned],
+                "recent": recent + [k for k in extra_recent if k not in recent],
+            }, indent=2),
             encoding="utf-8",
         )
     except Exception:

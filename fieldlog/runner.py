@@ -58,6 +58,16 @@ STOP_SIGNAL_GRACE = 5.0
 # in pieces (each a line of its own in the log).
 LINE_MAX = 1024 * 1024
 
+# How long the pty is read after the tool has exited, waiting for it to close.
+# It closes at once unless something the tool started holds it open: a daemon
+# in a session of its own, which no signal to the tool's group ever reaches.
+EXIT_DRAIN = 1.0
+
+# The longest a preset's `parse:` and `expect:` rules get over the log's tail.
+# A sane rule takes milliseconds; one that backtracks without end (`(a+)+b`)
+# would take for ever, and in the TUI every other job's pane with it.
+RULES_DEADLINE = 2.0
+
 # One line end: `\r\n`, or `\r\r\n`, the tty's rendering of a `\r` then a `\n`.
 _LINE_END = re.compile(r"\r+\n")
 
@@ -66,9 +76,16 @@ _LINE_END = re.compile(r"\r+\n")
 PTY_ROWS, PTY_COLS = 24, 200
 
 
-# CSI escapes (colors, cursor moves) and OSC escapes (title sets), the two a
-# terminal-aware CLI emits under a pty.
-_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+# The escapes a terminal-aware CLI emits under a pty. A line is cut wherever
+# the output was, so a sequence may arrive without its end and still has to go.
+_ANSI = re.compile(
+    r"\x1b\[[0-9;?]*[ -/]*(?:[@-~]|$)"      # CSI: colours, cursor moves, clears
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?"  # OSC: a window title, a link
+    r"|\x1b[()*+]?[ -~]?"                   # ESC and a character or two: `tput sgr0`'s `\x1b(B`
+)
+# The one kind a pane can draw: a colour or a weight.
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
+
 
 def strip_ansi(text: str) -> str:
     """`text` without the escapes a pty makes tools emit — what the log holds,
@@ -78,6 +95,17 @@ def strip_ansi(text: str) -> str:
     if "\x1b" not in text:
         return text
     return _ANSI.sub("", text)
+
+
+def color_only(text: str) -> str:
+    """`text` with its colour escapes kept and every other one gone.
+
+    What a job tab can paint: a cursor move or a screen clear written into
+    it as characters took up cells the terminal then drew as nothing.
+    """
+    if "\x1b" not in text:
+        return text
+    return _ANSI.sub(lambda m: m[0] if _SGR.fullmatch(m[0]) else "", text)
 
 
 # How much of a finished log a `parse:` rule is shown. A server recipe can write
@@ -99,6 +127,38 @@ def log_tail(path: Path, limit: int = PARSE_TAIL_BYTES) -> str:
     except OSError:
         return ""
     return strip_ansi(raw.decode("utf-8", errors="replace"))
+
+
+class RulesTooSlow(Exception):
+    """A `parse:` or `expect:` rule outran RULES_DEADLINE."""
+
+
+def _too_slow(_signum, _frame) -> None:
+    raise RulesTooSlow()
+
+
+def within_deadline(fn: Callable, *args, deadline: Optional[float] = None):
+    """`fn(*args)`, or RulesTooSlow once it has run for `deadline` seconds
+    (RULES_DEADLINE when not given).
+
+    The regex engine checks for signals while it backtracks, so an alarm that
+    raises stops a runaway match; a thread could not, since the engine never
+    lets go of the GIL. Only the main thread gets signals, and SIGALRM is
+    borrowed only when nobody else has a handler on it: anywhere else the
+    call just runs.
+    """
+    if (threading.current_thread() is not threading.main_thread()
+            or signal.getsignal(signal.SIGALRM) not in (signal.SIG_DFL, signal.SIG_IGN)):
+        return fn(*args)
+    previous = signal.signal(signal.SIGALRM, _too_slow)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, RULES_DEADLINE if deadline is None else deadline)
+        try:
+            return fn(*args)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+    finally:
+        signal.signal(signal.SIGALRM, previous)
 
 
 def build_env(session: TargetSession, out_dir: Path, run_id: str) -> Dict[str, str]:
@@ -268,9 +328,16 @@ def exec_form(command: str) -> str:
     `timeout … sh -c '…'` — and still leaves one simple command. Skipping exec
     for those left coreutils timeout a child of the shell, free to move into a
     process group of its own that no interrupt ever reached.
+
+    `#` is read as text, never as a comment: shlex would end the command at
+    the `#` of `http://x/#frag || echo y`, see one simple command, and exec it
+    — and sh, which reads that `#` as part of the word, would then never
+    reach the `||`. A real comment holding a `;` or a `|` only costs the exec,
+    never the command.
     """
     try:
         lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex.commenters = ""
         lex.whitespace_split = True
         tokens = list(lex)
     except ValueError:              # unbalanced quote: let the shell complain
@@ -428,6 +495,25 @@ async def run_job(
 
     loop.add_reader(master, _readable)
 
+    async def _stop_reading_after_exit() -> None:
+        # The run ends with the tool, not with the pty: a process the tool left
+        # behind in a session of its own holds the pty open for as long as it
+        # lives, and waiting for the close waited for ever. Everything the tool
+        # wrote is in the pty's buffer when it exits, so that is read out
+        # before the end is called.
+        await proc.wait()
+        await asyncio.sleep(EXIT_DRAIN)
+        try:
+            loop.remove_reader(master)
+            os.set_blocking(master, False)
+            while data := os.read(master, 65536):
+                queue.put_nowait(("data", data))
+        except (ValueError, OSError):
+            pass
+        queue.put_nowait(("eof", b""))
+
+    drain = asyncio.create_task(_stop_reading_after_exit())
+
     try:
         lines = 0
         pending = ""          # partial line held back; it is the candidate prompt
@@ -447,12 +533,11 @@ async def run_job(
                 nonlocal lines
                 # Under a pty, color tools emit ANSI; strip it from the log so it
                 # stays greppable. The live pane still gets the colored text.
-                # ponytail: CSI + OSC covers real tool output; add more if some
-                # tool's escapes leak through.
-                raw.write(strip_ansi(text) + "\n")
+                clean = strip_ansi(text)
+                raw.write(clean + "\n")
                 lines += 1
                 job.lines_count = lines
-                job.bytes_count += len(text) + 1
+                job.bytes_count += len(clean) + 1
                 sink(text, "out")
 
             while True:
@@ -460,8 +545,13 @@ async def run_job(
                 # then only until the grace period says the tool has stopped.
                 # `is None`, not truthiness, on both sides: a partial line of
                 # only whitespace strips to an empty prompt, which is still a
-                # prompt the tool has to be seen resuming from.
-                timeout = BLOCK_GRACE if (pending and job.await_prompt is None) else None
+                # prompt the tool has to be seen resuming from. A tool that has
+                # exited is asking nothing: its last partial line is just that.
+                timeout = (
+                    BLOCK_GRACE
+                    if pending and job.await_prompt is None and proc.returncode is None
+                    else None
+                )
                 if queue.empty():
                     raw.flush()
                 try:
@@ -474,7 +564,9 @@ async def run_job(
                         emit(pending)
                         pending = held_cr = ""
                         continue
-                    job.await_prompt = pending.strip()
+                    # Held clean: the bar, its reply chips and the rule that
+                    # decides which replies may be logged all read its shape.
+                    job.await_prompt = strip_ansi(pending).strip()
                     job.await_since = time.time()
                     # Commit the prompt as a real line now, so the artifact
                     # reads question-then-answer rather than answer-then-question.
@@ -526,8 +618,11 @@ async def run_job(
                 if len(pending) > LINE_MAX:
                     # Binary on stdout, or a megabyte of JSON on one line: it is
                     # written out in pieces rather than held until it ends.
+                    # A `\n` straight after the cut ends this piece, not an
+                    # empty line of its own.
                     emit(pending)
                     pending = ""
+                    owed_lf = True
                 if final:
                     break
 
@@ -541,15 +636,30 @@ async def run_job(
         job.await_since = None
         # One read of the tail, and one match off it: both regexes are an
         # operator's, run over 64 KB, and the parse rule's match is read twice.
-        tail = log_tail(job.log_path)
-        match = parse_match(job.parse_rule, tail)
-        job.summary = summary_from_match(job.parse_rule, match)
-        job.fields = fields_from_match(match)
         # An interrupted run makes no claim about its expectation: the tool
         # never got to print its closing line, and a `false` here would archive
         # an operator's Ctrl+C as a failed check. A timeout is not exempt — the
         # log it left is what the tool printed, and the run fails on 124 anyway.
-        job.expect_found = None if job.interrupted else expect_found(job.expect, tail)
+        match, found = None, None
+        if job.parse_rule or job.expect:
+            tail = log_tail(job.log_path)
+
+            def apply_rules() -> tuple:
+                return (
+                    parse_match(job.parse_rule, tail),
+                    None if job.interrupted else expect_found(job.expect, tail),
+                )
+
+            try:
+                match, found = within_deadline(apply_rules)
+            except RulesTooSlow:
+                # Unapplied rather than stuck: a `found` of null is a check
+                # that was not made, never a pass.
+                sink(f"[fieldlog] the recipe's parse:/expect: rule ran past "
+                     f"{RULES_DEADLINE:g}s on this log · not applied", "err")
+        job.summary = summary_from_match(job.parse_rule, match)
+        job.fields = fields_from_match(match)
+        job.expect_found = found
         if job.scan_workspace:
             delta = detect_artifact_deltas(
                 session.target_dir, pre_snap, primary_log=job.log_path, extra_roots=extra_roots
@@ -568,6 +678,7 @@ async def run_job(
                  "this run starts a new one", "err")
         return code
     finally:
+        drain.cancel()
         try:
             loop.remove_reader(master)
         except (ValueError, OSError):

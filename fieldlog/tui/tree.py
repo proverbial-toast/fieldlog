@@ -102,10 +102,14 @@ class RecipeTreeMixin:
                     continue
                 out.append(self._chain_row(chain))
                 continue
+            # A key this catalog lacks is kept, not shown: a drop-in that failed
+            # to parse this morning brings its recipes back once it is fixed,
+            # and the pins with them. get_preset's fallback would show it as
+            # the tool's first variant instead.
             t = self.get_tool(tool_id)
-            if not t:
+            p = next((p for p in t.get("presets", []) if p["id"] == preset_id), None) if t else None
+            if p is None:
                 continue
-            p = self.get_preset(t, preset_id)
             if self.hide_missing and recipe_missing(t, p):
                 continue
             out.append(TreeRow(

@@ -143,11 +143,30 @@ class ArgsTextArea(TextArea):
             self.app.action_toggle_args_mode(force_raw=False)
 
 
-class StdinInput(Input):
-    """The stdin field. Enter sends; Esc blurs without sending."""
+class InterruptInput(Input):
+    """An Input whose Ctrl+C is the app's: SIGINT to the active tab's job.
+
+    Textual's Input binds ctrl+c to copy, and a focused widget's bindings are
+    asked before the app's. With nothing selected the copy steps aside; with
+    any text selected it won, so in the reply field — where the hint promises
+    SIGINT, and where a job wedged at a prompt most needs it — Ctrl+C copied
+    the selection and the job ran on.
+    """
+
+    def on_key(self, event) -> None:
+        if event.key == "ctrl+c":
+            event.prevent_default()
+            event.stop()
+            self.app.action_sigint()
+
+
+class StdinInput(InterruptInput):
+    """The stdin field. Enter sends; Esc blurs without sending; Ctrl+C interrupts."""
 
     def on_key(self, event) -> None:
         if event.key == "escape":
             event.prevent_default()
             event.stop()
             self.app.dismiss_stdin_focus()
+            return
+        super().on_key(event)

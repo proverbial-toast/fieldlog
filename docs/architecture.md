@@ -128,7 +128,7 @@ applied consistently and is one of the two things the earlier reviews said to le
 dataclass of `blocked`, `kind` (`ready | binary | target | dns | lhost | interface`), `reason` and `missing`
 (the value is unset, as opposed to set and refused). `is_blocked` returns just `(blocked, reason)` for the
 callers that want the text. It checks, in order: the binary is on `$PATH` (via a cached per-directory listing, `is_tool_installed`);
-then for each `$VAR` the template uses — `$TARGET` non-empty, no leading `-`, only `[A-Za-z0-9._:/@-]`;
+then for each `$VAR` the template uses — `$TARGET` non-empty, no leading `-`, only `[A-Za-z0-9._:/@%-]`;
 `$HOST` (`session.dns_name`) non-empty, no leading `-`, only `[A-Za-z0-9._:/-]`; `$LHOST`
 (`session.effective_lhost()`) non-empty, same rules; `$IFACE` no leading `-`, same allowlist (empty allowed).
 A target made only of digits and dots that `ipaddress` rejects (`10.0.0.256`) is refused as "not a valid
@@ -228,16 +228,23 @@ out_dir, note)` → `LaunchPlan(job, command, env, timeout, warnings)`** — the
   partial line is committed to the log so the artifact reads question-then-answer. Nothing is parsed
   semantically; the next output clears the flag. The TUI raises its stdin bar for every block but moves the
   keyboard into it only when the text ends like a prompt (`?`, `:`, `]`, `)`) or the block has lasted
-  `STDIN_FOCUS_AFTER` (1 s). `send_stdin` writes the reply and injects a `› reply`
+  `STDIN_FOCUS_AFTER` (1 s) — once per block, and never from another input or text area (`_stdin_taken`).
+  The prompt is held ANSI-stripped. `send_stdin` writes the reply and injects a `› reply`
   note — or `› (reply hidden)` unless the reply is one of the prompt's bracketed choices (`[y/N]`);
+- the run ends when the tool exits, not when the pty closes: `EXIT_DRAIN` (1 s) after `proc.wait()` the
+  master is read out non-blocking and the loop is handed an EOF, so a daemon the tool left holding the pty
+  (a `setsid` child no group signal reaches) cannot keep the run open;
 - on exit: `shell_exit_code` (signal death → 128+N), then one read of the log tail for both the summary
-  and fields (`parse:`) and the expectation (`expect:`), artifact attribution (§6), then `_append_manifest` builds the record, stores it on `job.record`, and
-  `archive.append_record` writes it;
+  and fields (`parse:`) and the expectation (`expect:`), run under `within_deadline` (`RULES_DEADLINE`,
+  2 s: a SIGALRM the regex engine checks for while it backtracks; main thread only), artifact
+  attribution (§6), then `_append_manifest` builds the record, stores it on `job.record`, and
+  `archive.append_record` writes it (fsynced before the swap: `replace_durably`);
 - on cancellation (the app going down without the stop path below): closing the pty master hangs up the child's controlling terminal
   (SIGHUP, the end of most tools), then SIGTERM to the process group — or SIGKILL if `kill_job` had already
   been asked for this job (`job.kill_requested`), since the SIGKILL it scheduled dies with the loop.
 
-Interrupt is `os.killpg(SIGINT)` (`interrupt_job`); the TUI's kill adds SIGKILL after 10 s (`kill_job`).
+Interrupt is `os.killpg(SIGINT)` (`interrupt_job`); the TUI's kill adds SIGKILL after 10 s (`kill_job`). The
+CLI's own stops (Ctrl+C, a closed stdout, SIGHUP, SIGTERM) are all `kill_job` with `STOP_SIGNAL_GRACE`.
 A confirmed quit, SIGHUP and SIGTERM all take `FieldlogApp._stop_and_exit`: every running job is killed
 that way and the app waits for their records (and a chain's summary) before it exits. `_run` re-raises a
 cancel after its bookkeeping, so a chain never reads one as a failed step.

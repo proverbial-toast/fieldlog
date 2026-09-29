@@ -187,6 +187,21 @@ class ArgsBandMixin:
                 row.mount(Static(Text("? the chain continues if this step fails", style=MUTED),
                                  classes="arg-pair arg-pair-wide"))
 
+    def keep_args_edit(self, key: str, preset: dict, text: str) -> None:
+        """Hold `text` as the args edit for `key` only while it differs from
+        the preset's own flags.
+
+        The raw editor is loaded with the template whenever the band repaints,
+        and that load reports itself as a change. Stored as it came, merely
+        opening the editor marked a variant edited, and every variant browsed
+        past while it stayed open — and the copy of the old default then
+        outlived a reload whose yaml had changed it.
+        """
+        if text == preset.get("flags", ""):
+            self.flag_edits.pop(key, None)
+        else:
+            self.flag_edits[key] = text
+
     @property
     def args_dirty(self) -> bool:
         _, _, key, _ = self.current_flags()
@@ -209,8 +224,8 @@ class ArgsBandMixin:
             self._refresh_args_band()       # the label now says what goes before the template
             raw_area.focus()
         else:
-            _, _, key, _ = self.current_flags()
-            self.flag_edits[key] = raw_area.text  # edits apply live; there is no cancel
+            _, preset, key, _ = self.current_flags()
+            self.keep_args_edit(key, preset, raw_area.text)  # edits apply live; there is no cancel
             raw_wrap.add_class("hidden")
             tokens.remove_class("hidden")
             btn_mode.update("[E] edit raw")

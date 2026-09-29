@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from textual.actions import SkipAction
 from textual.containers import Horizontal
 from textual.widgets import Static
 
@@ -23,6 +24,7 @@ from fieldlog.tui.theme import (
     UNFOCUSED,
     VARIANT_ROWS_VISIBLE,
 )
+from fieldlog.tui.widgets import StdinInput
 
 
 
@@ -80,6 +82,15 @@ class LayoutMixin:
             self.query_one("#variants-crumb", Static).update(self._variants_crumb(tool, preset))
 
     def action_swap_pane(self) -> None:
+        # Tab is a priority binding, so it outranks the focus cycling Textual
+        # gives Tab by default — and priority bindings are asked under a modal
+        # too. It swapped panes hidden behind the Target Scope form instead of
+        # moving between its fields; there it goes back to being Tab.
+        if len(self.screen_stack) > 1:
+            raise SkipAction()
+        # One of the harness hotkeys the reply field suspends.
+        if isinstance(self.focused, StdinInput):
+            return
         if self.focus_pane() == "recipes":
             self._focus_variants()
         else:

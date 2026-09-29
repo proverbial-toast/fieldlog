@@ -18,14 +18,23 @@ from rich.text import Text
 from textual.app import ScreenStackError
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches, WrongType
-from textual.widgets import ContentSwitcher, RichLog, Static
+from textual.widgets import ContentSwitcher, Input, RichLog, Static, TextArea
 
 from fieldlog.recipes import check_chain, run_passed
 from fieldlog import __version__ as VERSION
 from fieldlog.chain import run_chain
 from fieldlog.launch import LaunchPlan, plan_launch
 from fieldlog.report import chain_outcome
-from fieldlog.runner import HIDDEN_REPLY, interrupt_job, kill_job, loggable_reply, run_job, send_stdin, strip_ansi
+from fieldlog.runner import (
+    HIDDEN_REPLY,
+    color_only,
+    interrupt_job,
+    kill_job,
+    loggable_reply,
+    run_job,
+    send_stdin,
+    strip_ansi,
+)
 from fieldlog.state import ActiveJob, save_pinned_recent
 from fieldlog.transcript import TRANSCRIPT_FILE
 from fieldlog.tui.helpers import copy_text_to_clipboard, truncate_right
@@ -58,6 +67,26 @@ TAB_PAINT_MAX = 200
 # up to a megabyte (binary on stdout, one-line JSON); wrapping those froze the
 # UI, and nobody reads them on screen. The log on disk keeps every character.
 TAB_LINE_CHARS = 4000
+
+
+def pane_line(text: str) -> Text:
+    """One line of a tool's output as a job tab draws it.
+
+    The pty hands lines over with the tool's escapes on. Its colours are
+    drawn; every other escape (a cursor move, a line clear) is dropped, since
+    written in as text each one took up cells the terminal showed as nothing,
+    and a line wrapped and padded wrong. The cap counts what is drawn, so it
+    can never cut an escape in half.
+    """
+    if "\x1b" in text:
+        line = Text.from_ansi(color_only(text), style=FG, end="")
+    else:
+        line = Text(text, style=FG)
+    if len(line) > TAB_LINE_CHARS:
+        more = len(line) - TAB_LINE_CHARS
+        line.truncate(TAB_LINE_CHARS)
+        line.append(f" … {more} more characters in the log", style=FG)
+    return line
 
 
 class JobsMixin:
@@ -215,12 +244,23 @@ class JobsMixin:
         # reading. Anything else keeps the operator's next hotkey out of the
         # reply field. Esc (dismiss_stdin_focus) still hands the keyboard back,
         # and is checked ahead of both.
-        if self._stdin_dismissed.get(tab.job_id) != job.await_since:
+        #
+        # Taken once per block, and never from another field: the tick calls
+        # this every second, and a block that began while the operator was
+        # typing a filter or editing args sent the rest of their keys, and
+        # their Enter, to the tool. Nor is it taken back after they put the
+        # keyboard somewhere else; the field is a click away.
+        key = tab.job_id
+        typing = isinstance(self.focused, (Input, TextArea)) and not isinstance(self.focused, StdinInput)
+        if (self._stdin_dismissed.get(key) != job.await_since
+                and self._stdin_taken.get(key) != job.await_since
+                and not typing):
             blocked_for = time.time() - (job.await_since or time.time())
             if prompt.rstrip().endswith(("?", ":", "]", ")")) or blocked_for >= STDIN_FOCUS_AFTER:
                 field = self.query_one("#stdin-input", StdinInput)
                 if self.focused is not field:
                     field.focus()
+                self._stdin_taken[key] = job.await_since
 
     @staticmethod
     def _quick_replies(prompt: str) -> List[str]:
@@ -247,7 +287,9 @@ class JobsMixin:
             return
         field = self.query_one("#stdin-input", StdinInput)
         reply = field.value if text is None else text
-        prompt = job.await_prompt or ""
+        # Read as the bar reads it, or a colour reset after `[y/N]` hid the
+        # default its chips advertise.
+        prompt = strip_ansi(job.await_prompt or "")
         # An empty line is a legitimate reply only when a default is advertised.
         if not reply.strip() and not self._quick_replies(prompt):
             return
@@ -309,6 +351,10 @@ class JobsMixin:
 
     def action_select_tab(self, tab_id: str) -> None:
         self.active_tab_id = tab_id
+        # Arriving at a tab whose job is asking is a reason to hand it the keyboard again.
+        tab = next((t for t in self.tabs if t.id == tab_id), None)
+        if tab is not None:
+            self._stdin_taken.pop(tab.job_id or "", None)
         try:
             self.query_one("#tab-content", ContentSwitcher).current = f"log-{tab_id}"
         except Exception:
@@ -326,12 +372,17 @@ class JobsMixin:
         if job is not None and job.running:
             def resolved(choice: Optional[str]) -> None:
                 if choice == "kill":
-                    kill_job(job)
-                    self.write_system_log(
-                        f"[runner] {tab.label} killed by operator · SIGINT sent, "
-                        f"SIGKILL in 10s if still running (at once on quit) · partial output at {tab.artifact}",
-                        style=WARN,
-                    )
+                    if kill_job(job):
+                        self.write_system_log(
+                            f"[runner] {tab.label} killed by operator · SIGINT sent, "
+                            f"SIGKILL in 10s if still running (at once on quit) · partial output at {tab.artifact}",
+                            style=WARN,
+                        )
+                    else:
+                        # It ended while the question was open. The System log is
+                        # the session's record of what the operator did; it must
+                        # not claim a kill that was never sent.
+                        self.write_system_log(f"[runner] {tab.label} had already ended · nothing to kill")
                     self._drop_tab(tab_id)
                 elif choice == "detach":
                     # The process keeps running and keeps writing; only the tab goes.
@@ -362,6 +413,7 @@ class JobsMixin:
         if job is None or not job.running:
             self.jobs.pop(tab.job_id or "", None)
         self._stdin_dismissed.pop(tab.job_id or "", None)
+        self._stdin_taken.pop(tab.job_id or "", None)
         if was_active:
             new_idx = max(0, min(idx, len(self.tabs) - 1))
             self.active_tab_id = self.tabs[new_idx].id
@@ -624,6 +676,11 @@ class JobsMixin:
             )
             return
         record = result.record
+        if result.aside is not None:
+            self.write_system_log(
+                f"[chain] {cid} · session.json could not be read · kept as {result.aside.name} · "
+                "the summary starts a new one", style=ERR,
+            )
         if record["stopped_at"]:
             style = ERR
         else:
@@ -660,10 +717,7 @@ class JobsMixin:
             batch = waiting[-limit:]
             waiting.clear()
             for num, text in batch:
-                if len(text) > TAB_LINE_CHARS:
-                    more = len(text) - TAB_LINE_CHARS
-                    text = f"{text[:TAB_LINE_CHARS]} … {more} more characters in the log"
-                _safe_write(Text.assemble((f"{num:3d}  ", GUTTER), (text, FG)))
+                _safe_write(Text.assemble((f"{num:3d}  ", GUTTER), pane_line(text)))
 
         def flush() -> None:
             """Paint what is waiting now, not at the next tick — and when a
@@ -691,11 +745,24 @@ class JobsMixin:
                 del recent[:-TAB_TAIL_LINES]
             # The copy fallback, for a job whose log file is gone: bounded the
             # same way the screen is.
-            job.log_lines.append(text)
+            job.log_lines.append(strip_ansi(text))
             if len(job.log_lines) > 2 * TAB_TAIL_LINES:
                 del job.log_lines[:-TAB_TAIL_LINES]
             if paint_timer is None:
                 paint_timer = self.set_timer(TAB_PAINT_INTERVAL, paint)
+
+        def on_state() -> None:
+            self._on_job_block()
+            # A detached job has no tab to raise the bar in, so its question
+            # goes where the operator can see it; unsaid, an ssh or sudo step
+            # waited in silence until quit.
+            if job.awaiting and not any(t.id == tab_id for t in self.tabs):
+                self.write_system_log(
+                    f"[runner] {job.name} (detached) is waiting for input · "
+                    f"{truncate_right(job.await_prompt or '', 80)!r} · it has no tab to answer "
+                    "in and waits until quit",
+                    style=WARN,
+                )
 
         code = 130 if job.interrupted else 1
         try:
@@ -703,7 +770,7 @@ class JobsMixin:
             # can change the target while a detached job is still running.
             code = await run_job(
                 plan.command, job, plan.session or self.session, sink,
-                on_state=self._on_job_block, env=plan.env,
+                on_state=on_state, env=plan.env,
             )
             flush()
             if line_num > TAB_TAIL_LINES:

@@ -178,7 +178,10 @@ its output: type the answer and press `Enter`, or click one of the chips
 fieldlog offers for a `[y/N]`-style prompt. `Esc` leaves the field with the
 job still waiting. Prompts that read the terminal directly, such as sudo and
 ssh, work the same way because each job owns its own pty. Hotkeys are
-suspended while the reply field has focus.
+suspended while the reply field has focus. The field takes the keyboard once
+per prompt, and never while you are typing in the filter or the args editor;
+click it to answer. A detached job that stops at a prompt says so in the
+System tab.
 
 The log shows the reply, as `› yes`, only when it is one of the choices the
 prompt lists in brackets, such as `[y/N]` or `(yes/no/[fingerprint])`. Any
@@ -273,7 +276,7 @@ and `--json`. It touches nothing on disk and exits 0.
 | `-w`, `--workspace` | Archive root (default `./targets`) |
 | `--artifact-root DIR` | Write logs and `$OUTDIR` under `DIR/<name>/` instead of the workspace |
 | `--timeout SECONDS` | Stop the job after this long, recorded as exit 124. Per step for a chain |
-| `-n`, `--dry-run` | Show what would run. Reserves no run number, creates nothing |
+| `-n`, `--dry-run` | Show what would run, and why not when it would be refused. Reserves no run number, creates nothing |
 | `--extra-args "..."` | Append to the command. Not accepted for a chain |
 | `--note "..."` | Free text stored on the record, shown by `history` and `report`. On a chain the note goes on the chain's summary record |
 | `-q`, `--quiet` | Tool output only, no banner or summary |
